@@ -4,14 +4,14 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 
-# 1. إعدادات الصفحة والتصميم البصري الداكن (Dark Glassmorphism UI)
+# 1. إعدادات الصفحة والتصميم البصري الداكن
 st.set_page_config(page_title="مُقيّم الاستراتيجيات الذكي", page_icon="⚡", layout="centered")
 
 st.markdown("""
 <style>
 @import url('https://googleapis.com');
-* { font-family: 'Cairo', sans-serif !important; direction: rtl; text-align: right; }
-.stApp { background: radial-gradient(circle at top, #1e1338 0%, #09090f 100%); color: #ffffff; }
+html, body, [class*="css"] { font-family: 'Cairo', sans-serif; }
+.stApp { background: radial-gradient(circle at top, #1e1338 0%, #09090f 100%); color: #ffffff; direction: rtl; text-align: right; }
 .stat-card {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -32,7 +32,7 @@ st.markdown("""
 div.stButton > button {
     width: 100%; border-radius: 12px;
     background: linear-gradient(90deg, #7c3aed 0%, #9333ea 100%);
-    color: white; font-weight: 700; border: none; padding: 12px; font-size: 16px;
+    color: white; font-weight: 700; border: none; padding: 14px; font-size: 16px; margin-top: 10px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -42,9 +42,9 @@ ASSETS = {
     "العملات الرقمية": {
         "currency": "USDT", "is_cse": False,
         "items": {
-            "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "XRPUSDT": "XRP-USD",
-            "ADAUSDT": "ADA-USD", "XLMUSDT": "XLM-USD", "ZECUSDT": "ZEC-USD",
-            "HBARUSDT": "HBAR-USD", "LTCUSDT": "LTC-USD"
+            "XLMUSDT": "XLM-USD", "ZECUSDT": "ZEC-USD", "XRPUSDT": "XRP-USD",
+            "HBARUSDT": "HBAR-USD", "ADAUSDT": "ADA-USD", "LTCUSDT": "LTC-USD",
+            "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD"
         }
     },
     "الذهب": {
@@ -109,11 +109,12 @@ def run_strategy(ticker, is_cse, period_days, st_len, st_fac, risk_atr_len, sl_m
     df = calculate_supertrend(df, st_len, st_fac)
     df['risk_atr'] = calculate_atr(df, risk_atr_len)
     
-    # حساب نسبة العمولة (0.2% للسبوت ذهاباً وإياباً، و 0.1% للعقود الآجلة)
     fee_rate = 0.002 if (is_spot or is_cse) else 0.001
     position_size = capital * (1 if (is_spot or is_cse) else leverage)
     
-    trades_pnl, equity, trade_log = [], [capital], []
+    trades_pnl = []
+    equity = [capital]
+    trade_log = []
     in_trade, t_type, entry, sl, tp, entry_time = False, None, 0, 0, 0, ""
     
     for i in range(1, len(df)):
@@ -127,26 +128,30 @@ def run_strategy(ticker, is_cse, period_days, st_len, st_fac, risk_atr_len, sl_m
                 if row['Low'] <= sl:
                     pct_change = (sl - entry) / entry
                     pnl = (position_size * pct_change) - (position_size * fee_rate)
-                    trades_pnl.append(pnl); equity.append(equity[-1] + pnl)
+                    trades_pnl.append(pnl)
+                    equity.append(equity[-1] + pnl)
                     trade_log.append({"النوع": "شراء 🟢", "الوقت": entry_time, "الدخول": round(entry, 4), "الهدف": round(tp, 4), "ستوب لوس": round(sl, 4), "الحالة": "خسارة ❌", "الربح/الخسارة": round(pnl, 2)})
                     in_trade = False
                 elif row['High'] >= tp:
                     pct_change = (tp - entry) / entry
                     pnl = (position_size * pct_change) - (position_size * fee_rate)
-                    trades_pnl.append(pnl); equity.append(equity[-1] + pnl)
+                    trades_pnl.append(pnl)
+                    equity.append(equity[-1] + pnl)
                     trade_log.append({"النوع": "شراء 🟢", "الوقت": entry_time, "الدخول": round(entry, 4), "الهدف": round(tp, 4), "ستوب لوس": round(sl, 4), "الحالة": "ربح ✅", "الربح/الخسارة": round(pnl, 2)})
                     in_trade = False
             elif t_type == "SELL":
                 if row['High'] >= sl:
                     pct_change = (entry - sl) / entry
                     pnl = (position_size * pct_change) - (position_size * fee_rate)
-                    trades_pnl.append(pnl); equity.append(equity[-1] + pnl)
+                    trades_pnl.append(pnl)
+                    equity.append(equity[-1] + pnl)
                     trade_log.append({"النوع": "بيع 🔴", "الوقت": entry_time, "الدخول": round(entry, 4), "الهدف": round(tp, 4), "ستوب لوس": round(sl, 4), "الحالة": "خسارة ❌", "الربح/الخسارة": round(pnl, 2)})
                     in_trade = False
                 elif row['Low'] <= tp:
                     pct_change = (entry - tp) / entry
                     pnl = (position_size * pct_change) - (position_size * fee_rate)
-                    trades_pnl.append(pnl); equity.append(equity[-1] + pnl)
+                    trades_pnl.append(pnl)
+                    equity.append(equity[-1] + pnl)
                     trade_log.append({"النوع": "بيع 🔴", "الوقت": entry_time, "الدخول": round(entry, 4), "الهدف": round(tp, 4), "ستوب لوس": round(sl, 4), "الحالة": "ربح ✅", "الربح/الخسارة": round(pnl, 2)})
                     in_trade = False
                     
@@ -160,7 +165,6 @@ def run_strategy(ticker, is_cse, period_days, st_len, st_fac, risk_atr_len, sl_m
                 dist = float(row['risk_atr']) * sl_mult
                 sl, tp, t_type, entry_time, in_trade = entry + dist, entry - (dist * rr_ratio), "SELL", current_time, True
 
-    # استخراج آخر إشارة نشطة (إن وجدت) وحالة السوق الحالية
     last_row = df.iloc[-1]
     current_price = round(float(last_row['Close']), 4)
     current_trend = "صاعد 🟢" if last_row['st_up'] else "هابط 🔴"
@@ -194,7 +198,6 @@ ticker = ASSETS[cat_choice]["items"][asset_name]
 currency = ASSETS[cat_choice]["currency"]
 is_cse = ASSETS[cat_choice]["is_cse"]
 
-# إعدادات رأس المال والرافعة (سبوت أو فيوتشر)
 st.markdown("##### 💰 إدارة المحفظة ونوع التداول")
 m1, m2, m3 = st.columns(3)
 capital = m1.number_input(f"رأس المال ({currency})", value=100.0, min_value=10.0, step=50.0)
@@ -202,7 +205,9 @@ trade_mode = m2.selectbox("نوع التداول", ["سبوت (Spot)", "عقود
 is_spot = True if ("سبوت" in trade_mode or is_cse) else False
 leverage = m3.number_input("الرافعة المالية", value=1 if is_spot else 5, min_value=1, max_value=50, disabled=is_spot)
 
-# إعدادات المؤشر وإدارة المخاطر من الصورتين
-with st.expander("⚙️ إعدادات المؤشر وإدارة المخاطر (Supertrend & ATR/RR)", expanded=False):
+with st.expander("⚙️ إعدادات المؤشر وإدارة المخاطر", expanded=False):
     c1, c2 = st.columns(2)
     st_len = c1.number_input("ATR Length (Supertrend)", value=10, min_value=1)
+    st_fac = c2.number_input("Factor (Supertrend)", value=1.0, min_value=0.1, step=0.5)
+    c3, c4, c5 = st.columns(3)
+    risk_atr = c3.number_input("ATR Length (Risk)", value=14, min_value=1)
