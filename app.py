@@ -15,7 +15,7 @@ st.set_page_config(page_title="ماسح AI الشامل: كريبتو، ذهب،
 MOROCCO_TZ = ZoneInfo("Africa/Casablanca")
 now_ma = datetime.now(MOROCCO_TZ)
 
-# التحقق من حالة جلسة بورصة الدار البيضاء (الإثنين=0 إلى الجمعة=4، من 09:30 إلى 15:30 بتوقيت المغرب)
+# التحقق من حالة جلسة بورصة الدار البيضاء (من الإثنين إلى الجمعة، 09:30 إلى 15:30 بتوقيت المغرب)
 is_weekday = now_ma.weekday() < 5
 market_open_time = now_ma.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close_time = now_ma.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -23,7 +23,6 @@ is_casa_open = is_weekday and (market_open_time <= now_ma <= market_close_time)
 
 st.title("🤖 ماسح الذكاء الاصطناعي الشامل للتوصيات")
 
-# شريط الحالة الزمنية المباشر بتوقيت المغرب
 st.info(
     f"🇲🇦 التوقيت الحالي في المغرب: **{now_ma.strftime('%Y-%m-%d %H:%M')}** | "
     f"بورصة الدار البيضاء: **{'🟢 مفتوحة (يتم التحليل على آخر إغلاق مكتمل)' if is_casa_open else '🔴 مغلقة (تحليل على الإغلاق الرسمي)'}**"
@@ -58,7 +57,6 @@ CASABLANCA_STOCKS = [
     ("CSR", "كوسومار (CSR)", "MAD")
 ]
 
-# دالة جلب بيانات الكريبتو والذهب (4H) وتحويل توقيتها للمغرب
 @st.cache_data(ttl=600)
 def fetch_crypto_gold(symbol, timeframe='4h', limit=720):
     exchange_ids = ['kraken', 'gate', 'kucoin', 'okx', 'coinbase']
@@ -76,20 +74,18 @@ def fetch_crypto_gold(symbol, timeframe='4h', limit=720):
             continue
     return None, None
 
-# دالة جلب بيانات أسهم بورصة الدار البيضاء مجاناً (1D) بتوقيت المغرب
 @st.cache_data(ttl=1800)
 def fetch_casablanca_stock(ticker, market_is_open):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     suffixes = ['.CS', '.PA'] if ticker == 'IAM' else ['.CS']
-    
     for suf in suffixes:
         try:
             hist_url = f"https://yahoo.com{ticker}{suf}?interval=1d&range=2y"
             hr = requests.get(hist_url, headers=headers, timeout=8)
             if hr.status_code == 200:
                 hjson = hr.json()
-                res = hjson['chart']['result']
-                quote = res['indicators']['quote']
+                res = hjson['chart']['result'][0]
+                quote = res['indicators']['quote'][0]
                 df = pd.DataFrame({
                     'timestamp': pd.to_datetime(res['timestamp'], unit='s', utc=True).dt.tz_convert(MOROCCO_TZ),
                     'open': quote['open'],
@@ -98,10 +94,7 @@ def fetch_casablanca_stock(ticker, market_is_open):
                     'close': quote['close'],
                     'volume': quote['volume']
                 }).dropna()
-                
                 if len(df) > 100:
-                    # إذا كانت البورصة المغربية مفتوحة الآن، نحذف شمعة اليوم غير المكتملة
-                    # لكي يبني النموذج توقعه على آخر إغلاق رسمي مكتمل فقط
                     last_candle_date = df['timestamp'].iloc[-1].date()
                     if market_is_open and last_candle_date == now_ma.date():
                         df = df.iloc[:-1]
@@ -109,8 +102,6 @@ def fetch_casablanca_stock(ticker, market_is_open):
         except Exception:
             continue
     return None, None
-
-# هندسة الميزات الفنية
 def add_features(df):
     df = df.copy()
     df['return_1'] = df['close'].pct_change(1)
@@ -137,7 +128,6 @@ def add_features(df):
     df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
     return df
 
-# تدريب النموذج وتوليد التوصية
 def run_ai_model(df, symbol, label, currency, is_stock=False):
     df = add_features(df)
     features = ['return_1', 'return_3', 'return_6', 'sma_10', 'sma_30', 'rsi', 'volatility']
@@ -167,9 +157,9 @@ def run_ai_model(df, symbol, label, currency, is_stock=False):
     preds = model.predict(X_test)
     hist_acc = accuracy_score(y_test, preds) * 100
     
-    probs = model.predict_proba(current_candle)
-    prob_down = float(probs) * 100
-    prob_up = float(probs) * 100
+    probs = model.predict_proba(current_candle)[0]
+    prob_down = float(probs[0]) * 100
+    prob_up = float(probs[1]) * 100
     
     if is_stock:
         direction = "شراء (BUY) 🟢" if prob_up >= 52 else "انتظار 🟡"
@@ -214,7 +204,7 @@ col1, col2 = st.columns(2)
 with col1:
     min_conf = st.slider("الحد الأدنى لنسبة الثقة (%):", 50, 75, 53)
 with col2:
-    top_n = st.selectbox("عدد التوصيات الأعلى تقييماً للعرض:",, index=1)
+    top_n = st.selectbox("عدد التوصيات الأعلى تقييماً للعرض:", [3, 5, 10], index=1)
 
 if st.button("🚀 ابدأ الفحص الذكي واستخرج أفضل التوصيات", use_container_width=True):
     tasks = []
@@ -243,3 +233,29 @@ if st.button("🚀 ابدأ الفحص الذكي واستخرج أفضل الت
                 
     progress_bar.empty()
     
+    if not results:
+        st.error("تعذر جلب البيانات في الوقت الحالي. يرجى المحاولة بعد قليل.")
+    else:
+        results_df = pd.DataFrame(results).sort_values(by=["التقييم العام", "نسبة الثقة (%)"], ascending=False)
+        actionable_df = results_df[
+            (results_df["نسبة الثقة (%)"] >= min_conf) & 
+            (~results_df["التوصية"].str.contains("انتظار"))
+        ].head(top_n)
+        
+        st.subheader(f"🏆 أقوى {len(actionable_df)} فرص تداول حسب تقييم الذكاء الاصطناعي")
+        
+        if actionable_df.empty:
+            st.warning(f"لا توجد فرص تتجاوز ثقة {min_conf}% حالياً. جرب خفض نسبة الثقة من الشريط أعلاه.")
+        else:
+            for _, row in actionable_df.iterrows():
+                with st.container(border=True):
+                    c1, c2, c3, c4, c5 = st.columns([1.8, 1.5, 1.2, 1.2, 1.2])
+                    c1.markdown(f"### {row['الأصل / الرمز']}\n`{row['السوق']}`\n🕒 `{row['آخر شمعة (توقيت المغرب)']}`")
+                    c2.markdown(f"**{row['التوصية']}**\nثقة: **{row['نسبة الثقة (%)']}%** | تقييم: **{row['التقييم العام']}**")
+                    c3.metric("سعر الدخول", row['سعر الدخول'])
+                    c4.metric("🎯 الهدف (TP)", row['الهدف (TP)'])
+                    c5.metric("🛑 وقف الخسارة (SL)", row['وقف الخسارة (SL)'])
+                    
+        st.divider()
+        st.subheader("📋 التقرير الكامل لجميع الأسواق المفحوصة")
+        st.dataframe(results_df, use_container_width=True, hide_index=True)
