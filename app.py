@@ -51,9 +51,7 @@ def apply_strategy_signals(df, strat_name):
         upper = sma + (2.2 * std)
         lower = sma - (2.2 * std)
         rsi = calculate_rsi(df['Close'], 14)
-        # دخول شراء عند كسر الحد السفلي للبولينجر مع تشبع RSI ثم الارتداد
         df['buy_sig'] = (df['Low'].shift(1) <= lower.shift(1)) & (rsi.shift(1) < 32) & (df['Close'] > lower)
-        # دخول بيع عند كسر الحد العلوي مع تشبع RSI ثم الارتداد
         df['sell_sig'] = (df['High'].shift(1) >= upper.shift(1)) & (rsi.shift(1) > 68) & (df['Close'] < upper)
     elif "MACD" in strat_name:
         ema12 = df['Close'].ewm(span=12, adjust=False).mean()
@@ -63,25 +61,30 @@ def apply_strategy_signals(df, strat_name):
         ema200 = df['Close'].ewm(span=200, adjust=False).mean()
         df['buy_sig'] = (macd > sig_line) & (macd.shift(1) <= sig_line.shift(1)) & (macd < 0) & (df['Close'] > ema200)
         df['sell_sig'] = (macd < sig_line) & (macd.shift(1) >= sig_line.shift(1)) & (macd > 0) & (df['Close'] < ema200)
-    else: # Chandelier Exit
+    else:
         atr = calculate_atr(df, 22)
         long_stop = df['High'].rolling(22).max() - (atr * 2.5)
         short_stop = df['Low'].rolling(22).min() + (atr * 2.5)
-        dir_list = * len(df)
+        dir_list = [1 for _ in range(len(df))]
         for i in range(1, len(df)):
-            if df['Close'].iloc[i] > short_stop.iloc[i-1]: dir_list[i] = 1
-            elif df['Close'].iloc[i] < long_stop.iloc[i-1]: dir_list[i] = -1
-            else: dir_list[i] = dir_list[i-1]
+            if df['Close'].iloc[i] > short_stop.iloc[i-1]:
+                dir_list[i] = 1
+            elif df['Close'].iloc[i] < long_stop.iloc[i-1]:
+                dir_list[i] = -1
+            else:
+                dir_list[i] = dir_list[i-1]
         s_dir = pd.Series(dir_list, index=df.index)
         df['buy_sig'] = (s_dir == 1) & (s_dir.shift(1) == -1)
         df['sell_sig'] = (s_dir == -1) & (s_dir.shift(1) == 1)
     return df
 def run_strategy(ticker, is_cse, period_days, strat_name, risk_atr_len, sl_mult, rr_ratio, capital, leverage, is_spot, use_session):
-    # جلب بيانات إطار 30 دقيقة (30m)
     df = yf.download(ticker, period=f"{period_days}d", interval="30m", progress=False)
-    if df.empty or len(df) < 30: return None
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-    if df.index.tz is None: df.index = df.index.tz_localize('UTC')
+    if df.empty or len(df) < 30:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    if df.index.tz is None:
+        df.index = df.index.tz_localize('UTC')
     df.index = df.index.tz_convert('Africa/Casablanca')
     
     df = apply_strategy_signals(df, strat_name)
@@ -96,9 +99,9 @@ def run_strategy(ticker, is_cse, period_days, strat_name, risk_atr_len, sl_mult,
         row = df.iloc[i]
         ts = df.index[i]
         c_time = ts.strftime("%Y-%m-%d %H:%M")
-        if pd.isna(row['risk_atr']): continue
+        if pd.isna(row['risk_atr']):
+            continue
         
-        # إدارة الصفقة المفتوحة في أي وقت
         if in_trade:
             if t_type == "BUY" and (row['Low'] <= sl or row['High'] >= tp):
                 exit_p = sl if row['Low'] <= sl else tp
@@ -109,7 +112,6 @@ def run_strategy(ticker, is_cse, period_days, strat_name, risk_atr_len, sl_mult,
                 trades_pnl.append((pos_size * ((entry - exit_p) / entry)) - (pos_size * fee_rate))
                 in_trade = False
                 
-        # التحقق من توقيت الدخول (08:30 إلى 20:00 بتوقيت المغرب، أو 09:30 إلى 15:30 للبورصة المغربية)
         in_session = True
         if is_cse:
             in_session = (ts.hour > 9 or (ts.hour == 9 and ts.minute >= 30)) and (ts.hour < 15 or (ts.hour == 15 and ts.minute <= 30))
