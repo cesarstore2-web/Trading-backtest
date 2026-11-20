@@ -221,7 +221,30 @@ def run_strategy(ticker, is_cse, timeframe, period_days, st_len, st_fac, use_ema
         if is_cse:
             in_session = (ts.hour > 9 or (ts.hour == 9 and ts.minute >= 30)) and (ts.hour < 15 or (ts.hour == 15 and ts.minute <= 30))
         elif use_session:
-# --- واجهة المستخدم وعرض النتائج ---
+    total_trades = len(trades_pnl)
+    winning_trades = len([p for p in trades_pnl if p > 0])
+    losing_trades = len([p for p in trades_pnl if p <= 0])
+    net_profit = sum(trades_pnl)
+    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
+
+    return {
+        "total_trades": total_trades,
+        "winning_trades": winning_trades,
+        "losing_trades": losing_trades,
+        "net_profit": net_profit,
+        "win_rate": win_rate,
+        "in_trade": in_trade,
+        "t_type": t_type,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "entry_time": entry_time,
+        "history": trades_history
+    }
+
+# --- واجهة المستخدم ---
 st.title("⚡ نظام Supertrend Multi-TP & EMA 200")
 
 col1, col2 = st.columns(2)
