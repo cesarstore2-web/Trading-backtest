@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="مُقيّم الاستراتيجيات", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="مُقيّم الاستراتيجيات الاحترافي", page_icon="⚡", layout="centered")
 
 st.markdown("""
 <style>
@@ -35,28 +35,67 @@ def calculate_atr(df, length):
     lc = np.abs(df['Low'] - df['Close'].shift())
     return pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(length).mean()
 
-def calculate_supertrend(df, atr_len=10, factor=1.0):
-    atr = calculate_atr(df, atr_len)
-    hl2 = (df['High'] + df['Low']) / 2
-    upper, lower = hl2 + (factor * atr), hl2 - (factor * atr)
-    uptrend = [True] * len(df)
-    for i in range(1, len(df)):
-        if df['Close'].iloc[i] > upper.iloc[i-1]: uptrend[i] = True
-        elif df['Close'].iloc[i] < lower.iloc[i-1]: uptrend[i] = False
-        else:
-            uptrend[i] = uptrend[i-1]
-            if uptrend[i] and lower.iloc[i] < lower.iloc[i-1]: lower.iloc[i] = lower.iloc[i-1]
-            if not uptrend[i] and upper.iloc[i] > upper.iloc[i-1]: upper.iloc[i] = upper.iloc[i-1]
-    df['st_up'] = uptrend
+def apply_indicator(df, ind_name, length, factor):
+    if ind_name == "Chandelier Exit (مخرج الثريا)":
+        atr = calculate_atr(df, length)
+        long_stop = df['High'].rolling(length).max() - (atr * factor)
+        short_stop = df['Low'].rolling(length).min() + (atr * factor)
+        dir_list = [1] * len(df)
+        for i in range(1, len(df)):
+            if df['Close'].iloc[i] > short_stop.iloc[i-1]: dir_list[i] = 1
+            elif df['Close'].iloc[i] < long_stop.iloc[i-1]: dir_list[i] = -1
+            else: dir_list[i] = dir_list[i-1]
+        df['sig_up'] = [d == 1 for d in dir_list]
+        df['allow_trade'] = True
+    elif ind_name == "SSL Channel + ADX (فلتر التذبذب)":
+        sma_high = df['High'].rolling(length).mean()
+        sma_low = df['Low'].rolling(length).mean()
+        hlv = [1] * len(df)
+        for i in range(1, len(df)):
+            if df['Close'].iloc[i] > sma_high.iloc[i]: hlv[i] = 1
+            elif df['Close'].iloc[i] < sma_low.iloc[i]: hlv[i] = -1
+            else: hlv[i] = hlv[i-1]
+        df['sig_up'] = [h == 1 for h in hlv]
+        # حساب قوة الزخم ADX لمنع الدخول وقت التذبذب
+        up_move = df['High'].diff()
+        down_move = -df['Low'].diff()
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
+        atr14 = calculate_atr(df, 14)
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(14).mean() / atr14)
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(14).mean() / atr14)
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+        df['adx'] = dx.rolling(14).mean()
+        df['allow_trade'] = df['adx'] > 20
+    elif ind_name == "EMA 200 + EMA 9/21 (تتبع الحيتان)":
+        ema9 = df['Close'].ewm(span=9, adjust=False).mean()
+        ema21 = df['Close'].ewm(span=21, adjust=False).mean()
+        ema200 = df['Close'].ewm(span=200, adjust=False).mean()
+        df['sig_up'] = ema9 > ema21
+        df['allow_trade'] = ((ema9 > ema21) & (df['Close'] > ema200)) | ((ema9 < ema21) & (df['Close'] < ema200))
+    else: # Supertrend
+        atr = calculate_atr(df, length)
+        hl2 = (df['High'] + df['Low']) / 2
+        upper, lower = hl2 + (factor * atr), hl2 - (factor * atr)
+        uptrend = [True] * len(df)
+        for i in range(1, len(df)):
+            if df['Close'].iloc[i] > upper.iloc[i-1]: uptrend[i] = True
+            elif df['Close'].iloc[i] < lower.iloc[i-1]: uptrend[i] = False
+            else:
+                uptrend[i] = uptrend[i-1]
+                if uptrend[i] and lower.iloc[i] < lower.iloc[i-1]: lower.iloc[i] = lower.iloc[i-1]
+                if not uptrend[i] and upper.iloc[i] > upper.iloc[i-1]: upper.iloc[i] = upper.iloc[i-1]
+        df['sig_up'] = uptrend
+        df['allow_trade'] = True
     return df
-def run_strategy(ticker, is_cse, period_days, st_len, st_fac, risk_atr_len, sl_mult, rr_ratio, capital, leverage, is_spot):
+def run_strategy(ticker, is_cse, period_days, ind_name, st_len, st_fac, risk_atr_len, sl_mult, rr_ratio, capital, leverage, is_spot):
     df = yf.download(ticker, period=f"{period_days}d", interval="15m", progress=False)
     if df.empty or len(df) < 30: return None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     if df.index.tz is None: df.index = df.index.tz_localize('UTC')
     df.index = df.index.tz_convert('Africa/Casablanca')
     if is_cse: df = df.between_time('09:30', '15:30')
-    df = calculate_supertrend(df, st_len, st_fac)
+    df = apply_indicator(df, ind_name, st_len, st_fac)
     df['risk_atr'] = calculate_atr(df, risk_atr_len)
     fee_rate = 0.002 if (is_spot or is_cse) else 0.001
     pos_size = capital * (1 if (is_spot or is_cse) else leverage)
@@ -75,18 +114,26 @@ def run_strategy(ticker, is_cse, period_days, st_len, st_fac, risk_atr_len, sl_m
                 exit_p = sl if row['High'] >= sl else tp
                 trades_pnl.append((pos_size * ((entry - exit_p) / entry)) - (pos_size * fee_rate))
                 in_trade = False
-        if not in_trade:
-            if row['st_up'] and not prev['st_up']:
+        if not in_trade and row['allow_trade']:
+            if row['sig_up'] and not prev['sig_up']:
                 entry, dist = float(row['Close']), float(row['risk_atr']) * sl_mult
                 sl, tp, t_type, entry_time, in_trade = entry - dist, entry + (dist * rr_ratio), "BUY", c_time, True
-            elif not (is_spot or is_cse) and not row['st_up'] and prev['st_up']:
+            elif not (is_spot or is_cse) and not row['sig_up'] and prev['sig_up']:
                 entry, dist = float(row['Close']), float(row['risk_atr']) * sl_mult
                 sl, tp, t_type, entry_time, in_trade = entry + dist, entry - (dist * rr_ratio), "SELL", c_time, True
     last_row = df.iloc[-1]
     sig = {"type": "شراء 🟢" if t_type == "BUY" else "بيع 🔴", "time": entry_time, "entry": round(entry, 4), "tp": round(tp, 4), "sl": round(sl, 4), "current": round(float(last_row['Close']), 4)} if in_trade else None
-    return trades_pnl, sig, ("صاعد 🟢" if last_row['st_up'] else "هابط 🔴"), round(float(last_row['Close']), 4)
+    return trades_pnl, sig, ("صاعد 🟢" if last_row['sig_up'] else "هابط 🔴"), round(float(last_row['Close']), 4)
 
-st.markdown("<h2 style='text-align:center;'>⚡ مُقيّم الاستراتيجيات</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align:center;'>⚡ مُقيّم الاستراتيجيات الاحترافي</h2>", unsafe_allow_html=True)
+
+ind_choice = st.selectbox("🔥 اختر المؤشر (قارن النتائج بينها)", [
+    "Chandelier Exit (مخرج الثريا)",
+    "SSL Channel + ADX (فلتر التذبذب)",
+    "EMA 200 + EMA 9/21 (تتبع الحيتان)",
+    "Supertrend (الأصلي)"
+])
+
 col_t, col_c = st.columns(2)
 tf_choice = col_t.selectbox("فترة الاختبار", ["يومي (5 أيام)", "أسبوعي (14 يوم)", "شهري (30 يوم)", "أقصى مدة (60 يوم)"], index=2)
 days_map = {"يومي (5 أيام)": 5, "أسبوعي (14 يوم)": 14, "شهري (30 يوم)": 30, "أقصى مدة (60 يوم)": 60}
@@ -103,16 +150,18 @@ leverage = m3.number_input("الرافعة المالية", value=1 if is_spot e
 
 st.markdown("##### ⚙️ إعدادات المؤشر وإدارة المخاطر (SL / TP)")
 c1, c2 = st.columns(2)
-st_len = c1.number_input("ATR Length (Supertrend)", value=10, min_value=1)
-st_fac = c2.number_input("Factor (Supertrend)", value=1.0, min_value=0.1, step=0.5)
+default_len = 22 if "Chandelier" in ind_choice else 10
+default_fac = 2.0 if "Chandelier" in ind_choice else 1.0
+st_len = c1.number_input("طول المؤشر (Length)", value=default_len, min_value=1)
+st_fac = c2.number_input("المُضاعِف (Multiplier)", value=default_fac, min_value=0.1, step=0.2)
 c3, c4, c5 = st.columns(3)
-risk_atr = c3.number_input("ATR Length (Risk)", value=14, min_value=1)
-sl_mult = c4.number_input("وقف الخسارة (ATR SL)", value=2.0, min_value=0.1, step=0.5)
+risk_atr = c3.number_input("ATR المخاطر", value=14, min_value=1)
+sl_mult = c4.number_input("وقف الخسارة (SL)", value=2.0, min_value=0.1, step=0.5)
 rr_ratio = c5.number_input("الهدف (1:X RR)", value=2.0, min_value=0.5, step=0.5)
 
 if st.button("🚀 تشغيل التقييم"):
-    with st.spinner("جاري التحليل..."):
-        res = run_strategy(ticker, is_cse, days_map[tf_choice], st_len, st_fac, risk_atr, sl_mult, rr_ratio, capital, leverage, is_spot)
+    with st.spinner("جاري التحليل ومقارنة الصفقات..."):
+        res = run_strategy(ticker, is_cse, days_map[tf_choice], ind_choice, st_len, st_fac, risk_atr, sl_mult, rr_ratio, capital, leverage, is_spot)
     if res is None:
         st.warning("⚠️ بيانات 15 دقيقة غير متوفرة حالياً لهذا الرمز.")
     else:
