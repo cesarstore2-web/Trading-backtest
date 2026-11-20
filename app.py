@@ -9,7 +9,7 @@ from sklearn.metrics import accuracy_score
 st.set_page_config(page_title="نموذج AI لتوقع شمعة 4 ساعات", layout="centered")
 st.title("🤖 نموذج الذكاء الاصطناعي وتوليد التوصيات (4H)")
 
-# القائمة الكاملة للعملات الرقمية والذهب (متوافقة مع Kraken و Gate.io)
+# القائمة الكاملة للعملات الرقمية والذهب
 ASSETS = {
     "العملات الرقمية": [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", 
@@ -24,16 +24,17 @@ ASSETS = {
 
 @st.cache_data(ttl=300)
 def fetch_data(symbol, timeframe='4h', limit=720):
-    # استخدام Kraken أولاً لأنها تعمل من خوادم أمريكا (Streamlit) بدون حظر
-    exchanges_to_try = [
-        ccxt.kraken({'enableRateLimit': True}),
-        ccxt.gateio({'enableRateLimit': True}),
-        ccxt.kucoin({'enableRateLimit': True})
-    ]
+    # أسماء المنصات المحدثة في مكتبة ccxt والمتوافقة مع خوادم Streamlit
+    exchange_ids = ['kraken', 'gate', 'kucoin', 'okx', 'coinbase']
     
     last_error = ""
-    for exchange in exchanges_to_try:
+    for ex_id in exchange_ids:
         try:
+            if not hasattr(ccxt, ex_id):
+                continue
+            exchange_class = getattr(ccxt, ex_id)
+            exchange = exchange_class({'enableRateLimit': True})
+            
             bars = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             if bars and len(bars) > 100:
                 df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -43,7 +44,7 @@ def fetch_data(symbol, timeframe='4h', limit=720):
             last_error = str(e)
             continue
             
-    raise Exception(f"تعذر جلب البيانات من جميع المنصات المتاحة. آخر خطأ: {last_error}")
+    raise Exception(f"تعذر جلب البيانات لهذا الزوج. آخر خطأ: {last_error}")
 
 def add_features(df):
     df = df.copy()
@@ -91,10 +92,10 @@ if st.button("تحليل السوق وإصدار التوصية 🚀"):
             preds = model.predict(X_test)
             acc = accuracy_score(y_test, preds)
             
-            # استخراج احتمالات التوقع بشكل صحيح
-            probs = model.predict_proba(current_candle)[0]
-            prob_down = float(probs[0])
-            prob_up = float(probs[1])
+            # استخراج احتمالات التوقع (الصف 0، العمود 0 للهبوط والعمود 1 للصعود)
+            probs = model.predict_proba(current_candle)
+            prob_down = float(probs[0][0])
+            prob_up = float(probs[0][1])
             
             st.divider()
             st.subheader(f"📊 بطاقة التوصية لـ {symbol} (فريم 4H)")
