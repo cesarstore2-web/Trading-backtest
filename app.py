@@ -6,30 +6,28 @@ import numpy as np
 st.set_page_config(page_title="Whale SMC AI ($)", page_icon="🐋", layout="wide", initial_sidebar_state="collapsed")
 
 ASSETS_MAP = {
-    "BTCUSDT": "BTC", "ETHUSDT": "ETH", "XRPUSDT": "XRP",
-    "XLMUSDT": "XLM", "ZECUSDT": "ZEC", "HBARUSDT": "HBAR",
-    "ADAUSDT": "ADA", "LTCUSDT": "LTC", "PAXGUSDT": "PAXG",
-    "XAUUSDT (الذهب)": "PAXG"
+    "BTCUSDT": "BTCUSDT", "ETHUSDT": "ETHUSDT", "XRPUSDT": "XRPUSDT",
+    "XLMUSDT": "XLMUSDT", "ZECUSDT": "ZECUSDT", "HBARUSDT": "HBARUSDT",
+    "ADAUSDT": "ADAUSDT", "LTCUSDT": "LTCUSDT", "PAXGUSDT": "PAXGUSDT",
+    "XAUUSDT (الذهب)": "PAXGUSDT"
 }
 
 @st.cache_data(ttl=600)
-def fetch_fast_data(symbol, interval="1h"):
-    """جلب البيانات بسرعة فائقة في أقل من ثانية بدون حظر"""
+def fetch_binance_vision(symbol, interval="1h", limit=1000):
+    """جلب البيانات من خادم Binance المفتوح للبيانات العامة (سريع جداً وبدون حظر)"""
     try:
-        if interval == "1h":
-            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=850"
-        elif interval == "4h":
-            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=850&aggregate=4"
-        elif interval == "15m":
-            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=2000&aggregate=15"
-        else:
-            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=2000&aggregate=5"
-            
-        r = requests.get(url, timeout=6).json()
-        if r.get("Response") != "Success": return pd.DataFrame()
-        df = pd.DataFrame(r["Data"]["Data"])
-        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
-        df.rename(columns={'volumefrom': 'volume'}, inplace=True)
+        url = f"https://binance.vision{symbol}&interval={interval}&limit={limit}"
+        res = requests.get(url, timeout=8)
+        if res.status_code != 200:
+            return pd.DataFrame()
+        data = res.json()
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'qav', 'trades', 'tbbav', 'tbqav', 'ignore'
+        ])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()
     except Exception:
         return pd.DataFrame()
@@ -130,13 +128,15 @@ with c_f1: view = st.selectbox("📅 سجل الأداء:", ["شهري (30 يو�
 with c_f2: asset = st.selectbox("🪙 الأصل المالي:", ["الكل"] + list(ASSETS_MAP.keys()))
 st.button("🔍 فحص والبحث عن أعلى 3 توصيات")
 
-cutoff = pd.Timestamp.now() - pd.Timedelta(days=30 if "شهري" in view else 7)
+cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = list(ASSETS_MAP.items()) if asset == "الكل" else [(asset, ASSETS_MAP[asset])]
 
 with st.spinner("جاري فحص السيولة..."):
     res_list = []
     for name, tk in targets:
-        df_res = run_smc(fetch_fast_data(tk, htf), fetch_fast_data(tk, ltf), rr, sh, eh, cap, rpct)
+        df_h = fetch_binance_vision(tk, htf, 850)
+        df_l = fetch_binance_vision(tk, ltf, 1000)
+        df_res = run_smc(df_h, df_l, rr, sh, eh, cap, rpct)
         if not df_res.empty:
             df_res['symbol'] = name
             res_list.append(df_res)
@@ -154,3 +154,4 @@ net = round(gp + gl, 2)
 c1, c2 = st.columns(2)
 c1.markdown(f"<div class='box' style='border-top:4px solid #8c52ff'><div>🎯 نسبة النجاح</div><h1 style='color:#b388ff'>{rate}%</h1></div>", unsafe_allow_html=True)
 c2.markdown(f"<div class='box' style='border-top:4px solid #00b0ff'><div>📊 الصفقات (مؤمّنة: {bes})</div><h1 style='color:#40c4ff'>{wins+losses+bes}</h1></div>", unsafe_allow_html=True)
+c3, c4 = st.columns(2)
