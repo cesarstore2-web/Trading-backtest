@@ -13,14 +13,19 @@ ASSETS_MAP = {
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v19_tf_1h_trend"
+CACHE_VER = "v20_trend_selector"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(ticker, interval="1h"):
     try:
-        # تكييف فترة التحميل لتناسب الفريمات الصغيرة (5m/15m/30m) والساعة
-        per = "30d" if interval in ["5m", "15m", "30m"] else "60d"
+        # تحديد مدة البيانات تلقائياً لضمان كفاية الشموع لحساب EMA 100 على كل فريم
+        if interval in ["5m", "15m", "30m"]:
+            per = "30d"
+        elif interval in ["1h", "4h"]:
+            per = "90d"
+        else:
+            per = "1y"
         df = yf.download(ticker, interval=interval, period=per, progress=False, auto_adjust=False)
         if df is None or df.empty:
             return pd.DataFrame()
@@ -87,24 +92,24 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
                 return "رابحة", reward_usd
     return "منتهية", 0.0
 @st.cache_data(ttl=300, show_spinner=False)
-def run_patterns_cached(_ver, df_trend_1h, df_tf, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=5.0, be_r=0.85, sl_atr=2.30, market_mode="عقود آجلة (Futures)", leverage=10):
-    if df_trend_1h.empty or df_tf.empty or len(df_trend_1h) < 105 or len(df_tf) < 60:
+def run_patterns_cached(_ver, df_trend, df_tf, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=5.0, be_r=0.85, sl_atr=2.30, market_mode="عقود آجلة (Futures)", leverage=10):
+    if df_trend.empty or df_tf.empty or len(df_trend) < 105 or len(df_tf) < 60:
         return pd.DataFrame()
 
-    # 1. حساب الاتجاه العام الافتراضي على فريم الساعة (EMA 100 مثبت في الخفاء)
-    df_1h = df_trend_1h.sort_values('timestamp').reset_index(drop=True).copy()
-    df_1h['ema100_1h'] = df_1h['close'].ewm(span=100, adjust=False).mean()
-    df_1h['trend_up'] = df_1h['close'] > df_1h['ema100_1h']
+    # 1. حساب الاتجاه العام على الفريم المختار (1h / 4h / 1d) عبر EMA 100
+    df_tr = df_trend.sort_values('timestamp').reset_index(drop=True).copy()
+    df_tr['ema100_tr'] = df_tr['close'].ewm(span=100, adjust=False).mean()
+    df_tr['trend_up'] = df_tr['close'] > df_tr['ema100_tr']
 
-    # 2. تجهيز الفريم المختار (5m / 15m / 30m / 1h) لاكتشاف النماذج والدخول
+    # 2. تجهيز فريم الدخول (5m / 15m / 30m / 1h)
     df_tf = df_tf.sort_values('timestamp').reset_index(drop=True).copy()
     df_tf['atr'] = np.maximum(df_tf['high'] - df_tf['low'], np.maximum(abs(df_tf['high'] - df_tf['close'].shift(1)), abs(df_tf['low'] - df_tf['close'].shift(1)))).rolling(14).mean()
     delta = df_tf['close'].diff()
     df_tf['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
     df_tf['vol_ma'] = df_tf['volume'].rolling(24).mean()
 
-    # ربط كل شمعة في الفريم المختار بحالة الاتجاه العام للساعة (1h)
-    df_tf = pd.merge_asof(df_tf, df_1h[['timestamp', 'trend_up']], on='timestamp', direction='backward')
+    # ربط كل شمعة في فريم الدخول بحالة الاتجاه العام
+    df_tf = pd.merge_asof(df_tf, df_tr[['timestamp', 'trend_up']], on='timestamp', direction='backward')
     df_tf['trend_up'] = df_tf['trend_up'].fillna(True)
 
     eff_lev = 1 if "Spot" in market_mode else leverage
@@ -182,20 +187,22 @@ with st.sidebar:
     max_age_hrs = st.slider("أقصى عمر للصفقة الحية (ساعات):", 6, 48, 24)
     max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
 
-st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (اتجاه عام 1H)</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (AI)</h2>", unsafe_allow_html=True)
 
-# --- الصف الأول: نوع التداول + الرافعة المالية + الفريم ---
-r1_c1, r1_c2, r1_c3 = st.columns(3)
+# --- الصف الأول: نوع التداول + الرافعة المالية + فريم الاتجاه العام + فريم الدخول ---
+r1_c1, r1_c2, r1_c3, r1_c4 = st.columns(4)
 with r1_c1:
     market_mode = st.selectbox("⚖️ نوع التداول:", ["عقود آجلة (Futures)", "سبوت (Spot)"])
 with r1_c2:
     if "Spot" in market_mode:
         leverage = 1
-        st.number_input("⚡ الرافعة المالية (Spot = 1x):", 1, 1, 1, disabled=True)
+        st.number_input("⚡ الرافعة (Spot = 1x):", 1, 1, 1, disabled=True)
     else:
-        leverage = st.number_input("⚡ الرافعة المالية (Leverage):", min_value=1, max_value=100, value=10, step=1)
+        leverage = st.number_input("⚡ الرافعة المالية:", min_value=1, max_value=100, value=10, step=1)
 with r1_c3:
-    tf_choice = st.selectbox("⏱️ الفريم (اتجاه عام 1H):", ["5m", "15m", "30m", "1h"], index=1)
+    trend_tf = st.selectbox("🧭 الاتجاه العام:", ["1h", "4h", "1d"], index=0)
+with r1_c4:
+    tf_choice = st.selectbox("⏱️ فريم الدخول:", ["5m", "15m", "30m", "1h"], index=1)
 
 # --- الصف الثاني: الفترة + الأصل + ATR + R:R ---
 r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
@@ -212,11 +219,11 @@ cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
 all_frames = []
 
-with st.spinner(f"جاري التحليل على فريم {tf_choice} (الاتجاه العام 1H | رافعة {leverage}x)..."):
+with st.spinner(f"جاري التحليل (اتجاه عام {trend_tf} | دخول {tf_choice} | رافعة {leverage}x)..."):
     for name, ticker in targets.items():
-        df_1h = fetch_data(ticker, "1h")
-        df_tf = df_1h if tf_choice == "1h" else fetch_data(ticker, tf_choice)
-        res = run_patterns_cached(CACHE_VER, df_1h, df_tf, rr, sh, eh, cap, rpct, 0.85, sl_atr, market_mode, leverage)
+        df_tr = fetch_data(ticker, trend_tf)
+        df_tf = df_tr if tf_choice == trend_tf else fetch_data(ticker, tf_choice)
+        res = run_patterns_cached(CACHE_VER, df_tr, df_tf, rr, sh, eh, cap, rpct, 0.85, sl_atr, market_mode, leverage)
         if not res.empty:
             res = res[res['ai'] >= min_ai].copy()
             if not res.empty:
@@ -241,5 +248,3 @@ pnl_color = "#00e676" if net_pnl >= 0 else "#ff1744"
 with m1: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>الربح الصافي ($)</div><h3 style='color:{pnl_color};margin:5px 0'>{net_pnl:+.2f}$</h3></div>", unsafe_allow_html=True)
 with m2: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>نسبة النجاح</div><h3 style='color:#00b0ff;margin:5px 0'>{win_rate}%</h3></div>", unsafe_allow_html=True)
 with m3: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات رابحة</div><h3 style='color:#00e676;margin:5px 0'>{wins}</h3></div>", unsafe_allow_html=True)
-with m4: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات خاسرة (مؤمّنة: {be_cnt})</div><h3 style='color:#ff1744;margin:5px 0'>{losses}</h3></div>", unsafe_allow_html=True)
-
