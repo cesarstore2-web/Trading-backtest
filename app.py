@@ -13,7 +13,7 @@ ASSETS_MAP = {
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v17_spot_futures"
+CACHE_VER = "v18_lev_active"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -85,25 +85,25 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
                 return "رابحة", reward_usd
     return "منتهية", 0.0
 @st.cache_data(ttl=300, show_spinner=False)
-def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.85, sl_atr=2.30, ema_len=200, market_mode="عقود آجلة (Futures)"):
-    start_idx = max(ema_len, 100)
-    if df_h.empty or df_l.empty or len(df_h) < start_idx + 5:
+def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.85, sl_atr=2.30, market_mode="عقود آجلة (Futures)", leverage=10):
+    if df_h.empty or df_l.empty or len(df_h) < 105:
         return pd.DataFrame()
 
     df_h = df_h.sort_values('timestamp').reset_index(drop=True).copy()
     df_l = df_l.sort_values('timestamp').reset_index(drop=True).copy()
     df_h['atr'] = np.maximum(df_h['high'] - df_h['low'], np.maximum(abs(df_h['high'] - df_h['close'].shift(1)), abs(df_h['low'] - df_h['close'].shift(1)))).rolling(14).mean()
-    df_h['ema_val'] = df_h['close'].ewm(span=ema_len, adjust=False).mean()
+    # EMA 100 مثبت في الخفاء
+    df_h['ema100'] = df_h['close'].ewm(span=100, adjust=False).mean()
     delta = df_h['close'].diff()
     df_h['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
     df_h['vol_ma'] = df_h['volume'].rolling(24).mean()
 
-    risk_usd, reward_usd = cap * (rpct / 100.0), cap * (rpct / 100.0) * rr
+    eff_lev = 1 if "Spot" in market_mode else leverage
+    allow_sell = ("Futures" in market_mode)
     htf_rec, ltf_rec, ts_arr = df_h.to_dict('records'), df_l.to_dict('records'), df_l['timestamp'].values
     last_ts, last_close, signals = pd.Timestamp(ts_arr[-1]), ltf_rec[-1]['close'], []
-    allow_sell = ("Futures" in market_mode)
 
-    for i in range(start_idx, len(htf_rec) - 1):
+    for i in range(100, len(htf_rec) - 1):
         row = htf_rec[i]
         if not (sh <= row['timestamp'].hour <= eh):
             continue
@@ -122,12 +122,19 @@ def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct
         b = int(np.searchsorted(ts_arr, end_ts.to_datetime64(), side='right'))
         ltf_win, live_ok = ltf_rec[a:b], end_ts > last_ts
 
-        if direction == "BUY" and row['close'] > row['ema_val'] and 35 < rsi < 66:
+        # هامش الدخول من رأس المال مضروباً في الرافعة المالية الفعلية
+        margin_usd = cap * (rpct / 100.0)
+        pos_usd = margin_usd * eff_lev
+
+        if direction == "BUY" and row['close'] > row['ema100'] and 35 < rsi < 66:
             sl = row['low'] - (atr * sl_atr)
             ent_c = next((r for r in ltf_win if r['close'] > row['high']), None)
             if ent_c:
                 entry = ent_c['close']
                 tp = entry + (entry - sl) * rr
+                sl_pct = max((entry - sl) / entry, 1e-6)
+                risk_usd = pos_usd * sl_pct
+                reward_usd = risk_usd * rr
                 st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
                 if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
                     st_res = "جارية"
@@ -136,12 +143,15 @@ def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct
                 tp = row['high'] + (row['high'] - sl) * rr
                 signals.append({'timestamp': row['timestamp'], 'type': 'شراء (BUY)', 'entry': round(row['high'], 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai, 'status': 'بانتظار الدخول', 'pnl': 0.0})
 
-        elif allow_sell and direction == "SELL" and row['close'] < row['ema_val'] and 34 < rsi < 65:
+        elif allow_sell and direction == "SELL" and row['close'] < row['ema100'] and 34 < rsi < 65:
             sl = row['high'] + (atr * sl_atr)
             ent_c = next((r for r in ltf_win if r['close'] < row['low']), None)
             if ent_c:
                 entry = ent_c['close']
                 tp = entry - (sl - entry) * rr
+                sl_pct = max((sl - entry) / entry, 1e-6)
+                risk_usd = pos_usd * sl_pct
+                reward_usd = risk_usd * rr
                 st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd, be_r)
                 if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
                     st_res = "جارية"
@@ -160,7 +170,7 @@ st.markdown("<style>.stApp{background:#09090d;color:#fff}.box{background:#15151f
 
 with st.sidebar:
     cap = st.number_input("رأس المال ($):", 100.0, 1000000.0, 1000.0, 100.0)
-    rpct = st.number_input("المخاطرة (%):", 0.5, 10.0, 1.0, 0.5)
+    rpct = st.number_input("نسبة الهامش لكل صفقة (%):", 0.5, 50.0, 5.0, 0.5)
     htf = st.selectbox("فريم النموذج (HTF):", ["1h", "4h"], index=0)
     ltf = st.selectbox("فريم التأكيد (LTF):", ["15m", "5m"], index=0)
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
@@ -170,20 +180,18 @@ with st.sidebar:
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (AI)</h2>", unsafe_allow_html=True)
 
-# --- الصف الأول من نوافذ التحكم: نوع السوق + الرافعة المالية + EMA ---
-r1_c1, r1_c2, r1_c3 = st.columns(3)
+# --- الصف الأول: نوع التداول + الرافعة المالية ---
+r1_c1, r1_c2 = st.columns(2)
 with r1_c1:
     market_mode = st.selectbox("⚖️ نوع التداول:", ["عقود آجلة (Futures)", "سبوت (Spot)"])
 with r1_c2:
     if "Spot" in market_mode:
         leverage = 1
-        st.number_input("⚡ الرافعة المالية:", 1, 1, 1, disabled=True)
+        st.number_input("⚡ الرافعة المالية (Spot = 1x):", 1, 1, 1, disabled=True)
     else:
-        leverage = st.number_input("⚡ الرافعة المالية (Leverage):", min_value=1, max_value=50, value=10, step=1)
-with r1_c3:
-    ema_len = st.selectbox("📈 مؤشر EMA:", [100, 200], index=1)
+        leverage = st.number_input("⚡ الرافعة المالية (Leverage):", min_value=1, max_value=100, value=10, step=1)
 
-# --- الصف الثاني من نوافذ التحكم: الفترة + الأصل + ATR + R:R ---
+# --- الصف الثاني: الفترة + الأصل + ATR + R:R ---
 r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
 with r2_c1: view = st.selectbox("📅 الفترة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
 with r2_c2: asset = st.selectbox("🪙 الأصل:", ["الكل"] + list(ASSETS_MAP.keys()))
@@ -198,9 +206,9 @@ cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
 all_frames = []
 
-with st.spinner(f"جاري التحليل ({market_mode} | رافعة {leverage}x | EMA {ema_len})..."):
+with st.spinner(f"جاري التحليل ({market_mode} | رافعة {leverage}x)..."):
     for name, ticker in targets.items():
-        res = run_patterns_cached(CACHE_VER, fetch_data(ticker, htf), fetch_data(ticker, ltf), rr, sh, eh, cap, rpct, 0.85, sl_atr, ema_len, market_mode)
+        res = run_patterns_cached(CACHE_VER, fetch_data(ticker, htf), fetch_data(ticker, ltf), rr, sh, eh, cap, rpct, 0.85, sl_atr, market_mode, leverage)
         if not res.empty:
             res = res[res['ai'] >= min_ai].copy()
             if not res.empty:
@@ -228,9 +236,4 @@ with m3: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات ر
 with m4: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات خاسرة (مؤمّنة: {be_cnt})</div><h3 style='color:#ff1744;margin:5px 0'>{losses}</h3></div>", unsafe_allow_html=True)
 
 st.markdown(f"<h4 style='direction:rtl;text-align:right;color:#00e5ff;margin-top:15px'>⚡ الصفقات الحية وبانتظار الدخول (أحدث {max_cards} فرص)</h4>", unsafe_allow_html=True)
-live_df = all_df[(all_df['status'].isin(LIVE_STATUSES)) & (all_df['timestamp'] >= now_utc - pd.Timedelta(hours=max_age_hrs))].copy() if not all_df.empty else pd.DataFrame()
 
-if live_df.empty:
-    st.markdown(f"<div class='box' style='color:#9e9eb8'>لا توجد نماذج نشطة خلال آخر {max_age_hrs} ساعة.</div>", unsafe_allow_html=True)
-else:
-    risk_usd = cap * (rpct / 100.0)
