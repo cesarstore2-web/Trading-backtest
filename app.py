@@ -1,38 +1,38 @@
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 
 st.set_page_config(page_title="Whale SMC AI ($)", page_icon="🐋", layout="wide", initial_sidebar_state="collapsed")
 
 ASSETS_MAP = {
-    "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "XRPUSDT": "XRP-USD",
-    "XLMUSDT": "XLM-USD", "ZECUSDT": "ZEC-USD", "HBARUSDT": "HBAR-USD",
-    "ADAUSDT": "ADA-USD", "LTCUSDT": "LTC-USD", "PAXGUSDT": "PAXG-USD",
-    "XAUUSDT (الذهب)": "GC=F"
+    "BTCUSDT": "BTC", "ETHUSDT": "ETH", "XRPUSDT": "XRP",
+    "XLMUSDT": "XLM", "ZECUSDT": "ZEC", "HBARUSDT": "HBAR",
+    "ADAUSDT": "ADA", "LTCUSDT": "LTC", "PAXGUSDT": "PAXG",
+    "XAUUSDT (الذهب)": "PAXG"
 }
 
-@st.cache_data(ttl=900)
-def fetch_all_market_data(tickers, interval="1h", period="45d"):
-    """سحب بيانات جميع العملات دفعة واحدة في ثانيتين"""
-    data_dict = {}
+@st.cache_data(ttl=600)
+def fetch_fast_data(symbol, interval="1h"):
+    """جلب البيانات بسرعة فائقة في أقل من ثانية بدون حظر"""
     try:
-        raw = yf.download(tickers, interval=interval, period=period, group_by='ticker', progress=False, threads=True)
-        if raw.empty: return data_dict
-        for tk in tickers:
-            try:
-                df = raw[tk].copy() if len(tickers) > 1 else raw.copy()
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                df = df.reset_index()
-                df.rename(columns={'Datetime': 'timestamp', 'Date': 'timestamp', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}, inplace=True)
-                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
-                clean = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].apply(lambda x: pd.to_numeric(x, errors='coerce') if x.name != 'timestamp' else x).dropna()
-                if not clean.empty: data_dict[tk] = clean
-            except Exception:
-                continue
+        if interval == "1h":
+            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=850"
+        elif interval == "4h":
+            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=850&aggregate=4"
+        elif interval == "15m":
+            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=2000&aggregate=15"
+        else:
+            url = f"https://cryptocompare.com{symbol}&tsym=USD&limit=2000&aggregate=5"
+            
+        r = requests.get(url, timeout=6).json()
+        if r.get("Response") != "Success": return pd.DataFrame()
+        df = pd.DataFrame(r["Data"]["Data"])
+        df['timestamp'] = pd.to_datetime(df['time'], unit='s')
+        df.rename(columns={'volumefrom': 'volume'}, inplace=True)
+        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']].dropna()
     except Exception:
-        pass
-    return data_dict
+        return pd.DataFrame()
 
 def detect_fvg(records, direction):
     for idx in range(2, min(len(records), 8)):
@@ -132,18 +132,14 @@ st.button("🔍 فحص والبحث عن أعلى 3 توصيات")
 
 cutoff = pd.Timestamp.now() - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = list(ASSETS_MAP.items()) if asset == "الكل" else [(asset, ASSETS_MAP[asset])]
-tickers_list = [t[1] for t in targets]
 
 with st.spinner("جاري فحص السيولة..."):
-    htf_data = fetch_all_market_data(tickers_list, htf, "60d")
-    ltf_data = fetch_all_market_data(tickers_list, ltf, "45d")
     res_list = []
     for name, tk in targets:
-        if tk in htf_data and tk in ltf_data:
-            df_res = run_smc(htf_data[tk], ltf_data[tk], rr, sh, eh, cap, rpct)
-            if not df_res.empty:
-                df_res['symbol'] = name
-                res_list.append(df_res)
+        df_res = run_smc(fetch_fast_data(tk, htf), fetch_fast_data(tk, ltf), rr, sh, eh, cap, rpct)
+        if not df_res.empty:
+            df_res['symbol'] = name
+            res_list.append(df_res)
     df_f = pd.concat(res_list, ignore_index=True) if res_list else pd.DataFrame()
     if not df_f.empty: df_f = df_f[(df_f['timestamp'] >= cutoff) & (df_f['ai'] >= min_ai)]
 
@@ -156,3 +152,5 @@ gl = round(df_f[df_f['status'] == 'خاسرة']['pnl'].sum(), 2) if not df_f.emp
 net = round(gp + gl, 2)
 
 c1, c2 = st.columns(2)
+c1.markdown(f"<div class='box' style='border-top:4px solid #8c52ff'><div>🎯 نسبة النجاح</div><h1 style='color:#b388ff'>{rate}%</h1></div>", unsafe_allow_html=True)
+c2.markdown(f"<div class='box' style='border-top:4px solid #00b0ff'><div>📊 الصفقات (مؤمّنة: {bes})</div><h1 style='color:#40c4ff'>{wins+losses+bes}</h1></div>", unsafe_allow_html=True)
