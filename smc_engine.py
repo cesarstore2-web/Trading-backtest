@@ -47,12 +47,13 @@ def compute_rsi(series, period=14):
 
 def detect_fvg(df_ltf, direction):
     """اكتشاف فجوة القيمة العادلة (Fair Value Gap) كدليل على دخول سيولة الحيتان"""
-    if len(df_ltf) < 4:
+    records = df_ltf.to_dict('records')
+    if len(records) < 4:
         return False, 0.0
     
-    for idx in range(2, len(df_ltf)):
-        c1 = df_ltf.iloc[idx - 2]
-        c3 = df_ltf.iloc[idx]
+    for idx in range(2, len(records)):
+        c1 = records[idx - 2]
+        c3 = records[idx]
         if direction == "BUY":
             if float(c3['low']) > float(c1['high']):
                 fvg_mid = (float(c3['low']) + float(c1['high'])) / 2.0
@@ -64,9 +65,7 @@ def detect_fvg(df_ltf, direction):
     return False, 0.0
 
 def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23, capital=1000.0, risk_pct=1.0):
-    """
-    محرك التداول المؤسسي المتكامل (Whale Footprint + SMC + FVG + AI)
-    """
+    """محرك التداول المؤسسي المتكامل (Whale Footprint + SMC + FVG + AI)"""
     if df_htf.empty or df_ltf.empty or len(df_htf) < 105:
         return pd.DataFrame()
 
@@ -84,13 +83,15 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
     risk_usd = capital * (risk_pct / 100.0)
     reward_usd = risk_usd * rr_ratio
 
+    htf_records = df_htf.to_dict('records')
     signals = []
-    for i in range(100, len(df_htf) - 2):
-        row = df_htf.iloc[i]
-        atr = float(row['atr']) if not pd.isna(row['atr']) else (float(row['high']) - float(row['low']))
+
+    for i in range(100, len(htf_records) - 2):
+        row = htf_records[i]
+        atr = float(row['atr']) if pd.notna(row['atr']) else (float(row['high']) - float(row['low']))
         ema100 = float(row['ema100'])
-        rsi = float(row['rsi']) if not pd.isna(row['rsi']) else 50.0
-        vol_ma = float(row['vol_ma30']) if not pd.isna(row['vol_ma30']) else 1.0
+        rsi = float(row['rsi']) if pd.notna(row['rsi']) else 50.0
+        vol_ma = float(row['vol_ma30']) if pd.notna(row['vol_ma30']) else 1.0
         
         if not (start_hour <= row['timestamp'].hour <= end_hour):
             continue
@@ -99,9 +100,9 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
         if vol_ratio < 1.1:
             continue
 
-        past_window = df_htf.iloc[i-20:i]
-        major_low = float(past_window['low'].min())
-        major_high = float(past_window['high'].max())
+        past_slice = htf_records[i-20:i]
+        major_low = min(float(x['low']) for x in past_slice)
+        major_high = max(float(x['high']) for x in past_slice)
 
         candle_range = float(row['high']) - float(row['low'])
         if candle_range == 0:
@@ -131,7 +132,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
             choch_break = ltf_window[ltf_window['close'] > sub_high]
 
             if not choch_break.empty:
-                choch_time = choch_break.head(1).squeeze()['timestamp']
+                choch_time = choch_break.to_dict('records')['timestamp']
                 has_fvg, fvg_level = detect_fvg(ltf_window.head(8), "BUY")
                 
                 entry_zone = fvg_level if has_fvg else ((sub_high + float(row['low'])) / 2.0)
@@ -140,7 +141,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
                 valid_entries = retest_window[(retest_window['low'] <= entry_zone) & (retest_window['close'] > retest_window['open'])]
 
                 if not valid_entries.empty:
-                    entry_candle = valid_entries.head(1).squeeze()
+                    entry_candle = valid_entries.to_dict('records')
                     entry = float(entry_candle['close'])
                     sl = float(row['low']) - (atr * 0.35)
                     risk = entry - sl
@@ -187,7 +188,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
             choch_break = ltf_window[ltf_window['close'] < sub_low]
 
             if not choch_break.empty:
-                choch_time = choch_break.head(1).squeeze()['timestamp']
+                choch_time = choch_break.to_dict('records')['timestamp']
                 has_fvg, fvg_level = detect_fvg(ltf_window.head(8), "SELL")
                 
                 entry_zone = fvg_level if has_fvg else ((sub_low + float(row['high'])) / 2.0)
@@ -196,7 +197,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
                 valid_entries = retest_window[(retest_window['high'] >= entry_zone) & (retest_window['close'] < retest_window['open'])]
 
                 if not valid_entries.empty:
-                    entry_candle = valid_entries.head(1).squeeze()
+                    entry_candle = valid_entries.to_dict('records')
                     entry = float(entry_candle['close'])
                     sl = float(row['high']) + (atr * 0.35)
                     risk = sl - entry
@@ -233,11 +234,7 @@ def compute_whale_ai_score(vol_ratio, wick_ratio, has_fvg):
 
 def evaluate_trade_pro(df_ltf, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
     """إدارة الصفقة باحترافية: تأمين الدخول عند 1:1 + جني الأرباح عند الهدف"""
-    future = df_ltf[df_ltf['timestamp'] > entry_time].head(280)
+    future_records = df_ltf[df_ltf['timestamp'] > entry_time].head(280).to_dict('records')
     current_sl = sl
     risk_dist = abs(entry - sl)
 
-    for _, bar in future.iterrows():
-        if direction == "BUY":
-            if float(bar['high']) >= entry + (risk_dist * 1.1):
-                current_sl = entry
