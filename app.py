@@ -285,9 +285,19 @@ else:
         card_cls = "rec sell" if is_sell else "rec"
         type_color = "#ff1744" if is_sell else "#00e676"
         status_bg = "#1b5e20" if r['status'] == "جارية" else "#e65100"
-        st.markdown(f"""
-        <div class='{card_cls}'>
-            <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>
-                <div>
-                    <strong style='font-size:18px'>{r['asset']}</strong>
-                    <span style='color:{type_color};font-weight:bold;margin-right:8px'>{r['type']}</span>
+        ts_str = r['timestamp'].strftime('%Y-%m-%d %H:%M')
+        html_card = (
+            f"<div class='{card_cls}'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>"
+            f"<div><strong style='font-size:18px'>{r['asset']}</strong> "
+            f"<span style='color:{type_color};font-weight:bold;margin-right:8px'>{r['type']}</span> "
+            f"<span class='badge'>AI: {r['ai']}%</span> <span class='badge'>{r['fvg']}</span></div>"
+            f"<span style='background:{status_bg};padding:4px 10px;border-radius:8px;font-size:12px;font-weight:bold'>{r['status']}</span></div>"
+            f"<div style='display:flex;justify-content:space-between;flex-wrap:wrap;font-size:15px;color:#e0e0f0'>"
+            f"<span>🎯 <b>الدخول:</b> {r['entry']}</span> "
+            f"<span>📍 <b>الآن:</b> {r['cur_price']}</span> "
+            f"<span>🛑 <b>الوقف:</b> {r['sl']}</span> "
+            f"<span>💰 <b>الهدف:</b> {r['tp']}</span> "
+            f"<span style='color:#9e9eb8;font-size:13px'>🕒 {ts_str} UTC</span></div></div>"
+        )
+        st.markdown(html_card, unsafe_allow_html=True)
