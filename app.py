@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from smc_engine import ASSETS_MAP, fetch_data, analyze_smc_strategy
 
 st.set_page_config(
@@ -81,18 +80,18 @@ with st.sidebar:
     st.markdown('<h3 class="rtl-text">💰 إدارة رأس المال والإعدادات</h3>', unsafe_allow_html=True)
     capital = st.number_input("رأس مال المحفظة ($ USD):", min_value=100.0, max_value=1000000.0, value=1000.0, step=100.0)
     risk_per_trade = st.number_input("نسبة المخاطرة لكل صفقة (%):", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
-    rr_ratio = st.slider("نسبة العائد للمخاطرة (Risk : Reward):", 1.5, 5.0, 2.5, 0.5)
+    rr_ratio = st.slider("نسبة العائد للمخاطرة (Risk : Reward):", 1.5, 5.0, 2.0, 0.5)
     
     st.markdown("---")
     htf = st.selectbox("فريم تحديد المناطق (HTF):", ["1h", "4h"], index=0)
     ltf = st.selectbox("فريم الدخول والتأكيد (LTF):", ["15m", "5m"], index=0)
     start_h, end_h = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 60, 95, 75)
+    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 60, 95, 70)
 
 st.markdown("""
 <div class="rtl-text">
     <h2 style="margin-bottom:0;">⚡ نظام التداول الذكي (SMC + AI)</h2>
-    <p style="color:#9e9eb8; font-size:0.95rem;">أقوى 3 توصيات مفلترة بالذكاء الاصطناعي بالدولار الأمريكي ($)</p>
+    <p style="color:#9e9eb8; font-size:0.95rem;">أقوى 3 توصيات متوافقة مع الاتجاه المؤسسي بالدولار الأمريكي ($)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -108,7 +107,7 @@ st.button("🔍 فحص والبحث عن أعلى 3 توصيات")
 days_back = 30 if "شهري" in timeframe_view else 7
 cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_back)
 
-with st.spinner("جاري فحص السيولة وانتقاء أقوى 3 توصيات بالذكاء الاصطناعي..."):
+with st.spinner("جاري فحص السيولة والاتجاه المؤسسي بالذكاء الاصطناعي..."):
     all_results = []
     targets = ASSETS_MAP.items() if selected_asset == "الكل" else [(selected_asset, ASSETS_MAP[selected_asset])]
     
@@ -131,18 +130,21 @@ with st.spinner("جاري فحص السيولة وانتقاء أقوى 3 توص
 
 # حساب الإحصائيات بالدولار الأمريكي
 if not df_filtered.empty:
-    completed = df_filtered[df_filtered['status'].isin(['رابحة', 'خاسرة'])]
-    total_count = len(completed)
-    win_count = len(completed[completed['status'] == 'رابحة'])
-    loss_count = len(completed[completed['status'] == 'خاسرة'])
+    # الصفقات المغلقة بربح أو خسارة (تُستثنى المؤمّنة عند حساب نسبة الخسارة)
+    win_count = len(df_filtered[df_filtered['status'] == 'رابحة'])
+    loss_count = len(df_filtered[df_filtered['status'] == 'خاسرة'])
+    be_count = len(df_filtered[df_filtered['status'].str.contains('مؤمّنة')])
+    total_count = win_count + loss_count + be_count
     
-    win_rate = round((win_count / total_count * 100), 2) if total_count > 0 else 0.0
-    gross_profit_usd = round(completed[completed['status'] == 'رابحة']['pnl_usd'].sum(), 2)
-    gross_loss_usd = round(completed[completed['status'] == 'خاسرة']['pnl_usd'].sum(), 2)
+    decisive_trades = win_count + loss_count
+    win_rate = round((win_count / decisive_trades * 100), 2) if decisive_trades > 0 else 0.0
+    
+    gross_profit_usd = round(df_filtered[df_filtered['status'] == 'رابحة']['pnl_usd'].sum(), 2)
+    gross_loss_usd = round(df_filtered[df_filtered['status'] == 'خاسرة']['pnl_usd'].sum(), 2)
     net_profit_usd = round(gross_profit_usd + gross_loss_usd, 2)
     net_percent = round((net_profit_usd / capital) * 100, 2)
 else:
-    total_count = win_count = loss_count = 0
+    total_count = win_count = loss_count = be_count = 0
     win_rate = gross_profit_usd = gross_loss_usd = net_profit_usd = net_percent = 0.0
 
 # عرض البطاقات الإحصائية
@@ -161,7 +163,7 @@ with c2:
     <div class="stat-box box-blue">
         <div class="stat-label">📊 الصفقات المكتملة</div>
         <div class="stat-number" style="color:#40c4ff;">{total_count}</div>
-        <div class="stat-sub">خلال {timeframe_view}</div>
+        <div class="stat-sub">منها {be_count} صفقة مؤمّنة على الدخول</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -197,7 +199,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# عرض أعلى 3 توصيات فقط بتصميم بطاقات احترافي
+# عرض أعلى 3 توصيات فقط
 if not df_filtered.empty:
     st.markdown('<h3 class="rtl-text">🏆 أعلى 3 توصيات تقييماً بالذكاء الاصطناعي</h3>', unsafe_allow_html=True)
     top_3 = df_filtered.sort_values(by=['ai_score', 'timestamp'], ascending=[False, False]).head(3)
@@ -207,7 +209,7 @@ if not df_filtered.empty:
         card_class = "rec-card rec-sell" if is_sell else "rec-card"
         type_color = "#ff5252" if is_sell else "#00e676"
         pnl_val = row['pnl_usd']
-        pnl_str = f"+${pnl_val}" if pnl_val > 0 else (f"-${abs(pnl_val)}" if pnl_val < 0 else "جارية الآن ⏳")
+        pnl_str = f"+${pnl_val}" if pnl_val > 0 else (f"-${abs(pnl_val)}" if pnl_val < 0 else ("$0.0 (مؤمّنة)" if "مؤمّنة" in row['status'] else "جارية الآن ⏳"))
         pnl_color = "#00e676" if pnl_val > 0 else ("#ff5252" if pnl_val < 0 else "#ffd740")
 
         st.markdown(f"""
@@ -227,8 +229,5 @@ if not df_filtered.empty:
             </div>
         </div>
         """, unsafe_allow_html=True)
-
-    st.markdown('<h4 class="rtl-text" style="margin-top:20px;">📈 منحنى نمو المحفظة بالدولار ($)</h4>', unsafe_allow_html=True)
-    df_chart = df_filtered.sort_values('timestamp').copy()
-    df_chart['cumulative_usd'] = capital + df_chart['pnl_usd'].cumsum()
-    
+else:
+    st.info("لا توجد توصيات مطابقة للشروط الصارمة حالياً. جرب اختيار (الكل) من قائمة العملات.")
