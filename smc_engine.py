@@ -132,7 +132,8 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
             choch_break = ltf_window[ltf_window['close'] > sub_high]
 
             if not choch_break.empty:
-                choch_time = choch_break.to_dict('records')['timestamp']
+                first_choch = next(iter(choch_break.to_dict('records')))
+                choch_time = first_choch['timestamp']
                 has_fvg, fvg_level = detect_fvg(ltf_window.head(8), "BUY")
                 
                 entry_zone = fvg_level if has_fvg else ((sub_high + float(row['low'])) / 2.0)
@@ -141,7 +142,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
                 valid_entries = retest_window[(retest_window['low'] <= entry_zone) & (retest_window['close'] > retest_window['open'])]
 
                 if not valid_entries.empty:
-                    entry_candle = valid_entries.to_dict('records')
+                    entry_candle = next(iter(valid_entries.to_dict('records')))
                     entry = float(entry_candle['close'])
                     sl = float(row['low']) - (atr * 0.35)
                     risk = entry - sl
@@ -188,7 +189,8 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
             choch_break = ltf_window[ltf_window['close'] < sub_low]
 
             if not choch_break.empty:
-                choch_time = choch_break.to_dict('records')['timestamp']
+                first_choch = next(iter(choch_break.to_dict('records')))
+                choch_time = first_choch['timestamp']
                 has_fvg, fvg_level = detect_fvg(ltf_window.head(8), "SELL")
                 
                 entry_zone = fvg_level if has_fvg else ((sub_low + float(row['high'])) / 2.0)
@@ -197,7 +199,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
                 valid_entries = retest_window[(retest_window['high'] >= entry_zone) & (retest_window['close'] < retest_window['open'])]
 
                 if not valid_entries.empty:
-                    entry_candle = valid_entries.to_dict('records')
+                    entry_candle = next(iter(valid_entries.to_dict('records')))
                     entry = float(entry_candle['close'])
                     sl = float(row['high']) + (atr * 0.35)
                     risk = sl - entry
@@ -234,7 +236,3 @@ def compute_whale_ai_score(vol_ratio, wick_ratio, has_fvg):
 
 def evaluate_trade_pro(df_ltf, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
     """إدارة الصفقة باحترافية: تأمين الدخول عند 1:1 + جني الأرباح عند الهدف"""
-    future_records = df_ltf[df_ltf['timestamp'] > entry_time].head(280).to_dict('records')
-    current_sl = sl
-    risk_dist = abs(entry - sl)
-
