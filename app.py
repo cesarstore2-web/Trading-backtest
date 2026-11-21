@@ -46,17 +46,17 @@ with st.expander("⚙️ إعدادات العملة والاستراتيجية"
     col1, col2 = st.columns(2)
     
     with col1:
-        coins = [
+        coins = tuple([
             "XLMUSDT", "ZECUSDT", "XRPUSDT", "BTCUSDT", "ETHUSDT",
             "ADAUSDT", "LTCUSDT", "HBARUSDT", "XAUUSDT", "PAXGUSDT"
-        ]
+        ])
         selected_coin = st.selectbox("اختر العملة:", coins)
 
         timeframes = {"5 دقائق": "5m", "15 دقيقة": "15m", "30 دقيقة": "30m", "1 ساعة": "1h"}
-        tf_label = st.selectbox("نافذة الفريمات:", list(timeframes.keys()))
+        tf_label = st.selectbox("نافذة الفريمات:", tuple(timeframes.keys()))
         tf_code = timeframes[tf_label]
 
-        ema_period = st.selectbox("نافذة EMA:",)
+        ema_period = st.selectbox("نافذة EMA:", (20, 50, 100, 200))
 
     with col2:
         # نافذة ATR SL (مضاعف وقف الخسارة)
@@ -94,7 +94,7 @@ if st.button("🔍 فحص العملة واستخراج التوصيات وال�
             m2.markdown(f"<div class='metric-card card-red'><div class='card-title'>منطقة العرض</div><div style='font-size:15px; font-weight:bold; color:#ff1744;'>{res['supply_bottom']:.4f} - {res['supply_top']:.4f}</div></div>", unsafe_allow_html=True)
             m3.markdown(f"<div class='metric-card'><div class='card-title'>EMA ({ema_period})</div><div style='font-size:16px; font-weight:bold;'>{res['ema']:.4f}</div></div>", unsafe_allow_html=True)
 
-            # --- سجل الأداء والنتائج (مطابق لتصميم صورتك الأولى) ---
+            # --- سجل الأداء والنتائج ---
             st.markdown("<h4 style='text-align: right; color: #b388ff; direction: rtl; margin-top:15px;'>📈 سجل الأداء والنتائج السابقة</h4>", unsafe_allow_html=True)
             st_data = res['stats']
             
