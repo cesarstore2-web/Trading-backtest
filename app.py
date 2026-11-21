@@ -15,13 +15,13 @@ st.set_page_config(page_title="ماسح AI الشامل: كريبتو، ذهب،
 MOROCCO_TZ = ZoneInfo("Africa/Casablanca")
 now_ma = datetime.now(MOROCCO_TZ)
 
-# التحقق من حالة جلسة بورصة الدار البيضاء (من الإثنين إلى الجمعة، 09:30 إلى 15:30 بتوقيت المغرب)
+# التحقق من حالة جلسة بورصة الدار البيضاء
 is_weekday = now_ma.weekday() < 5
 market_open_time = now_ma.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close_time = now_ma.replace(hour=15, minute=30, second=0, microsecond=0)
 is_casa_open = is_weekday and (market_open_time <= now_ma <= market_close_time)
 
-st.title("🤖 ماسح الذكاء الاصطناعي الشامل للتوصيات")
+st.title("🤖 ماسح الذكاء الاصطناعي الشامل للتوصيات (تقييم +75%)")
 
 st.info(
     f"🇲🇦 التوقيت الحالي في المغرب: **{now_ma.strftime('%Y-%m-%d %H:%M')}** | "
@@ -144,19 +144,50 @@ def run_ai_model(df, symbol, label, currency, is_stock=False):
     decimals = 2 if entry_price >= 10 else (4 if entry_price >= 0.1 else 5)
     
     train_df = df.iloc[:-1].dropna()
-    if len(train_df) < 80:
+    if len(train_df) < 100:
         return None
         
-    split = int(len(train_df) * 0.8)
-    X_train, y_train = train_df[features][:split], train_df['target'][:split]
-    X_test, y_test = train_df[features][split:], train_df['target'][split:]
+    # تحديد عدد شموع آخر شهر (22 يوم تداول للأسهم، 180 شمعة 4 ساعات للكريبتو)
+    month_candles = 22 if is_stock else 180
+    if len(train_df) <= month_candles + 50:
+        month_candles = int(len(train_df) * 0.2)
+        
+    X_train = train_df[features].iloc[:-month_candles]
+    y_train = train_df['target'].iloc[:-month_candles]
+    
+    X_month = train_df[features].iloc[-month_candles:]
+    y_month = train_df['target'].iloc[-month_candles:]
     
     model = LGBMClassifier(n_estimators=120, learning_rate=0.03, max_depth=4, random_state=42, verbose=-1)
     model.fit(X_train, y_train)
     
-    preds = model.predict(X_test)
-    hist_acc = accuracy_score(y_test, preds) * 100
+    # حساب الصفقات الناجحة والفاشلة لآخر شهر
+    month_preds = model.predict(X_month)
+    month_probs = model.predict_proba(X_month)
     
+    wins = 0
+    losses = 0
+    for i in range(len(month_preds)):
+        pred = month_preds[i]
+        actual = y_month.iloc[i]
+        prob_up_m = month_probs[i][1] * 100
+        
+        if is_stock:
+            if prob_up_m >= 52:
+                if actual == 1:
+                    wins += 1
+                else:
+                    losses += 1
+        else:
+            if pred == actual:
+                wins += 1
+            else:
+                losses += 1
+                
+    total_month_trades = wins + losses
+    hist_acc = (wins / total_month_trades * 100) if total_month_trades > 0 else (accuracy_score(y_month, month_preds) * 100)
+    
+    # التنبؤ بالشمعة القادمة
     probs = model.predict_proba(current_candle)[0]
     prob_down = float(probs[0]) * 100
     prob_up = float(probs[1]) * 100
@@ -184,13 +215,14 @@ def run_ai_model(df, symbol, label, currency, is_stock=False):
         "الأصل / الرمز": label if is_stock else symbol,
         "السوق": "بورصة الدار البيضاء (1D)" if is_stock else f"{label} (4H)",
         "التوصية": direction,
+        "التقييم العام (%)": overall_score,
         "نسبة الثقة (%)": round(confidence, 1),
-        "دقة النموذج (%)": round(hist_acc, 1),
-        "التقييم العام": overall_score,
+        "نجاح الشهر (%)": round(hist_acc, 1),
+        "صفقات الشهر (ناجحة ✅ / فاشلة ❌)": f"✅ {wins}  |  ❌ {losses}",
         "سعر الدخول": f"{round(entry_price, decimals)} {currency}",
         "الهدف (TP)": f"{take_profit} {currency}",
         "وقف الخسارة (SL)": f"{stop_loss} {currency}",
-        "آخر شمعة (توقيت المغرب)": last_time_ma
+        "آخر شمعة (المغرب)": last_time_ma
     }
 
 # --- واجهة المستخدم ---
@@ -200,62 +232,44 @@ market_choice = st.radio(
     horizontal=True
 )
 
-col1, col2 = st.columns(2)
-with col1:
-    min_conf = st.slider("الحد الأدنى لنسبة الثقة (%):", 50, 75, 53)
-with col2:
-    top_n = st.selectbox("عدد التوصيات الأعلى تقييماً للعرض:", [3, 5, 10], index=1)
+st.caption("🔒 الفلتر مفعّل تلقائياً: يتم عرض الفرص ذات **التقييم العام فوق 75%** فقط.")
 
-if st.button("🚀 ابدأ الفحص الذكي واستخرج أفضل التوصيات", use_container_width=True):
-    tasks = []
-    if "الكل" in market_choice or "العملات" in market_choice:
-        for sym, cat, cur in CRYPTO_GOLD_ASSETS:
-            tasks.append(("crypto", sym, cat, cur))
-    if "الكل" in market_choice or "الدار البيضاء" in market_choice:
-        for tick, name, cur in CASABLANCA_STOCKS:
-            tasks.append(("stock", tick, name, cur))
-            
+if st.button("🚀 بدء الفحص بالذكاء الاصطناعي", type="primary"):
     results = []
-    progress_bar = st.progress(0, text="جاري تشغيل نماذج الذكاء الاصطناعي في الخلفية...")
+    tasks = []
     
-    for idx, (m_type, sym, label, cur) in enumerate(tasks):
-        progress_bar.progress((idx + 1) / len(tasks), text=f"جاري تحليل {label}...")
-        if m_type == "crypto":
-            df, _ = fetch_crypto_gold(sym)
-            if df is not None:
-                res = run_ai_model(df, sym, label, cur, is_stock=False)
-                if res: results.append(res)
-        else:
+    if "الكل" in market_choice or "العملات" in market_choice:
+        for sym, lbl, curr in CRYPTO_GOLD_ASSETS:
+            tasks.append((sym, lbl, curr, False))
+            
+    if "الكل" in market_choice or "الدار البيضاء" in market_choice:
+        for sym, lbl, curr in CASABLANCA_STOCKS:
+            tasks.append((sym, lbl, curr, True))
+            
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for idx, (sym, lbl, curr, is_stock) in enumerate(tasks):
+        status_text.text(f"⏳ جاري تحليل {lbl if is_stock else sym}...")
+        
+        if is_stock:
             df, _ = fetch_casablanca_stock(sym, is_casa_open)
-            if df is not None:
-                res = run_ai_model(df, sym, label, cur, is_stock=True)
-                if res: results.append(res)
+        else:
+            df, _ = fetch_crypto_gold(sym)
+            
+        if df is not None:
+            res = run_ai_model(df, sym, lbl, curr, is_stock=is_stock)
+            if res and res["التقييم العام (%)"] > 75.0:
+                results.append(res)
                 
+        progress_bar.progress((idx + 1) / len(tasks))
+        
+    status_text.empty()
     progress_bar.empty()
     
-    if not results:
-        st.error("تعذر جلب البيانات في الوقت الحالي. يرجى المحاولة بعد قليل.")
+    if results:
+        res_df = pd.DataFrame(results).sort_values(by="التقييم العام (%)", ascending=False)
+        st.success(f"✅ تم العثور على {len(res_df)} فرصة قوية بتقييم أعلى من 75%:")
+        st.dataframe(res_df, use_container_width=True, hide_index=True)
     else:
-        results_df = pd.DataFrame(results).sort_values(by=["التقييم العام", "نسبة الثقة (%)"], ascending=False)
-        actionable_df = results_df[
-            (results_df["نسبة الثقة (%)"] >= min_conf) & 
-            (~results_df["التوصية"].str.contains("انتظار"))
-        ].head(top_n)
-        
-        st.subheader(f"🏆 أقوى {len(actionable_df)} فرص تداول حسب تقييم الذكاء الاصطناعي")
-        
-        if actionable_df.empty:
-            st.warning(f"لا توجد فرص تتجاوز ثقة {min_conf}% حالياً. جرب خفض نسبة الثقة من الشريط أعلاه.")
-        else:
-            for _, row in actionable_df.iterrows():
-                with st.container(border=True):
-                    c1, c2, c3, c4, c5 = st.columns([1.8, 1.5, 1.2, 1.2, 1.2])
-                    c1.markdown(f"### {row['الأصل / الرمز']}\n`{row['السوق']}`\n🕒 `{row['آخر شمعة (توقيت المغرب)']}`")
-                    c2.markdown(f"**{row['التوصية']}**\nثقة: **{row['نسبة الثقة (%)']}%** | تقييم: **{row['التقييم العام']}**")
-                    c3.metric("سعر الدخول", row['سعر الدخول'])
-                    c4.metric("🎯 الهدف (TP)", row['الهدف (TP)'])
-                    c5.metric("🛑 وقف الخسارة (SL)", row['وقف الخسارة (SL)'])
-                    
-        st.divider()
-        st.subheader("📋 التقرير الكامل لجميع الأسواق المفحوصة")
-        st.dataframe(results_df, use_container_width=True, hide_index=True)
+        st.warning("⚠️ لا توجد حالياً أي أصول يتجاوز تقييمها العام 75% وفق إغلاق الشمعة الأخيرة.")
