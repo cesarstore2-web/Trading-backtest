@@ -7,14 +7,11 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from lightgbm import LGBMClassifier
 
-# إعداد صفحة التطبيق
 st.set_page_config(page_title="ماسح AI والمحفظتين: USDT & MAD", layout="wide")
 
-# ضبط التوقيت المغربي الرسمي (Africa/Casablanca)
 MOROCCO_TZ = ZoneInfo("Africa/Casablanca")
 now_ma = datetime.now(MOROCCO_TZ)
 
-# التحقق من حالة جلسة بورصة الدار البيضاء
 is_weekday = now_ma.weekday() < 5
 market_open_time = now_ma.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close_time = now_ma.replace(hour=15, minute=30, second=0, microsecond=0)
@@ -28,7 +25,6 @@ st.info(
     f"بورصة الدار البيضاء: **{'🟢 مفتوحة' if is_casa_open else '🔴 مغلقة'}**"
 )
 
-# 1. قائمة العملات الرقمية والذهب (USDT)
 CRYPTO_GOLD_ASSETS = [
     ("BTC/USDT", "البيتكوين (BTC)", "USDT"),
     ("ETH/USDT", "إيثيريوم (ETH)", "USDT"),
@@ -40,7 +36,6 @@ CRYPTO_GOLD_ASSETS = [
     ("XAUT/USDT", "الذهب (Tether Gold)", "USDT")
 ]
 
-# 2. قائمة أبرز أسهم بورصة الدار البيضاء (MAD)
 CASABLANCA_STOCKS = [
     ("IAM", "اتصالات المغرب (IAM)", "MAD"),
     ("ATW", "التجاري وفا بنك (ATW)", "MAD"),
@@ -99,15 +94,12 @@ def fetch_casablanca_stock(ticker, market_is_open):
 
 def detect_rsi_trendline_strategy(df):
     df = df.copy().reset_index(drop=True)
-    
-    # حساب RSI (14)
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
     
-    # مؤشرات مساعدة للذكاء الاصطناعي
     df['ema_20'] = df['close'].ewm(span=20).mean()
     df['ema_50'] = df['close'].ewm(span=50).mean()
     df['dist_ema20'] = (df['close'] - df['ema_20']) / df['ema_20']
@@ -121,7 +113,6 @@ def detect_rsi_trendline_strategy(df):
     df['atr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
     df['volatility'] = df['atr'] / df['close']
 
-    # تحديد القمم والقيعان المحلية
     df['swing_low'] = df['low'][(df['low'] < df['low'].shift(1)) & (df['low'] < df['low'].shift(-1))]
     df['swing_high'] = df['high'][(df['high'] > df['high'].shift(1)) & (df['high'] > df['high'].shift(-1))]
 
@@ -130,7 +121,6 @@ def detect_rsi_trendline_strategy(df):
     take_profits = np.full(len(df), np.nan)
     targets = np.full(len(df), np.nan)
     pct_returns = np.full(len(df), 0.0)
-
     lookback = 20
 
     for i in range(lookback + 15, len(df)):
@@ -141,7 +131,6 @@ def detect_rsi_trendline_strategy(df):
         prev_rsi = df.loc[i - 1, 'rsi']
         atr = df.loc[i, 'atr']
 
-        # 1. فرصة البيع (SHORT) - كسر ترند صاعد في التشبع الشرائي
         s_lows = window.dropna(subset=['swing_low'])
         if len(s_lows) >= 2:
             p1, p2 = s_lows.iloc[-2], s_lows.iloc[-1]
@@ -149,25 +138,19 @@ def detect_rsi_trendline_strategy(df):
                 slope_p = (p2['low'] - p1['low']) / (p2.name - p1.name)
                 trend_p_curr = p2['low'] + slope_p * (i - p2.name)
                 trend_p_prev = p2['low'] + slope_p * ((i - 1) - p2.name)
-                
                 slope_r = (p2['rsi'] - p1['rsi']) / (p2.name - p1.name)
                 trend_r_curr = p2['rsi'] + slope_r * (i - p2.name)
                 trend_r_prev = p2['rsi'] + slope_r * ((i - 1) - p2.name)
 
-                was_overbought = window['rsi'].max() >= 63
-                rsi_broke = (prev_rsi >= trend_r_prev) and (curr_rsi < trend_r_curr)
-                price_broke = (prev_close >= trend_p_prev) and (curr_close < trend_p_curr)
-
-                if was_overbought and rsi_broke and price_broke:
+                if window['rsi'].max() >= 63 and (prev_rsi >= trend_r_prev) and (curr_rsi < trend_r_curr) and (prev_close >= trend_p_prev) and (curr_close < trend_p_curr):
                     recent_high = df.iloc[i - 10 : i + 1]['high'].max()
                     sl = recent_high + (0.2 * atr)
                     risk = sl - curr_close
                     if risk > 0:
-                        tp = curr_close - (2.0 * risk)
                         signals[i] = -1
                         stop_losses[i] = sl
-                        take_profits[i] = tp
-        # 2. فرصة الشراء (LONG) - كسر ترند هابط في التشبع البيعي
+                        take_profits[i] = curr_close - (2.0 * risk)
+
         if signals[i] == 0:
             s_highs = window.dropna(subset=['swing_high'])
             if len(s_highs) >= 2:
@@ -176,26 +159,19 @@ def detect_rsi_trendline_strategy(df):
                     slope_p = (p2['high'] - p1['high']) / (p2.name - p1.name)
                     trend_p_curr = p2['high'] + slope_p * (i - p2.name)
                     trend_p_prev = p2['high'] + slope_p * ((i - 1) - p2.name)
-
                     slope_r = (p2['rsi'] - p1['rsi']) / (p2.name - p1.name)
                     trend_r_curr = p2['rsi'] + slope_r * (i - p2.name)
                     trend_r_prev = p2['rsi'] + slope_r * ((i - 1) - p2.name)
 
-                    was_oversold = window['rsi'].min() <= 37
-                    rsi_broke = (prev_rsi <= trend_r_prev) and (curr_rsi > trend_r_curr)
-                    price_broke = (prev_close <= trend_p_prev) and (curr_close > trend_p_curr)
-
-                    if was_oversold and rsi_broke and price_broke:
+                    if window['rsi'].min() <= 37 and (prev_rsi <= trend_r_prev) and (curr_rsi > trend_r_curr) and (prev_close <= trend_p_prev) and (curr_close > trend_p_curr):
                         recent_low = df.iloc[i - 10 : i + 1]['low'].min()
                         sl = recent_low - (0.2 * atr)
                         risk = curr_close - sl
                         if risk > 0:
-                            tp = curr_close + (2.0 * risk)
                             signals[i] = 1
                             stop_losses[i] = sl
-                            take_profits[i] = tp
+                            take_profits[i] = curr_close + (2.0 * risk)
 
-        # 3. تقييم نتيجة الإشارات التاريخية وحساب العائد المئوي لكل صفقة
         if signals[i] != 0 and i < len(df) - 1:
             future = df.iloc[i + 1 : min(i + 18, len(df))]
             sl, tp = stop_losses[i], take_profits[i]
@@ -230,7 +206,6 @@ def detect_rsi_trendline_strategy(df):
     df['target'] = targets
     df['pct_return'] = pct_returns
     return df
-
 def analyze_asset_with_portfolio(df, symbol, label, currency, tf_label, trade_mode, leverage, min_conf=55.0):
     df = detect_rsi_trendline_strategy(df)
     features = ['signal', 'rsi', 'rsi_slope', 'dist_ema20', 'dist_ema50', 'vol_ratio', 'volatility']
@@ -271,7 +246,6 @@ def analyze_asset_with_portfolio(df, symbol, label, currency, tf_label, trade_mo
     curr = df.iloc[-1]
     sig = int(curr['signal'])
     future_opp = None
-
     allowed_signal = (sig == 1) if trade_mode == "سبوت (Spot - شراء فقط)" else (sig != 0)
 
     if allowed_signal:
@@ -323,7 +297,6 @@ def render_portfolio_dashboard(title, trades_list, capital, alloc_pct, currency_
     p3.metric("صافي في الأرباح", f"{'+' if net_profit >= 0 else ''}{round(net_profit, 2)} {currency_code}")
     p4.metric("الرصيد النهائي للمحفظة", f"{round(final_balance, 2)} {currency_code}")
 
-# --- إعدادات المحافظ المالية في الواجهة ---
 scope = st.radio(
     "اختر نطاق المسح التلقائي:",
     [
@@ -395,3 +368,36 @@ if st.button("تشغيل المسح وحساب الأرباح والخسائر (
             )
             if res:
                 if is_stock:
+                    mad_month_trades.extend(res["month_trades"])
+                else:
+                    usdt_month_trades.extend(res["month_trades"])
+                    
+                if res["future_opp"]:
+                    future_opportunities.append(res["future_opp"])
+
+        progress.progress((idx + 1) / len(scan_tasks))
+
+    status.empty()
+    st.divider()
+
+    if "الرقمية" in scope or "الكل" in scope:
+        render_portfolio_dashboard(
+            "📊 سجل أداء الكريبتو والذهب (آخر 30 يوماً بالدولار الرقمي USDT)",
+            usdt_month_trades, capital_usdt, alloc_pct_usdt, "USDT"
+        )
+        st.divider()
+
+    if "الدار البيضاء" in scope or "الكل" in scope:
+        render_portfolio_dashboard(
+            "📊 سجل أداء بورصة الدار البيضاء (آخر 30 يوماً بالدرهم المغربي MAD)",
+            mad_month_trades, capital_mad, alloc_pct_mad, "MAD"
+        )
+        st.divider()
+
+    st.subheader("🎯 التوصيات المستقبلية النشطة الآن (مرتبة من الأعلى تقييماً +55%)")
+    if future_opportunities:
+        df_opps = pd.DataFrame(future_opportunities).sort_values(by="تقييم AI (%)", ascending=False).reset_index(drop=True)
+        st.success(f"تم رصد {len(df_opps)} فرصة نشطة بتقييم 55% أو أكثر:")
+        st.dataframe(df_opps, use_container_width=True)
+    else:
+        st.warning("⏳ لا توجد توصيات مستقبلية تستوفي شروط كسر ترند RSI وتقييم +55% في هذه اللحظة.")
