@@ -3,12 +3,12 @@ import ccxt
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from lightgbm import LGBMClassifier
 
 # إعداد صفحة التطبيق
-st.set_page_config(page_title="ماسح AI التلقائي: كسر ترند RSI (+80%)", layout="wide")
+st.set_page_config(page_title="ماسح AI والمحفظتين: USDT & MAD", layout="wide")
 
 # ضبط التوقيت المغربي الرسمي (Africa/Casablanca)
 MOROCCO_TZ = ZoneInfo("Africa/Casablanca")
@@ -20,30 +20,27 @@ market_open_time = now_ma.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close_time = now_ma.replace(hour=15, minute=30, second=0, microsecond=0)
 is_casa_open = is_weekday and (market_open_time <= now_ma <= market_close_time)
 
-st.title("🤖 ماسح الذكاء الاصطناعي التلقائي: كسر ترند RSI")
-st.caption("مسح أوتوماتيكي لجميع الفريمات (1H - 4H - 1D) | الفلتر مثبت: تأكيد الذكاء الاصطناعي +80% فقط")
+st.title("🤖 ماسح AI والمحفظة المالية (USDT للكريبتو & MAD للبورصة)")
+st.caption("استراتيجية: كسر ترند RSI | تقييم الذكاء الاصطناعي: +55% | فصل كامل بين محفظة USDT ومحفظة MAD")
 
 st.info(
     f"🇲🇦 التوقيت الحالي في المغرب: **{now_ma.strftime('%Y-%m-%d %H:%M')}** | "
-    f"بورصة الدار البيضاء: **{'🟢 مفتوحة (تحليل على آخر إغلاق مكتمل)' if is_casa_open else '🔴 مغلقة (تحليل على الإغلاق الرسمي)'}**"
+    f"بورصة الدار البيضاء: **{'🟢 مفتوحة' if is_casa_open else '🔴 مغلقة'}**"
 )
 
-# 1. قائمة العملات الرقمية والذهب
+# 1. قائمة العملات الرقمية والذهب (USDT)
 CRYPTO_GOLD_ASSETS = [
-    ("BTC/USDT", "عملة رقمية", "USDT"),
-    ("ETH/USDT", "عملة رقمية", "USDT"),
-    ("SOL/USDT", "عملة رقمية", "USDT"),
-    ("XLM/USDT", "عملة رقمية", "USDT"),
-    ("ZEC/USDT", "عملة رقمية", "USDT"),
-    ("XRP/USDT", "عملة رقمية", "USDT"),
-    ("HBAR/USDT", "عملة رقمية", "USDT"),
-    ("ADA/USDT", "عملة رقمية", "USDT"),
-    ("LTC/USDT", "عملة رقمية", "USDT"),
-    ("PAXG/USDT", "ذهب رقمي (PAXG)", "USDT"),
-    ("XAUT/USDT", "ذهب (Tether Gold)", "USDT")
+    ("BTC/USDT", "البيتكوين (BTC)", "USDT"),
+    ("ETH/USDT", "إيثيريوم (ETH)", "USDT"),
+    ("SOL/USDT", "سولانا (SOL)", "USDT"),
+    ("XRP/USDT", "ريبل (XRP)", "USDT"),
+    ("ADA/USDT", "كاردانو (ADA)", "USDT"),
+    ("LTC/USDT", "لايتكوين (LTC)", "USDT"),
+    ("PAXG/USDT", "الذهب الرقمي (PAXG)", "USDT"),
+    ("XAUT/USDT", "الذهب (Tether Gold)", "USDT")
 ]
 
-# 2. قائمة أبرز أسهم بورصة الدار البيضاء (فريم يومي 1D - بالدرهم المغربي)
+# 2. قائمة أبرز أسهم بورصة الدار البيضاء (MAD)
 CASABLANCA_STOCKS = [
     ("IAM", "اتصالات المغرب (IAM)", "MAD"),
     ("ATW", "التجاري وفا بنك (ATW)", "MAD"),
@@ -51,14 +48,11 @@ CASABLANCA_STOCKS = [
     ("AKT", "أكديطال (AKT)", "MAD"),
     ("MNG", "مناجم (MNG)", "MAD"),
     ("BCP", "البنك الشعبي المركزي (BCP)", "MAD"),
-    ("BOA", "بنك أفريقيا (BOA)", "MAD"),
-    ("TQM", "طاقة المغرب (TQM)", "MAD"),
-    ("LHM", "لافارج هولسيم (LHM)", "MAD"),
-    ("CSR", "كوسومار (CSR)", "MAD")
+    ("BOA", "بنك أفريقيا (BOA)", "MAD")
 ]
 
 @st.cache_data(ttl=900)
-def fetch_crypto_gold(symbol, timeframe='1d', limit=730):
+def fetch_crypto_gold(symbol, timeframe='1h', limit=750):
     exchange_ids = ['kraken', 'gate', 'kucoin', 'okx', 'coinbase']
     for ex_id in exchange_ids:
         try:
@@ -69,10 +63,10 @@ def fetch_crypto_gold(symbol, timeframe='1d', limit=730):
             if bars and len(bars) > 200:
                 df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True).dt.tz_convert(MOROCCO_TZ)
-                return df, exchange.name
+                return df
         except Exception:
             continue
-    return None, None
+    return None
 
 @st.cache_data(ttl=1800)
 def fetch_casablanca_stock(ticker, market_is_open):
@@ -98,10 +92,10 @@ def fetch_casablanca_stock(ticker, market_is_open):
                     last_candle_date = df['timestamp'].iloc[-1].date()
                     if market_is_open and last_candle_date == now_ma.date():
                         df = df.iloc[:-1]
-                    return df, "Bourse de Casablanca"
+                    return df
         except Exception:
             continue
-    return None, None
+    return None
 
 def detect_rsi_trendline_strategy(df):
     df = df.copy().reset_index(drop=True)
@@ -135,6 +129,7 @@ def detect_rsi_trendline_strategy(df):
     stop_losses = np.full(len(df), np.nan)
     take_profits = np.full(len(df), np.nan)
     targets = np.full(len(df), np.nan)
+    pct_returns = np.full(len(df), 0.0)
 
     lookback = 20
 
@@ -159,7 +154,7 @@ def detect_rsi_trendline_strategy(df):
                 trend_r_curr = p2['rsi'] + slope_r * (i - p2.name)
                 trend_r_prev = p2['rsi'] + slope_r * ((i - 1) - p2.name)
 
-                was_overbought = window['rsi'].max() >= 65
+                was_overbought = window['rsi'].max() >= 63
                 rsi_broke = (prev_rsi >= trend_r_prev) and (curr_rsi < trend_r_curr)
                 price_broke = (prev_close >= trend_p_prev) and (curr_close < trend_p_curr)
 
@@ -186,7 +181,7 @@ def detect_rsi_trendline_strategy(df):
                     trend_r_curr = p2['rsi'] + slope_r * (i - p2.name)
                     trend_r_prev = p2['rsi'] + slope_r * ((i - 1) - p2.name)
 
-                    was_oversold = window['rsi'].min() <= 35
+                    was_oversold = window['rsi'].min() <= 37
                     rsi_broke = (prev_rsi <= trend_r_prev) and (curr_rsi > trend_r_curr)
                     price_broke = (prev_close <= trend_p_prev) and (curr_close > trend_p_curr)
 
@@ -200,159 +195,203 @@ def detect_rsi_trendline_strategy(df):
                             stop_losses[i] = sl
                             take_profits[i] = tp
 
-        # 3. تقييم نتيجة الإشارات التاريخية لتدريب الذكاء الاصطناعي
+        # 3. تقييم نتيجة الإشارات التاريخية وحساب العائد المئوي لكل صفقة
         if signals[i] != 0 and i < len(df) - 1:
-            future = df.iloc[i + 1 : min(i + 15, len(df))]
+            future = df.iloc[i + 1 : min(i + 18, len(df))]
             sl, tp = stop_losses[i], take_profits[i]
+            entry = df.loc[i, 'close']
             outcome = np.nan
+            ret = 0.0
             for _, f_row in future.iterrows():
                 if signals[i] == -1:
                     if f_row['high'] >= sl:
                         outcome = 0
+                        ret = -((sl - entry) / entry)
                         break
                     if f_row['low'] <= tp:
                         outcome = 1
+                        ret = ((entry - tp) / entry)
                         break
                 elif signals[i] == 1:
                     if f_row['low'] <= sl:
                         outcome = 0
+                        ret = -((entry - sl) / entry)
                         break
                     if f_row['high'] >= tp:
                         outcome = 1
+                        ret = ((tp - entry) / entry)
                         break
             targets[i] = outcome
+            pct_returns[i] = ret
 
     df['signal'] = signals
     df['stop_loss'] = stop_losses
     df['take_profit'] = take_profits
     df['target'] = targets
+    df['pct_return'] = pct_returns
     return df
 
-def analyze_with_ai(df, symbol, label, currency, tf_label, is_stock=False):
+def analyze_asset_with_portfolio(df, symbol, label, currency, tf_label, trade_mode, leverage, min_conf=55.0):
     df = detect_rsi_trendline_strategy(df)
     features = ['signal', 'rsi', 'rsi_slope', 'dist_ema20', 'dist_ema50', 'vol_ratio', 'volatility']
     
-    hist_signals = df.iloc[:-1].dropna(subset=['target'] + features)
-    if len(hist_signals) < 12:
+    if trade_mode == "سبوت (Spot - شراء فقط)":
+        valid_hist = df.iloc[:-1][(df['signal'] == 1)].dropna(subset=['target'] + features)
+    else:
+        valid_hist = df.iloc[:-1][(df['signal'] != 0)].dropna(subset=['target'] + features)
+
+    if len(valid_hist) < 10:
         return None
 
-    split_idx = max(8, int(len(hist_signals) * 0.7))
-    train_df = hist_signals.iloc[:split_idx]
-    test_df = hist_signals.iloc[split_idx:]
+    one_month_ago = now_ma - timedelta(days=30)
+    train_df = valid_hist[valid_hist['timestamp'] < one_month_ago]
+    month_df = valid_hist[valid_hist['timestamp'] >= one_month_ago]
+
+    if len(train_df) < 8:
+        split_idx = max(6, int(len(valid_hist) * 0.7))
+        train_df = valid_hist.iloc[:split_idx]
+        month_df = valid_hist.iloc[split_idx:]
 
     model = LGBMClassifier(n_estimators=80, learning_rate=0.05, max_depth=3, random_state=42, verbose=-1)
     model.fit(train_df[features], train_df['target'].astype(int))
 
-    wins, losses = 0, 0
-    if len(test_df) > 0:
-        test_probs = model.predict_proba(test_df[features])[:, 1] * 100
-        for prob, actual in zip(test_probs, test_df['target']):
-            if prob >= 80.0:
-                if actual == 1:
-                    wins += 1
-                else:
-                    losses += 1
+    month_trades = []
+    if len(month_df) > 0:
+        probs = model.predict_proba(month_df[features])[:, 1] * 100
+        for idx_m, (_, row) in enumerate(month_df.iterrows()):
+            if probs[idx_m] >= min_conf:
+                eff_lev = 1 if trade_mode == "سبوت (Spot - شراء فقط)" else leverage
+                leveraged_ret = max(-1.0, row['pct_return'] * eff_lev)
+                month_trades.append({
+                    "won": int(row['target']) == 1,
+                    "leveraged_ret": leveraged_ret,
+                    "currency": currency
+                })
 
     curr = df.iloc[-1]
     sig = int(curr['signal'])
-    
-    if sig == 0 or (is_stock and sig == -1):
-        return {"has_signal": False, "wins": wins, "losses": losses}
+    future_opp = None
 
-    curr_X = df.iloc[-1:][features]
-    ai_confidence = float(model.predict_proba(curr_X)[0][1]) * 100
+    allowed_signal = (sig == 1) if trade_mode == "سبوت (Spot - شراء فقط)" else (sig != 0)
 
-    entry_price = float(curr['close'])
-    decimals = 2 if entry_price >= 10 else (4 if entry_price >= 0.1 else 5)
-    direction = "بيع (SHORT) 🔴 - كسر ترند صاعد" if sig == -1 else "شراء (LONG) 🟢 - كسر ترند هابط"
+    if allowed_signal:
+        curr_X = df.iloc[-1:][features]
+        ai_conf = float(model.predict_proba(curr_X)[0][1]) * 100
+        if ai_conf >= min_conf:
+            entry_price = float(curr['close'])
+            decimals = 2 if entry_price >= 10 else (4 if entry_price >= 0.1 else 5)
+            direction = "بيع (SHORT) 🔴" if sig == -1 else "شراء (LONG) 🟢"
+            eff_lev = 1 if trade_mode == "سبوت (Spot - شراء فقط)" else leverage
+            
+            future_opp = {
+                "الأصل": label,
+                "الرمز": symbol,
+                "الفريم": tf_label,
+                "النظام": f"Futures {eff_lev}x" if eff_lev > 1 else "Spot 1x",
+                "الاتجاه": direction,
+                "تقييم AI (%)": round(ai_conf, 1),
+                "سعر الدخول": round(entry_price, decimals),
+                "وقف الخسارة": round(float(curr['stop_loss']), decimals),
+                "جني الأرباح (1:2)": round(float(curr['take_profit']), decimals),
+                "العملة": currency
+            }
 
-    return {
-        "has_signal": True,
-        "الأصل": label,
-        "الرمز": symbol,
-        "الفريم": tf_label,
-        "الاتجاه": direction,
-        "تأكيد الذكاء الاصطناعي (%)": round(ai_confidence, 1),
-        "سعر الدخول": round(entry_price, decimals),
-        "وقف الخسارة (Swing)": round(float(curr['stop_loss']), decimals),
-        "جني الأرباح (1:2)": round(float(curr['take_profit']), decimals),
-        "العملة": currency,
-        "مؤشر RSI": round(float(curr['rsi']), 1),
-        "wins": wins,
-        "losses": losses
-    }
+    return {"month_trades": month_trades, "future_opp": future_opp}
 
-# --- واجهة المستخدم ---
+def render_portfolio_dashboard(title, trades_list, capital, alloc_pct, currency_code):
+    st.subheader(title)
+    total_trades = len(trades_list)
+    winning_trades = sum(1 for t in trades_list if t["won"])
+    losing_trades = total_trades - winning_trades
+    win_rate = round((winning_trades / total_trades * 100), 2) if total_trades > 0 else 0.0
+
+    trade_size = capital * (alloc_pct / 100.0)
+    gross_profit = sum(trade_size * t["leveraged_ret"] for t in trades_list if t["leveraged_ret"] > 0)
+    gross_loss = sum(trade_size * t["leveraged_ret"] for t in trades_list if t["leveraged_ret"] < 0)
+    net_profit = gross_profit + gross_loss
+    final_balance = capital + net_profit
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("نسبة النجاح", f"{win_rate}%")
+    m2.metric("عدد الصفقات", f"{total_trades} صفقة")
+    m3.metric("الصفقات الرابحة", f"✅ {winning_trades}")
+    m4.metric("الصفقات الخاسرة", f"❌ {losing_trades}")
+
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("إجمالي الأرباح", f"+{round(gross_profit, 2)} {currency_code}")
+    p2.metric("إجمالي الخسائر", f"{round(gross_loss, 2)} {currency_code}")
+    p3.metric("صافي في الأرباح", f"{'+' if net_profit >= 0 else ''}{round(net_profit, 2)} {currency_code}")
+    p4.metric("الرصيد النهائي للمحفظة", f"{round(final_balance, 2)} {currency_code}")
+
+# --- إعدادات المحافظ المالية في الواجهة ---
 scope = st.radio(
     "اختر نطاق المسح التلقائي:",
     [
-        "الكل (كريبتو + ذهب على 1D/4H/1H + بورصة الدار البيضاء 1D)",
-        "العملات الرقمية والذهب فقط (مسح تلقائي 1D / 4H / 1H)",
-        "بورصة الدار البيضاء فقط (فريم 1D)"
-    ]
+        "الكل (كريبتو + ذهب بـ USDT & بورصة الدار البيضاء بـ MAD)",
+        "العملات الرقمية والذهب فقط (USDT)",
+        "بورصة الدار البيضاء فقط (MAD)"
+    ],
+    horizontal=True
 )
 
-MIN_CONFIDENCE = 80.0  # الحد الأدنى للتقييم مثبت عند 80%
-st.markdown(f"🔒 **الفلتر الذكي مفعل تلقائياً:** يعرض فقط الفرص بتقييم **≥ {int(MIN_CONFIDENCE)}%** مرتبة من الأعلى تقييماً إلى الأقل.")
+col_usdt, col_mad = st.columns(2)
 
-if st.button("بدء المسح التلقائي الشامل لجميع الفريمات 🚀", type="primary"):
-    opportunities = []
-    total_wins = 0
-    total_losses = 0
+with col_usdt:
+    st.markdown("### 💵 محفظة الكريبتو والذهب (USDT)")
+    trade_mode_usdt = st.selectbox(
+        "نظام التداول (USDT):",
+        ["عقود آجلة (Futures - شراء وبيع)", "سبوت (Spot - شراء فقط)"]
+    )
+    if trade_mode_usdt == "سبوت (Spot - شراء فقط)":
+        leverage_usdt = 1
+        st.number_input("الرافعة المالية (USDT):", value=1, disabled=True)
+    else:
+        leverage_usdt = st.slider("الرافعة المالية (USDT):", min_value=2, max_value=20, value=5)
+    capital_usdt = st.number_input("رأس المال (USDT):", min_value=100.0, value=1000.0, step=100.0)
+    alloc_pct_usdt = st.slider("حجم الصفقة (% من محفظة USDT):", min_value=5, max_value=50, value=10)
 
-    # بناء قائمة المهام (الأصل + الفريم) للانتقال التلقائي بينها
+with col_mad:
+    st.markdown("### 🇲🇦 محفظة بورصة الدار البيضاء (MAD)")
+    st.selectbox("نظام التداول (MAD):", ["سبوت (Spot - شراء فقط بدون رافعة)"], disabled=True)
+    st.number_input("الرافعة المالية (MAD):", value=1, disabled=True)
+    capital_mad = st.number_input("رأس المال (MAD):", min_value=1000.0, value=10000.0, step=1000.0)
+    alloc_pct_mad = st.slider("حجم الصفقة (% من محفظة MAD):", min_value=5, max_value=50, value=15)
+
+MIN_CONFIDENCE = 55.0
+
+if st.button("تشغيل المسح وحساب الأرباح والخسائر (USDT و MAD) 🚀", type="primary"):
+    usdt_month_trades = []
+    mad_month_trades = []
+    future_opportunities = []
+    
     scan_tasks = []
-    if "الكل" in scope or "الرقمية" in scope:
+    if "الرقمية" in scope or "الكل" in scope:
         for sym, lbl, cur in CRYPTO_GOLD_ASSETS:
-            for tf in ['1d', '4h', '1h']:
+            for tf in ['15m', '30m', '1h', '4h']:
                 scan_tasks.append((sym, lbl, cur, tf, False))
                 
-    if "الكل" in scope or "الدار البيضاء" in scope:
+    if "الدار البيضاء" in scope or "الكل" in scope:
         for sym, lbl, cur in CASABLANCA_STOCKS:
             scan_tasks.append((sym, lbl, cur, '1d', True))
 
     progress = st.progress(0)
-    status_text = st.empty()
+    status = st.empty()
 
     for idx, (sym, lbl, cur, tf, is_stock) in enumerate(scan_tasks):
-        tf_upper = tf.upper()
-        status_text.text(f"⏳ جاري فحص {lbl} ({sym}) على فريم {tf_upper}...")
-
+        status.text(f"⏳ جاري مسح {lbl} على فريم {tf.upper()}...")
+        
         if is_stock:
-            df, _ = fetch_casablanca_stock(sym, is_casa_open)
+            df = fetch_casablanca_stock(sym, is_casa_open)
+            mode_for_asset = "سبوت (Spot - شراء فقط)"
+            lev_for_asset = 1
         else:
-            df, _ = fetch_crypto_gold(sym, timeframe=tf)
+            df = fetch_crypto_gold(sym, timeframe=tf)
+            mode_for_asset = trade_mode_usdt
+            lev_for_asset = leverage_usdt
 
         if df is not None:
-            res = analyze_with_ai(df, sym, lbl, cur, tf_upper, is_stock=is_stock)
+            res = analyze_asset_with_portfolio(
+                df, sym, lbl, cur, tf.upper(), mode_for_asset, lev_for_asset, min_conf=MIN_CONFIDENCE
+            )
             if res:
-                total_wins += res["wins"]
-                total_losses += res["losses"]
-                if res["has_signal"] and res["تأكيد الذكاء الاصطناعي (%)"] >= MIN_CONFIDENCE:
-                    opportunities.append({
-                        k: v for k, v in res.items() if k not in ["has_signal", "wins", "losses"]
-                    })
-
-        progress.progress((idx + 1) / len(scan_tasks))
-
-    status_text.empty()
-    st.divider()
-
-    if opportunities:
-        df_opps = pd.DataFrame(opportunities)
-        # ترتيب الفرص تنازلياً من الأكثر تقييماً إلى الأقل
-        df_opps = df_opps.sort_values(by="تأكيد الذكاء الاصطناعي (%)", ascending=False).reset_index(drop=True)
-        
-        st.success(f"✅ تم العثور على {len(df_opps)} فرصة كسر ترند RSI بتقييم 80% أو أعلى (مرتبة من الأقوى):")
-        st.dataframe(df_opps, use_container_width=True)
-    else:
-        st.warning("⏳ لا يوجد حالياً أي كسر لخط اتجاه RSI على فريمات (1D / 4H / 1H) يصل تقييمه إلى 80% أو أكثر.")
-
-    total_trades = total_wins + total_losses
-    win_rate = round((total_wins / total_trades * 100), 1) if total_trades > 0 else 0.0
-    
-    st.subheader("📊 أداء الاستراتيجية المؤكدة بالذكاء الاصطناعي (تقييم +80%)")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("نسبة نجاح الكسورات المؤكدة (%)", f"{win_rate}%")
-    col2.metric("صفقات حققت الهدف (1:2)", f"✅ {total_wins}")
-    col3.metric("صفقات ضربت وقف الخسارة", f"❌ {total_losses}")
+                if is_stock:
