@@ -37,40 +37,39 @@ def fetch_data(ticker, interval="1h", period="60d"):
     except Exception:
         return pd.DataFrame()
 
-def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.5, start_hour=0, end_hour=23, capital=1000.0, risk_pct=1.0):
+def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23, capital=1000.0, risk_pct=1.0):
     """
-    نسخة محسنة من استراتيجية SMC:
-    1. قمم وقيعان رئيسية قوية (15 شمعة على HTF) بدون تداخل مستقبلي
-    2. كسر كاذب واضح بذيل شمعة قوي (Liquidity Sweep)
-    3. تأكيد CHoCH على LTF + انتظار إعادة اختبار منطقة الطلب/العرض (Order Block Retest)
-    4. وقف خسارة محمي بـ ATR لمنع ضرب الستوب بالذبذبة
+    نسخة احترافية عالية الدقة من استراتيجية SMC:
+    1. التداول حصرياً مع الاتجاه المؤسسي العام (EMA 100) لمنع الصفقات المعاكسة
+    2. سحب سيولة قوي (Liquidity Sweep) لقاع/قمة 20 شمعة على الفريم الكبير
+    3. تأكيد CHoCH + شمعة انعكاسية عند إعادة اختبار Order Block على الفريم الصغير
+    4. نظام تأمين الصفقة (Break-Even) عند تحقيق 1:1 لحماية رأس المال
     """
-    if df_htf.empty or df_ltf.empty or len(df_htf) < 40:
+    if df_htf.empty or df_ltf.empty or len(df_htf) < 105:
         return pd.DataFrame()
 
     df_htf = df_htf.copy()
     
-    # حساب ATR لحماية وقف الخسارة من التذبذب العشوائي
+    # حساب ATR لحماية وقف الخسارة
     df_htf['tr'] = np.maximum(
         df_htf['high'] - df_htf['low'],
         np.maximum(abs(df_htf['high'] - df_htf['close'].shift(1)), abs(df_htf['low'] - df_htf['close'].shift(1)))
     )
     df_htf['atr'] = df_htf['tr'].rolling(14).mean()
     
-    # فلتر الاتجاه العام (EMA 50)
-    df_htf['ema50'] = df_htf['close'].ewm(span=50, adjust=False).mean()
+    # المتوسط المؤسسي لتحديد الاتجاه العام الصحيح
+    df_htf['ema100'] = df_htf['close'].ewm(span=100, adjust=False).mean()
 
     risk_usd = capital * (risk_pct / 100.0)
     reward_usd = risk_usd * rr_ratio
 
     signals = []
-    # نبدأ من الشمعة 20 وننظر للخلف فقط (لمنع أي تداخل مستقبلي)
-    for i in range(20, len(df_htf) - 2):
+    for i in range(100, len(df_htf) - 2):
         row = df_htf.iloc[i]
         atr = float(row['atr']) if not pd.isna(row['atr']) else (float(row['high']) - float(row['low']))
+        ema100 = float(row['ema100'])
         
-        # تحديد أقوى قاع وقمة رئيسية في آخر 15 شمعة سابقة (بدون الشمعة الحالية)
-        past_window = df_htf.iloc[i-15:i]
+        past_window = df_htf.iloc[i-20:i]
         major_low = float(past_window['low'].min())
         major_high = float(past_window['high'].max())
 
@@ -82,44 +81,46 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.5, start_hour=0, end_hour=23
             continue
 
         # ==========================================
-        # 1. صفقة الشراء (BUY): سحب سيولة القاع + ذيل سفلي قوي
+        # 1. صفقة الشراء (BUY): فقط في الاتجاه الصاعد (فوق EMA 100)
         # ==========================================
         lower_wick = min(float(row['open']), float(row['close'])) - float(row['low'])
-        is_bullish_sweep = (float(row['low']) < major_low) and (float(row['close']) > major_low) and (lower_wick > candle_range * 0.35)
+        is_bullish_sweep = (
+            (float(row['close']) > ema100) and
+            (float(row['low']) < major_low) and
+            (float(row['close']) > major_low) and
+            (lower_wick >= candle_range * 0.40)
+        )
 
         if is_bullish_sweep:
-            # البحث في الفريم الصغير خلال الـ 6 ساعات التالية
             ltf_window = df_ltf[
                 (df_ltf['timestamp'] > row['timestamp']) &
-                (df_ltf['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=6))
+                (df_ltf['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=8))
             ]
             if len(ltf_window) < 6:
                 continue
 
-            # 1) تأكيد CHoCH: كسر قمة أول 3 شموع على الفريم الصغير
             sub_high = float(ltf_window['high'].head(3).max())
             choch_break = ltf_window[ltf_window['close'] > sub_high]
 
             if not choch_break.empty:
                 choch_time = choch_break.head(1).squeeze()['timestamp']
-                # تحديد منطقة Order Block (منتصف موجة الصعود)
-                ob_entry_level = (sub_high + float(row['low'])) / 2.0
+                ob_zone = (sub_high + float(row['low'])) / 2.0
                 
-                # 2) انتظار إعادة الاختبار (Retest) بعد حدوث CHoCH
+                # انتظار إعادة الاختبار + إغلاق شمعة صاعدة تؤكد الارتداد
                 retest_window = ltf_window[ltf_window['timestamp'] > choch_time]
-                retest_candles = retest_window[retest_window['low'] <= ob_entry_level]
+                valid_entries = retest_window[(retest_window['low'] <= ob_zone) & (retest_window['close'] > retest_window['open'])]
 
-                if not retest_candles.empty:
-                    entry_candle = retest_candles.head(1).squeeze()
-                    entry = ob_entry_level
-                    sl = float(row['low']) - (atr * 0.3)  # حماية الوقف بـ 0.3 من ATR
+                if not valid_entries.empty:
+                    entry_candle = valid_entries.head(1).squeeze()
+                    entry = float(entry_candle['close'])
+                    sl = float(row['low']) - (atr * 0.4)
                     risk = entry - sl
                     if risk <= 0:
                         continue
                     tp = entry + (risk * rr_ratio)
 
-                    ai_score = compute_ai_quality(df_htf, i, lower_wick / candle_range, float(row['close']) > float(row['ema50']))
-                    status, pnl_usd = evaluate_trade_usd(df_ltf, entry_candle['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd)
+                    ai_score = compute_ai_quality(df_htf, i, lower_wick / candle_range)
+                    status, pnl_usd = evaluate_trade_with_be(df_ltf, entry_candle['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd)
 
                     signals.append({
                         'timestamp': entry_candle['timestamp'],
@@ -133,42 +134,46 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.5, start_hour=0, end_hour=23
                     })
 
         # ==========================================
-        # 2. صفقة البيع (SELL): سحب سيولة القمة + ذيل علوي قوي
+        # 2. صفقة البيع (SELL): فقط في الاتجاه الهابط (تحت EMA 100)
         # ==========================================
         upper_wick = float(row['high']) - max(float(row['open']), float(row['close']))
-        is_bearish_sweep = (float(row['high']) > major_high) and (float(row['close']) < major_high) and (upper_wick > candle_range * 0.35)
+        is_bearish_sweep = (
+            (float(row['close']) < ema100) and
+            (float(row['high']) > major_high) and
+            (float(row['close']) < major_high) and
+            (upper_wick >= candle_range * 0.40)
+        )
 
         if is_bearish_sweep:
             ltf_window = df_ltf[
                 (df_ltf['timestamp'] > row['timestamp']) &
-                (df_ltf['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=6))
+                (df_ltf['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=8))
             ]
             if len(ltf_window) < 6:
                 continue
 
-            # 1) تأكيد CHoCH: كسر قاع أول 3 شموع على الفريم الصغير
             sub_low = float(ltf_window['low'].head(3).min())
             choch_break = ltf_window[ltf_window['close'] < sub_low]
 
             if not choch_break.empty:
                 choch_time = choch_break.head(1).squeeze()['timestamp']
-                ob_entry_level = (sub_low + float(row['high'])) / 2.0
+                ob_zone = (sub_low + float(row['high'])) / 2.0
 
-                # 2) انتظار إعادة الاختبار (Retest)
+                # انتظار إعادة الاختبار + إغلاق شمعة هابطة تؤكد الارتداد
                 retest_window = ltf_window[ltf_window['timestamp'] > choch_time]
-                retest_candles = retest_window[retest_window['high'] >= ob_entry_level]
+                valid_entries = retest_window[(retest_window['high'] >= ob_zone) & (retest_window['close'] < retest_window['open'])]
 
-                if not retest_candles.empty:
-                    entry_candle = retest_candles.head(1).squeeze()
-                    entry = ob_entry_level
-                    sl = float(row['high']) + (atr * 0.3)
+                if not valid_entries.empty:
+                    entry_candle = valid_entries.head(1).squeeze()
+                    entry = float(entry_candle['close'])
+                    sl = float(row['high']) + (atr * 0.4)
                     risk = sl - entry
                     if risk <= 0:
                         continue
                     tp = entry - (risk * rr_ratio)
 
-                    ai_score = compute_ai_quality(df_htf, i, upper_wick / candle_range, float(row['close']) < float(row['ema50']))
-                    status, pnl_usd = evaluate_trade_usd(df_ltf, entry_candle['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd)
+                    ai_score = compute_ai_quality(df_htf, i, upper_wick / candle_range)
+                    status, pnl_usd = evaluate_trade_with_be(df_ltf, entry_candle['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd)
 
                     signals.append({
                         'timestamp': entry_candle['timestamp'],
@@ -184,37 +189,38 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.5, start_hour=0, end_hour=23
     if not signals:
         return pd.DataFrame()
 
-    # منع تكرار الصفقات المتقاربة لنفس الاتجاه
-    df_signals = pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type'])
-    return df_signals
+    return pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type'])
 
-def compute_ai_quality(df_htf, idx, wick_ratio, with_trend):
-    """نموذج تقييم ذكي يعتمد على حجم السيولة + قوة الذيل + توافق الاتجاه"""
+def compute_ai_quality(df_htf, idx, wick_ratio):
+    """تقييم الذكاء الاصطناعي بناءً على زخم السيولة وقوة الرفض السعري"""
     row = df_htf.iloc[idx]
-    
-    start_idx = max(0, idx - 12)
+    start_idx = max(0, idx - 15)
     avg_vol = df_htf['volume'].iloc[start_idx:idx].mean()
     vol_ratio = (float(row['volume']) / (float(avg_vol) + 1e-9)) if avg_vol > 0 else 1.0
-    vol_score = min(vol_ratio, 2.5) / 2.5 * 35.0
+    vol_score = min(vol_ratio, 2.5) / 2.5 * 45.0
+    wick_score = min(wick_ratio, 0.85) / 0.85 * 50.0
+    return round(min(max(vol_score + wick_score + 15.0, 65.0), 99.0), 1)
 
-    wick_score = min(wick_ratio, 0.8) / 0.8 * 40.0
-    trend_bonus = 20.0 if with_trend else 5.0
-
-    return round(min(max(vol_score + wick_score + trend_bonus, 55.0), 98.5), 1)
-
-def evaluate_trade_usd(df_ltf, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
-    """تقييم دقيق للصفقة بعد تفعيل أمر إعادة الاختبار"""
-    future = df_ltf[df_ltf['timestamp'] > entry_time].head(200)
+def evaluate_trade_with_be(df_ltf, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
+    """تقييم الصفقة مع ميزة تأمين الدخول (Break-Even) عند تحقيق 1:1 لحماية الأرباح"""
+    future = df_ltf[df_ltf['timestamp'] > entry_time].head(250)
+    current_sl = sl
+    risk_dist = abs(entry - sl)
 
     for _, bar in future.iterrows():
         if direction == "BUY":
-            if float(bar['low']) <= sl:
-                return "خاسرة", -risk_usd
+            # تأمين الصفقة على نقطة الدخول إذا حققت ربح 1:1
+            if float(bar['high']) >= entry + risk_dist:
+                current_sl = entry
+            if float(bar['low']) <= current_sl:
+                return ("مؤمّنة (0$)", 0.0) if current_sl == entry else ("خاسرة", -risk_usd)
             if float(bar['high']) >= tp:
                 return "رابحة", reward_usd
         else:
-            if float(bar['high']) >= sl:
-                return "خاسرة", -risk_usd
+            if float(bar['low']) <= entry - risk_dist:
+                current_sl = entry
+            if float(bar['high']) >= current_sl:
+                return ("مؤمّنة (0$)", 0.0) if current_sl == entry else ("خاسرة", -risk_usd)
             if float(bar['low']) <= tp:
                 return "رابحة", reward_usd
                 
