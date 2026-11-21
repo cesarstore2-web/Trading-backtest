@@ -194,8 +194,6 @@ def scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct, be_r, sl_atr, req_fvg,
     if not df.empty:
         df['symbol'] = name
     return df
-
-
 def render_card(r):
     is_buy = "BUY" in r['type']
     side_cls = "buy" if is_buy else "sell"
@@ -257,11 +255,92 @@ st.markdown(
 
 with st.sidebar:
     cap = st.number_input("رأس المال ($):", 100.0, 1000000.0, 1000.0, 100.0)
-    rpct = st.number_input("المخاطرة (%):", 0.5, 10.0, 1.0, 0.5)
-    rr = st.slider("العائد للمخاطرة (1:X):", 1.5, 5.0, 2.0, 0.5)
+    rpct = st.number_input("المخاطرة (%):", 0.1, 10.0, 1.0, 0.1)
+    rr = st.number_input("العائد للمخاطرة R:R (1:X):", 0.5, 20.0, 2.0, 0.1)
     htf = st.selectbox("فريم السيولة (HTF):", ["1h", "4h"])
     ltf = st.selectbox("فريم الدخول (LTF):", ["15m", "5m"])
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
     min_ai = st.slider("الحد الأدنى لتقييم AI%:", 65, 95, 70)
     st.markdown("---")
-    be_r =
+    sl_atr = st.number_input("هامش الستوب (ATR):", 0.0, 5.0, 0.5, 0.05)
+    be_r = st.number_input("نقطة التأمين (R):", 0.1, 5.0, 0.8, 0.1)
+    if be_r >= rr:
+        st.warning("نقطة التأمين أكبر من أو تساوي R:R، فلن تعمل كتأمين فعلي.")
+    req_fvg = st.checkbox("قبول الصفقات ذات FVG فقط", value=False)
+
+st.markdown("<h2 style='direction:rtl;text-align:right'>🐋 نظام تتبع سيولة الحيتان (SMC + AI)</h2>", unsafe_allow_html=True)
+c_f1, c_f2 = st.columns(2)
+with c_f1:
+    view = st.selectbox("📅 سجل الأداء:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
+with c_f2:
+    asset = st.selectbox("🪙 الأصل المالي:", ["الكل"] + list(ASSETS_MAP.keys()))
+st.button("🔍 فحص والبحث عن توصيات")
+
+cutoff = pd.Timestamp.now() - pd.Timedelta(days=30 if "شهري" in view else 7)
+
+items = list(ASSETS_MAP.items()) if asset == "الكل" else [(asset, ASSETS_MAP[asset])]
+res_list = []
+progress = st.progress(0.0, text="جاري فحص السيولة...")
+for n, (name, tk) in enumerate(items):
+    try:
+        d = scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct, be_r, sl_atr, req_fvg, CACHE_VER)
+        if d is not None and not d.empty:
+            res_list.append(d)
+    except Exception as e:
+        st.error(f"{name}: {e}")
+    progress.progress((n + 1) / len(items), text=f"تم فحص {name}")
+progress.empty()
+
+df_all = pd.concat(res_list, ignore_index=True) if res_list else pd.DataFrame()
+df_f = pd.DataFrame()
+df_live = pd.DataFrame()
+if not df_all.empty:
+    df_all = df_all[df_all['ai'] >= min_ai].reset_index(drop=True)
+    df_f = df_all[df_all['timestamp'] >= cutoff].reset_index(drop=True)
+    df_live = df_all[df_all['status'].isin(LIVE_STATUSES)].reset_index(drop=True)
+
+# ---------------- التوصيات الحالية (المستقبلية) ----------------
+st.markdown("<h3 style='direction:rtl;text-align:right'>🔮 توصيات حالية (مستقبلية)</h3>", unsafe_allow_html=True)
+if df_live.empty:
+    st.info("لا توجد توصيات حالية الآن. جرّب تخفيض الحد الأدنى لتقييم AI أو إعادة الفحص لاحقاً.")
+else:
+    live_sorted = df_live.sort_values(['ai', 'timestamp'], ascending=[False, False]).head(5)
+    for _, r in live_sorted.iterrows():
+        render_card(r)
+    st.caption("⚠️ إشارات خوارزمية وليست ضماناً. التزم بإدارة المخاطرة ووقف الخسارة.")
+
+# ---------------- إحصائيات الأداء السابق ----------------
+has = not df_f.empty
+wins = len(df_f[df_f['status'] == 'رابحة']) if has else 0
+losses = len(df_f[df_f['status'] == 'خاسرة']) if has else 0
+bes = len(df_f[df_f['status'].str.contains('مؤمّنة')]) if has else 0
+rate = round((wins / (wins + losses) * 100), 1) if (wins + losses) > 0 else 0.0
+gp = round(df_f[df_f['status'] == 'رابحة']['pnl'].sum(), 2) if has else 0.0
+gl = round(df_f[df_f['status'] == 'خاسرة']['pnl'].sum(), 2) if has else 0.0
+net = round(gp + gl, 2)
+
+st.markdown("<h3 style='direction:rtl;text-align:right'>📊 أداء الفترة السابقة</h3>", unsafe_allow_html=True)
+c1, c2 = st.columns(2)
+c1.markdown(f"<div class='box' style='border-top:4px solid #8c52ff'><div>🎯 نسبة النجاح</div><h1 style='color:#b388ff'>{rate}%</h1></div>", unsafe_allow_html=True)
+c2.markdown(f"<div class='box' style='border-top:4px solid #00b0ff'><div>📊 الصفقات (مؤمّنة: {bes})</div><h1 style='color:#40c4ff'>{wins + losses + bes}</h1></div>", unsafe_allow_html=True)
+c3, c4 = st.columns(2)
+c3.markdown(f"<div class='box' style='border-top:4px solid #00e676'><div>✅ الناجحة (<span dir='ltr'>+${gp}</span>)</div><h1 style='color:#00e676'>{wins}</h1></div>", unsafe_allow_html=True)
+c4.markdown(f"<div class='box' style='border-top:4px solid #ff1744'><div>❌ الخاسرة (<span dir='ltr'>-${abs(gl)}</span>)</div><h1 style='color:#ff5252'>{losses}</h1></div>", unsafe_allow_html=True)
+
+net_color = "#00e676" if net >= 0 else "#ff5252"
+st.markdown(f"<div class='box' style='border-top:4px solid {net_color}'><div>💰 صافي الربح</div><h1 style='color:{net_color}'><span dir='ltr'>{net}$</span></h1></div>", unsafe_allow_html=True)
+
+# ---------------- أفضل الصفقات السابقة ----------------
+st.markdown("<h3 style='direction:rtl;text-align:right'>🏆 أفضل صفقات سابقة</h3>", unsafe_allow_html=True)
+past_df = df_f[~df_f['status'].isin(LIVE_STATUSES)] if has else pd.DataFrame()
+if past_df.empty:
+    st.info("لا توجد صفقات سابقة بهذه الإعدادات.")
+else:
+    top3 = past_df.sort_values(['ai', 'timestamp'], ascending=[False, False]).head(3)
+    for _, r in top3.iterrows():
+        render_card(r)
+
+    with st.expander("📋 كل الصفقات"):
+        show = df_f.sort_values('timestamp', ascending=False)[
+            ['timestamp', 'symbol', 'type', 'entry', 'sl', 'tp', 'fvg', 'ai', 'status', 'pnl']]
+        st.dataframe(show, use_container_width=True, hide_index=True)
