@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="Whale SMC AI ($)", page_icon="🐋", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Candlestick Patterns AI ($)", page_icon="🕯️", layout="wide", initial_sidebar_state="collapsed")
 
 ASSETS_MAP = {
     "XLMUSDT": "XLM-USD",
@@ -19,7 +19,7 @@ ASSETS_MAP = {
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v13_atr35_r35"
+CACHE_VER = "v14_candles_35"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -42,20 +42,58 @@ def fetch_data(ticker, interval="1h"):
         return pd.DataFrame()
 
 
-def detect_fvg(records, direction):
-    for idx in range(2, min(len(records), 8)):
-        c1, c3 = records[idx - 2], records[idx]
-        if direction == "BUY" and c3['low'] > c1['high']:
-            return True, (c3['low'] + c1['high']) / 2.0
-        if direction == "SELL" and c3['high'] < c1['low']:
-            return True, (c3['high'] + c1['low']) / 2.0
-    return False, 0.0
+def detect_candle_pattern(rec, i):
+    """اكتشاف النماذج الستة من الصورة: 3 صاعدة و 3 هابطة"""
+    c0, c1, c2 = rec[i - 2], rec[i - 1], rec[i]
+    past_low = min(x['low'] for x in rec[i - 8:i])
+    past_high = max(x['high'] for x in rec[i - 8:i])
+
+    b2 = abs(c2['close'] - c2['open'])
+    r2 = max(c2['high'] - c2['low'], 1e-9)
+    u_wick2 = c2['high'] - max(c2['open'], c2['close'])
+    l_wick2 = min(c2['open'], c2['close']) - c2['low']
+    b1 = abs(c1['close'] - c1['open'])
+
+    # --- 1. النماذج الصاعدة (BUY) عند القيعان ---
+    near_bottom = min(c2['low'], c1['low']) <= past_low * 1.004
+    if near_bottom:
+        if (c0['close'] > c0['open'] and c1['close'] > c1['open'] and c2['close'] > c2['open']
+                and c1['close'] > c0['close'] and c2['close'] > c1['close']
+                and b2 >= r2 * 0.45):
+            return "BUY", "الجنود الثلاثة البيض", 88.5
+
+        if (c1['close'] < c1['open'] and c2['close'] > c2['open']
+                and b1 > 0 and b2 >= b1 * 0.55
+                and c2['close'] > (c1['open'] + c1['close']) / 2.0
+                and c2['close'] < c1['open']):
+            return "BUY", "خط الاختراق", 84.0
+
+        if (u_wick2 >= b2 * 2.0 and l_wick2 <= b2 * 0.35 and r2 > 0):
+            return "BUY", "المطرقة المقلوبة", 81.5
+
+    # --- 2. النماذج الهابطة (SELL) عند القمم ---
+    near_top = max(c2['high'], c1['high']) >= past_high * 0.996
+    if near_top:
+        if (c0['close'] < c0['open'] and c1['close'] < c1['open'] and c2['close'] < c2['open']
+                and c1['close'] < c0['close'] and c2['close'] < c1['close']
+                and b2 >= r2 * 0.45):
+            return "SELL", "الغربان السوداء الثلاثة", 88.5
+
+        if (c1['close'] > c1['open'] and c2['close'] < c2['open']
+                and b1 > 0 and b2 >= b1 * 0.55
+                and c2['close'] < (c1['open'] + c1['close']) / 2.0
+                and c2['close'] > c1['open']):
+            return "SELL", "الغطاء السحابي الداكن", 84.0
+
+        if (l_wick2 >= b2 * 2.0 and u_wick2 <= b2 * 0.35 and r2 > 0):
+            return "SELL", "الرجل المشنوق", 81.5
+
+    return None, None, 0.0
 
 
 def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, reward_usd, be_r):
     start = int(np.searchsorted(ts_arr, pd.Timestamp(entry_time).to_datetime64(), side='right'))
     cur_sl, dist = sl, abs(entry - sl)
-    # تمديد نافذة التتبع إلى 320 شمعة لتناسب أهداف 3.5R ووقف 3.5 ATR
     for bar in ltf_rec[start:start + 320]:
         if direction == "BUY":
             if bar['high'] >= entry + dist * be_r:
@@ -72,99 +110,6 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
             if bar['low'] <= tp:
                 return "رابحة", reward_usd
     return "منتهية", 0.0
-
-
-def make_signal(ts, typ, entry, sl, tp, fvg, ai, status, pnl):
-    return {'timestamp': ts, 'type': typ, 'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4),
-            'fvg': "FVG مؤكد" if fvg else "Order Block", 'ai': ai, 'status': status, 'pnl': round(pnl, 2)}
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def run_smc_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=1.0, sl_atr=3.5, req_fvg=False):
-    if df_h.empty or df_l.empty or len(df_h) < 105:
-        return pd.DataFrame()
-
-    df_h = df_h.sort_values('timestamp').reset_index(drop=True).copy()
-    df_l = df_l.sort_values('timestamp').reset_index(drop=True).copy()
-
-    df_h['atr'] = np.maximum(
-        df_h['high'] - df_h['low'],
-        np.maximum(abs(df_h['high'] - df_h['close'].shift(1)), abs(df_h['low'] - df_h['close'].shift(1)))
-    ).rolling(14).mean()
-    df_h['ema100'] = df_h['close'].ewm(span=100, adjust=False).mean()
-    delta = df_h['close'].diff()
-    df_h['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() /
-                                     (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
-    df_h['vol_ma'] = df_h['volume'].rolling(30).mean()
-
-    risk_usd = cap * (rpct / 100.0)
-    reward_usd = risk_usd * rr
-
-    htf_rec = df_h.to_dict('records')
-    ltf_rec = df_l.to_dict('records')
-    ts_arr = df_l['timestamp'].values
-    last_ts = pd.Timestamp(ts_arr[-1])
-    last_close = ltf_rec[-1]['close']
-    signals = []
-
-    VOL_MIN = 0.52
-    WICK_MIN = 0.16
-    LOOKBACK = 5
-    WIN_HOURS = 18
-
-    for i in range(100, len(htf_rec) - 1):
-        row = htf_rec[i]
-        if not (sh <= row['timestamp'].hour <= eh):
-            continue
-        vol_ma = row['vol_ma'] if pd.notna(row['vol_ma']) else 1.0
-        vol_ratio = row['volume'] / (vol_ma + 1e-9)
-        if vol_ratio < VOL_MIN:
-            continue
-        atr = float(row['atr']) if pd.notna(row['atr']) else (row['high'] - row['low'])
-        rsi = float(row['rsi']) if pd.notna(row['rsi']) else 50.0
-        rng = row['high'] - row['low']
-        if rng == 0:
-            continue
-
-        past = htf_rec[i - LOOKBACK:i]
-        maj_low = min(x['low'] for x in past)
-        maj_high = max(x['high'] for x in past)
-
-        a = int(np.searchsorted(ts_arr, row['timestamp'].to_datetime64(), side='right'))
-        end_ts = row['timestamp'] + pd.Timedelta(hours=WIN_HOURS)
-        b = int(np.searchsorted(ts_arr, end_ts.to_datetime64(), side='right'))
-        ltf_win = ltf_rec[a:b]
-        if len(ltf_win) < 3:
-            continue
-        live_ok = end_ts > last_ts
-
-        # ---------- BUY ----------
-        l_wick = min(row['open'], row['close']) - row['low']
-        if (row['close'] > row['ema100'] and 30 < rsi < 74 and row['low'] < maj_low
-                and row['close'] > maj_low and l_wick >= rng * WICK_MIN):
-            sub_h = max(x['high'] for x in ltf_win[:3])
-            choch = next((r for r in ltf_win if r['close'] > sub_h), None)
-            if choch:
-                fvg, fvg_lvl = detect_fvg(ltf_win, "BUY")
-                if not (req_fvg and not fvg):
-                    zone = fvg_lvl if fvg else ((sub_h + row['low']) / 2.0)
-                    sl_lvl = row['low'] - (atr * sl_atr)
-                    ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(l_wick / rng, 0.85) / 0.85 * 35)
-                                       + (22 if fvg else 10) + 10, 70.0), 99.4), 1)
-                    ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
-                                  and r['low'] <= zone and r['close'] > r['open']
-                                  and (r['close'] - r['open']) >= (r['high'] - r['low']) * 0.20), None)
-                    if ent_c:
-                        entry, sl = ent_c['close'], sl_lvl
-                        if entry > sl:
-                            tp = entry + (entry - sl) * rr
-                            st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
-                            if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
-                                st_res = "جارية"
-                            signals.append(make_signal(ent_c['timestamp'], 'شراء (BUY)', entry, sl, tp, fvg, ai, st_res, pnl))
-                    elif live_ok and zone > sl_lvl and last_close > sl_lvl:
-                        tp = zone + (zone - sl_lvl) * rr
-                        signals.append(make_signal(choch['timestamp'], 'شراء (BUY)', zone, sl_lvl, tp, fvg, ai, "بانتظار الدخول", 0.0))
 @st.cache_data(ttl=300, show_spinner=False)
 def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=1.0, sl_atr=3.5):
     if df_h.empty or df_l.empty or len(df_h) < 60:
