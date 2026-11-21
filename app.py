@@ -5,7 +5,7 @@ import requests
 
 st.set_page_config(page_title="نظام النماذج الانعكاسية AI", layout="wide")
 
-CACHE_VER = "v2.1"
+CACHE_VER = "v2.2"
 
 ASSETS_MAP = {
     "بيتكوين (BTC)": "BTCUSDT",
@@ -27,7 +27,7 @@ TIMEFRAMES_MAP = {
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_data(symbol, interval, limit=1000):
-    url = "https://binance.com"
+    url = "https://binance.vision"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     try:
         resp = requests.get(url, params=params, timeout=10)
@@ -106,13 +106,12 @@ def eval_trade(records, ts_arr, entry_ts, direction, entry, sl, tp, risk_usd, re
                 be_moved = True
 
     return "جارية", 0.0
-
 @st.cache_data(ttl=300, show_spinner=False)
 def run_patterns_cached(_ver, df_4h, df_entry, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=5.0, be_r=0.85, sl_atr=2.30, market_mode="عقود آجلة (Futures)", leverage=10):
     if df_4h.empty or df_entry.empty or len(df_4h) < 105 or len(df_entry) < 60:
         return pd.DataFrame()
 
-    # 1. الاتجاه العام مثبت في الخفاء على فريم 4 ساعات (EMA 100) مع إزاحة شمعة لمنع تسرب المستقبل
+    # 1. الاتجاه العام مثبت في الخفاء على فريم 4 ساعات (EMA 100)
     df_tr = df_4h.sort_values('timestamp').reset_index(drop=True).copy()
     df_tr['ema100_4h'] = df_tr['close'].ewm(span=100, adjust=False).mean()
     df_tr['trend_up'] = (df_tr['close'] > df_tr['ema100_4h']).shift(1)
@@ -123,7 +122,7 @@ def run_patterns_cached(_ver, df_4h, df_entry, rr=1.90, sh=0, eh=23, cap=1000.0,
         df_tf['high'] - df_tf['low'],
         np.maximum(abs(df_tf['high'] - df_tf['close'].shift(1)), abs(df_tf['low'] - df_tf['close'].shift(1)))
     ).rolling(14).mean()
-    
+
     delta = df_tf['close'].diff()
     df_tf['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
     df_tf['vol_ma'] = df_tf['volume'].rolling(24).mean()
@@ -163,7 +162,7 @@ def run_patterns_cached(_ver, df_4h, df_entry, rr=1.90, sh=0, eh=23, cap=1000.0,
                 entry = ent_c['close']
                 tp = entry + (entry - sl) * rr
                 sl_pct = max((entry - sl) / entry, 1e-6)
-                risk_usd = min(pos_usd * sl_pct, margin_usd) # حماية من تجاوز الهامش
+                risk_usd = min(pos_usd * sl_pct, margin_usd)
                 reward_usd = risk_usd * rr
                 st_res, pnl = eval_trade(tf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
                 if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=24):
@@ -180,7 +179,7 @@ def run_patterns_cached(_ver, df_4h, df_entry, rr=1.90, sh=0, eh=23, cap=1000.0,
                 entry = ent_c['close']
                 tp = entry - (sl - entry) * rr
                 sl_pct = max((sl - entry) / entry, 1e-6)
-                risk_usd = min(pos_usd * sl_pct, margin_usd) # حماية من تجاوز الهامش
+                risk_usd = min(pos_usd * sl_pct, margin_usd)
                 reward_usd = risk_usd * rr
                 st_res, pnl = eval_trade(tf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd, be_r)
                 if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=24):
@@ -195,7 +194,6 @@ def run_patterns_cached(_ver, df_4h, df_entry, rr=1.90, sh=0, eh=23, cap=1000.0,
         df_res['cur_price'] = round(last_close, 4)
     return df_res
 
-# --- تنسيق CSS ---
 st.markdown("""
 <style>
 .stApp{background:#09090d;color:#fff}
@@ -215,3 +213,72 @@ with st.sidebar:
     max_age_hrs = st.slider("أقصى عمر للصفقة الحية (ساعات):", 6, 48, 24)
     max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
 
+st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (AI)</h2>", unsafe_allow_html=True)
+
+r1_c1, r1_c2, r1_c3 = st.columns(3)
+with r1_c1:
+    market_mode = st.selectbox("⚖️ نوع التداول:", ["عقود آجلة (Futures)", "سبوت (Spot)"])
+with r1_c2:
+    if "Spot" in market_mode:
+        leverage = 1
+        st.number_input("⚡ الرافعة (Spot = 1x):", 1, 1, 1, disabled=True)
+    else:
+        leverage = st.number_input("⚡ الرافعة المالية:", min_value=1, max_value=100, value=10, step=1)
+with r1_c3:
+    selected_tf_label = st.selectbox("⏱️ فريم الدخول:", list(TIMEFRAMES_MAP.keys()), index=1)
+    entry_tf = TIMEFRAMES_MAP[selected_tf_label]
+
+r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
+with r2_c1:
+    view = st.selectbox("📅 الفترة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
+with r2_c2:
+    asset = st.selectbox("🪙 الأصل:", ["الكل"] + list(ASSETS_MAP.keys()))
+with r2_c3:
+    sl_atr = st.number_input("🛑 وقف الخسارة (ATR):", min_value=0.20, max_value=10.00, value=2.30, step=0.10)
+with r2_c4:
+    rr = st.number_input("🎯 العائد (R : R):", min_value=0.50, max_value=10.00, value=1.90, step=0.10)
+
+if st.button("🔍 فحص وتحديث الصفقات بالإعدادات المختارة"):
+    st.cache_data.clear()
+
+now_utc = pd.Timestamp.utcnow().tz_localize(None)
+cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
+targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
+all_frames = []
+
+with st.spinner(f"جاري التحليل على فريم {entry_tf} ({market_mode} | رافعة {leverage}x)..."):
+    for name, ticker in targets.items():
+        df_4h_data = fetch_data(ticker, "4h", limit=500)
+        df_entry_data = fetch_data(ticker, entry_tf, limit=1000)
+        res = run_patterns_cached(CACHE_VER, df_4h_data, df_entry_data, rr, sh, eh, cap, rpct, 0.85, sl_atr, market_mode, leverage)
+        if not res.empty:
+            res = res[(res['ai'] >= min_ai) & (res['timestamp'] >= cutoff)].copy()
+            if not res.empty:
+                res['asset'] = name
+                all_frames.append(res)
+
+all_df = pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
+
+st.markdown("<h4 style='direction:rtl;text-align:right;margin-top:15px'>📊 ملخص الأداء والتوصيات</h4>", unsafe_allow_html=True)
+
+if all_df.empty:
+    st.info("لا توجد صفقات مطابقة للشروط الحالية. جرب تقليل الحد الأدنى لقوة النموذج أو تغيير الفريم.")
+else:
+    all_df = all_df.sort_values(by='timestamp', ascending=False).reset_index(drop=True)
+    closed_df = all_df[all_df['status'] == 'منتهية']
+    wins = len(closed_df[closed_df['pnl'] > 0])
+    total_closed = len(closed_df)
+    win_rate = round((wins / total_closed * 100), 1) if total_closed > 0 else 0.0
+    net_pnl = round(all_df['pnl'].sum(), 2)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(f"<div class='box'><h5>إجمالي الإشارات</h5><h3>{len(all_df)}</h3></div>", unsafe_allow_html=True)
+    m2.markdown(f"<div class='box'><h5>الصفقات المنتهية</h5><h3>{total_closed}</h3></div>", unsafe_allow_html=True)
+    m3.markdown(f"<div class='box'><h5>نسبة النجاح</h5><h3 style='color:#00e676'>{win_rate}%</h3></div>", unsafe_allow_html=True)
+    pnl_color = "#00e676" if net_pnl >= 0 else "#ff1744"
+    m4.markdown(f"<div class='box'><h5>صافي الربح/الخسارة</h5><h3 style='color:{pnl_color}'>{net_pnl}$</h3></div>", unsafe_allow_html=True)
+
+    live_df = all_df[
+        (all_df['status'].isin(['جارية', 'بانتظار الدخول'])) &
+        ((now_utc - all_df['timestamp']) <= pd.Timedelta(hours=max_age_hrs))
+    ]
