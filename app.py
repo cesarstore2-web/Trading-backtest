@@ -19,7 +19,7 @@ ASSETS_MAP = {
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v14_candles_35"
+CACHE_VER = "v15_trend_candles"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -111,8 +111,8 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
                 return "رابحة", reward_usd
     return "منتهية", 0.0
 @st.cache_data(ttl=300, show_spinner=False)
-def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=1.0, sl_atr=3.5):
-    if df_h.empty or df_l.empty or len(df_h) < 60:
+def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.85, sl_atr=3.5):
+    if df_h.empty or df_l.empty or len(df_h) < 105:
         return pd.DataFrame()
 
     df_h = df_h.sort_values('timestamp').reset_index(drop=True).copy()
@@ -122,6 +122,7 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
         df_h['high'] - df_h['low'],
         np.maximum(abs(df_h['high'] - df_h['close'].shift(1)), abs(df_h['low'] - df_h['close'].shift(1)))
     ).rolling(14).mean()
+    df_h['ema100'] = df_h['close'].ewm(span=100, adjust=False).mean()
     delta = df_h['close'].diff()
     df_h['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() /
                                      (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
@@ -137,13 +138,13 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
     last_close = ltf_rec[-1]['close']
     signals = []
 
-    for i in range(50, len(htf_rec) - 1):
+    for i in range(100, len(htf_rec) - 1):
         row = htf_rec[i]
         if not (sh <= row['timestamp'].hour <= eh):
             continue
         vol_ma = row['vol_ma'] if pd.notna(row['vol_ma']) else 1.0
         vol_ratio = row['volume'] / (vol_ma + 1e-9)
-        if vol_ratio < 0.55:
+        if vol_ratio < 0.85:
             continue
 
         direction, pattern_name, base_ai = detect_candle_pattern(htf_rec, i)
@@ -160,7 +161,8 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
         ltf_win = ltf_rec[a:b]
         live_ok = end_ts > last_ts
 
-        if direction == "BUY" and rsi < 68:
+        # --- فلتر الاتجاه: الشراء فقط فوق EMA100 ---
+        if direction == "BUY" and row['close'] > row['ema100'] and 35 < rsi < 66:
             entry_zone = row['close']
             sl = row['low'] - (atr * sl_atr)
             tp = entry_zone + (entry_zone - sl) * rr
@@ -179,7 +181,8 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
                                 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai,
                                 'status': 'بانتظار الدخول', 'pnl': 0.0})
 
-        elif direction == "SELL" and rsi > 32:
+        # --- فلتر الاتجاه: البيع فقط تحت EMA100 ---
+        elif direction == "SELL" and row['close'] < row['ema100'] and 34 < rsi < 65:
             entry_zone = row['close']
             sl = row['high'] + (atr * sl_atr)
             tp = entry_zone - (sl - entry_zone) * rr
@@ -221,13 +224,12 @@ with st.sidebar:
     htf = st.selectbox("فريم النموذج (HTF):", ["1h", "4h"], index=0)
     ltf = st.selectbox("فريم التأكيد (LTF):", ["15m", "5m"], index=0)
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لقوة النموذج %:", 75, 95, 80)
+    min_ai = st.slider("الحد الأدنى لقوة النموذج %:", 75, 95, 82)
     max_age_hrs = st.slider("أقصى عمر للصفقة الحية (ساعات):", 6, 48, 24)
     max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (AI)</h2>", unsafe_allow_html=True)
 
-# --- نافذة التحكم الرئيسية في أعلى الشاشة (الفترة + الأصل + ATR SL + R:R) ---
 c_f1, c_f2, c_f3, c_f4 = st.columns(4)
 with c_f1:
     view = st.selectbox("📅 سجل تقييم الجودة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
@@ -246,7 +248,7 @@ cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
 
 all_frames = []
-with st.spinner(f"جاري التحليل (ATR SL: {sl_atr} | R:R 1:{rr})..."):
+with st.spinner(f"جاري التحليل مع فلتر الاتجاه (ATR SL: {sl_atr} | R:R 1:{rr})..."):
     for name, ticker in targets.items():
         df_h = fetch_data(ticker, htf)
         df_l = fetch_data(ticker, ltf)
@@ -293,6 +295,3 @@ else:
     live_df = pd.DataFrame()
 
 if live_df.empty:
-    st.markdown(f"<div class='box' style='color:#9e9eb8'>لا توجد نماذج نشطة خلال آخر {max_age_hrs} ساعة.</div>", unsafe_allow_html=True)
-else:
-    live_df = live_df.sort_values(by=['timestamp', 'ai'], ascending=[False, False]).head(max_cards)
