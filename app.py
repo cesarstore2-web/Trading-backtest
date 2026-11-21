@@ -43,19 +43,19 @@ def detect_fvg(records, direction):
     return False, 0.0
 
 
-def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
+def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, reward_usd, be_r):
     start = int(np.searchsorted(ts_arr, pd.Timestamp(entry_time).to_datetime64(), side='right'))
     cur_sl, dist = sl, abs(entry - sl)
     for bar in ltf_rec[start:start + 280]:
         if direction == "BUY":
-            if bar['high'] >= entry + dist * 1.1:
+            if bar['high'] >= entry + dist * be_r:
                 cur_sl = entry
             if bar['low'] <= cur_sl:
                 return ("مؤمّنة (0$)", 0.0) if cur_sl == entry else ("خاسرة", -risk_usd)
             if bar['high'] >= tp:
                 return "رابحة", reward_usd
         else:
-            if bar['low'] <= entry - dist * 1.1:
+            if bar['low'] <= entry - dist * be_r:
                 cur_sl = entry
             if bar['high'] >= cur_sl:
                 return ("مؤمّنة (0$)", 0.0) if cur_sl == entry else ("خاسرة", -risk_usd)
@@ -64,7 +64,7 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
     return "جارية", 0.0
 
 
-def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
+def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_atr=0.5, req_fvg=False):
     if df_h.empty or df_l.empty or len(df_h) < 105:
         return pd.DataFrame()
 
@@ -86,13 +86,13 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
 
     htf_rec = df_h.to_dict('records')
     ltf_rec = df_l.to_dict('records')
-    ts_arr = df_l['timestamp'].values  # datetime64[ns], مرتبة زمنياً
+    ts_arr = df_l['timestamp'].values
     signals = []
 
-    VOL_MIN = 0.7      # كان 0.9
-    WICK_MIN = 0.20    # كان 0.28
-    LOOKBACK = 10      # كان 12
-    WIN_HOURS = 16     # كان 10
+    VOL_MIN = 0.7
+    WICK_MIN = 0.20
+    LOOKBACK = 10
+    WIN_HOURS = 16
 
     for i in range(100, len(htf_rec) - 2):
         row = htf_rec[i]
@@ -126,20 +126,23 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
             choch = next((r for r in ltf_win if r['close'] > sub_h), None)
             if choch:
                 fvg, fvg_lvl = detect_fvg(ltf_win, "BUY")
-                zone = fvg_lvl if fvg else ((sub_h + row['low']) / 2.0)
-                ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
-                              and r['low'] <= zone and r['close'] > r['open']), None)
-                if ent_c:
-                    entry, sl = ent_c['close'], row['low'] - (atr * 0.35)
-                    if entry > sl:
-                        tp = entry + (entry - sl) * rr
-                        ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(l_wick / rng, 0.85) / 0.85 * 35)
-                                           + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
-                        st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd)
-                        signals.append({'timestamp': ent_c['timestamp'], 'type': 'شراء (BUY)',
-                                        'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4),
-                                        'fvg': "FVG مؤكد" if fvg else "Order Block",
-                                        'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
+                if req_fvg and not fvg:
+                    pass
+                else:
+                    zone = fvg_lvl if fvg else ((sub_h + row['low']) / 2.0)
+                    ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
+                                  and r['low'] <= zone and r['close'] > r['open']), None)
+                    if ent_c:
+                        entry, sl = ent_c['close'], row['low'] - (atr * sl_atr)
+                        if entry > sl:
+                            tp = entry + (entry - sl) * rr
+                            ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(l_wick / rng, 0.85) / 0.85 * 35)
+                                               + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
+                            st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
+                            signals.append({'timestamp': ent_c['timestamp'], 'type': 'شراء (BUY)',
+                                            'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4),
+                                            'fvg': "FVG مؤكد" if fvg else "Order Block",
+                                            'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
 
         # ---------- SELL ----------
         u_wick = row['high'] - max(row['open'], row['close'])
@@ -149,20 +152,23 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
             choch = next((r for r in ltf_win if r['close'] < sub_l), None)
             if choch:
                 fvg, fvg_lvl = detect_fvg(ltf_win, "SELL")
-                zone = fvg_lvl if fvg else ((sub_l + row['high']) / 2.0)
-                ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
-                              and r['high'] >= zone and r['close'] < r['open']), None)
-                if ent_c:
-                    entry, sl = ent_c['close'], row['high'] + (atr * 0.35)
-                    if sl > entry:
-                        tp = entry - (sl - entry) * rr
-                        ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(u_wick / rng, 0.85) / 0.85 * 35)
-                                           + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
-                        st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd)
-                        signals.append({'timestamp': ent_c['timestamp'], 'type': 'بيع (SELL)',
-                                        'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4),
-                                        'fvg': "FVG مؤكد" if fvg else "Order Block",
-                                        'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
+                if req_fvg and not fvg:
+                    pass
+                else:
+                    zone = fvg_lvl if fvg else ((sub_l + row['high']) / 2.0)
+                    ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
+                                  and r['high'] >= zone and r['close'] < r['open']), None)
+                    if ent_c:
+                        entry, sl = ent_c['close'], row['high'] + (atr * sl_atr)
+                        if sl > entry:
+                            tp = entry - (sl - entry) * rr
+                            ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(u_wick / rng, 0.85) / 0.85 * 35)
+                                               + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
+                            st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd, be_r)
+                            signals.append({'timestamp': ent_c['timestamp'], 'type': 'بيع (SELL)',
+                                            'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4),
+                                            'fvg': "FVG مؤكد" if fvg else "Order Block",
+                                            'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
 
     if not signals:
         return pd.DataFrame()
@@ -170,8 +176,8 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct):
-    df = run_smc(fetch_data(tk, htf), fetch_data(tk, ltf), rr, sh, eh, cap, rpct)
+def scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct, be_r, sl_atr, req_fvg):
+    df = run_smc(fetch_data(tk, htf), fetch_data(tk, ltf), rr, sh, eh, cap, rpct, be_r, sl_atr, req_fvg)
     if not df.empty:
         df['symbol'] = name
     return df
@@ -193,7 +199,11 @@ with st.sidebar:
     htf = st.selectbox("فريم السيولة (HTF):", ["1h", "4h"])
     ltf = st.selectbox("فريم الدخول (LTF):", ["15m", "5m"])
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 65, 95, 65)
+    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 65, 95, 70)
+    st.markdown("---")
+    be_r = st.slider("نقطة التأمين (R):", 0.4, 1.5, 0.8, 0.1)
+    sl_atr = st.slider("هامش الستوب (ATR):", 0.2, 1.0, 0.5, 0.05)
+    req_fvg = st.checkbox("قبول الصفقات ذات FVG فقط", value=False)
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🐋 نظام تتبع سيولة الحيتان (SMC + AI)</h2>", unsafe_allow_html=True)
 c_f1, c_f2 = st.columns(2)
@@ -210,7 +220,7 @@ res_list = []
 progress = st.progress(0.0, text="جاري فحص السيولة...")
 for n, (name, tk) in enumerate(items):
     try:
-        d = scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct)
+        d = scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct, be_r, sl_atr, req_fvg)
         if d is not None and not d.empty:
             res_list.append(d)
     except Exception as e:
@@ -235,11 +245,11 @@ c1, c2 = st.columns(2)
 c1.markdown(f"<div class='box' style='border-top:4px solid #8c52ff'><div>🎯 نسبة النجاح</div><h1 style='color:#b388ff'>{rate}%</h1></div>", unsafe_allow_html=True)
 c2.markdown(f"<div class='box' style='border-top:4px solid #00b0ff'><div>📊 الصفقات (مؤمّنة: {bes})</div><h1 style='color:#40c4ff'>{wins + losses + bes}</h1></div>", unsafe_allow_html=True)
 c3, c4 = st.columns(2)
-c3.markdown(f"<div class='box' style='border-top:4px solid #00e676'><div>✅ الناجحة (+${gp})</div><h1 style='color:#00e676'>{wins}</h1></div>", unsafe_allow_html=True)
-c4.markdown(f"<div class='box' style='border-top:4px solid #ff1744'><div>❌ الخاسرة (${gl})</div><h1 style='color:#ff5252'>{losses}</h1></div>", unsafe_allow_html=True)
+c3.markdown(f"<div class='box' style='border-top:4px solid #00e676'><div>✅ الناجحة (<span dir='ltr'>+${gp}</span>)</div><h1 style='color:#00e676'>{wins}</h1></div>", unsafe_allow_html=True)
+c4.markdown(f"<div class='box' style='border-top:4px solid #ff1744'><div>❌ الخاسرة (<span dir='ltr'>-${abs(gl)}</span>)</div><h1 style='color:#ff5252'>{losses}</h1></div>", unsafe_allow_html=True)
 
 net_color = "#00e676" if net >= 0 else "#ff5252"
-st.markdown(f"<div class='box' style='border-top:4px solid {net_color}'><div>💰 صافي الربح</div><h1 style='color:{net_color}'>{net}$</h1></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='box' style='border-top:4px solid {net_color}'><div>💰 صافي الربح</div><h1 style='color:{net_color}'><span dir='ltr'>{net}$</span></h1></div>", unsafe_allow_html=True)
 
 st.markdown("<h3 style='direction:rtl;text-align:right'>🏆 أعلى 3 توصيات</h3>", unsafe_allow_html=True)
 if not has:
@@ -252,7 +262,7 @@ else:
             f"<div class='{cls}'>"
             f"<b>{r['symbol']} — {r['type']}</b> &nbsp; 🤖 {r['ai']}%<br>"
             f"الدخول: {r['entry']} &nbsp;|&nbsp; SL: {r['sl']} &nbsp;|&nbsp; TP: {r['tp']}<br>"
-            f"{r['fvg']} &nbsp;|&nbsp; الحالة: {r['status']} ({r['pnl']}$)<br>"
+            f"{r['fvg']} &nbsp;|&nbsp; الحالة: {r['status']} (<span dir='ltr'>{r['pnl']}$</span>)<br>"
             f"<small>{r['timestamp']}</small>"
             f"</div>", unsafe_allow_html=True)
 
