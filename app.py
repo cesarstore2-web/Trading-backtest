@@ -6,15 +6,9 @@ import numpy as np
 st.set_page_config(page_title="Candlestick Patterns AI ($)", page_icon="🕯️", layout="wide", initial_sidebar_state="collapsed")
 
 ASSETS_MAP = {
-    "XLMUSDT": "XLM-USD",
-    "ZECUSDT": "ZEC-USD",
-    "XRPUSDT": "XRP-USD",
-    "HBARUSDT": "HBAR-USD",
-    "ADAUSDT": "ADA-USD",
-    "LTCUSDT": "LTC-USD",
-    "BTCUSDT": "BTC-USD",
-    "ETHUSDT": "ETH-USD",
-    "PAXGUSDT": "PAXG-USD",
+    "XLMUSDT": "XLM-USD", "ZECUSDT": "ZEC-USD", "XRPUSDT": "XRP-USD",
+    "HBARUSDT": "HBAR-USD", "ADAUSDT": "ADA-USD", "LTCUSDT": "LTC-USD",
+    "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "PAXGUSDT": "PAXG-USD",
     "XAUUSDT (الذهب)": "GC=F"
 }
 
@@ -43,49 +37,29 @@ def fetch_data(ticker, interval="1h"):
 
 
 def detect_candle_pattern(rec, i):
-    """اكتشاف النماذج الستة من الصورة: 3 صاعدة و 3 هابطة"""
     c0, c1, c2 = rec[i - 2], rec[i - 1], rec[i]
     past_low = min(x['low'] for x in rec[i - 8:i])
     past_high = max(x['high'] for x in rec[i - 8:i])
-
     b2 = abs(c2['close'] - c2['open'])
     r2 = max(c2['high'] - c2['low'], 1e-9)
     u_wick2 = c2['high'] - max(c2['open'], c2['close'])
     l_wick2 = min(c2['open'], c2['close']) - c2['low']
     b1 = abs(c1['close'] - c1['open'])
 
-    # --- 1. النماذج الصاعدة (BUY) عند القيعان ---
-    near_bottom = min(c2['low'], c1['low']) <= past_low * 1.004
-    if near_bottom:
-        if (c0['close'] > c0['open'] and c1['close'] > c1['open'] and c2['close'] > c2['open']
-                and c1['close'] > c0['close'] and c2['close'] > c1['close']
-                and b2 >= r2 * 0.45):
+    if min(c2['low'], c1['low']) <= past_low * 1.004:
+        if c0['close'] > c0['open'] and c1['close'] > c1['open'] and c2['close'] > c2['open'] and c1['close'] > c0['close'] and c2['close'] > c1['close'] and b2 >= r2 * 0.45:
             return "BUY", "الجنود الثلاثة البيض", 88.5
-
-        if (c1['close'] < c1['open'] and c2['close'] > c2['open']
-                and b1 > 0 and b2 >= b1 * 0.55
-                and c2['close'] > (c1['open'] + c1['close']) / 2.0
-                and c2['close'] < c1['open']):
+        if c1['close'] < c1['open'] and c2['close'] > c2['open'] and b1 > 0 and b2 >= b1 * 0.55 and (c1['open'] + c1['close']) / 2.0 < c2['close'] < c1['open']:
             return "BUY", "خط الاختراق", 84.0
-
-        if (u_wick2 >= b2 * 2.0 and l_wick2 <= b2 * 0.35 and r2 > 0):
+        if u_wick2 >= b2 * 2.0 and l_wick2 <= b2 * 0.35 and r2 > 0:
             return "BUY", "المطرقة المقلوبة", 81.5
 
-    # --- 2. النماذج الهابطة (SELL) عند القمم ---
-    near_top = max(c2['high'], c1['high']) >= past_high * 0.996
-    if near_top:
-        if (c0['close'] < c0['open'] and c1['close'] < c1['open'] and c2['close'] < c2['open']
-                and c1['close'] < c0['close'] and c2['close'] < c1['close']
-                and b2 >= r2 * 0.45):
+    if max(c2['high'], c1['high']) >= past_high * 0.996:
+        if c0['close'] < c0['open'] and c1['close'] < c1['open'] and c2['close'] < c2['open'] and c1['close'] < c0['close'] and c2['close'] < c1['close'] and b2 >= r2 * 0.45:
             return "SELL", "الغربان السوداء الثلاثة", 88.5
-
-        if (c1['close'] > c1['open'] and c2['close'] < c2['open']
-                and b1 > 0 and b2 >= b1 * 0.55
-                and c2['close'] < (c1['open'] + c1['close']) / 2.0
-                and c2['close'] > c1['open']):
+        if c1['close'] > c1['open'] and c2['close'] < c2['open'] and b1 > 0 and b2 >= b1 * 0.55 and c1['open'] < c2['close'] < (c1['open'] + c1['close']) / 2.0:
             return "SELL", "الغطاء السحابي الداكن", 84.0
-
-        if (l_wick2 >= b2 * 2.0 and u_wick2 <= b2 * 0.35 and r2 > 0):
+        if l_wick2 >= b2 * 2.0 and u_wick2 <= b2 * 0.35 and r2 > 0:
             return "SELL", "الرجل المشنوق", 81.5
 
     return None, None, 0.0
@@ -117,40 +91,26 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
 
     df_h = df_h.sort_values('timestamp').reset_index(drop=True).copy()
     df_l = df_l.sort_values('timestamp').reset_index(drop=True).copy()
-
-    df_h['atr'] = np.maximum(
-        df_h['high'] - df_h['low'],
-        np.maximum(abs(df_h['high'] - df_h['close'].shift(1)), abs(df_h['low'] - df_h['close'].shift(1)))
-    ).rolling(14).mean()
+    df_h['atr'] = np.maximum(df_h['high'] - df_h['low'], np.maximum(abs(df_h['high'] - df_h['close'].shift(1)), abs(df_h['low'] - df_h['close'].shift(1)))).rolling(14).mean()
     df_h['ema100'] = df_h['close'].ewm(span=100, adjust=False).mean()
     delta = df_h['close'].diff()
-    df_h['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() /
-                                     (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
+    df_h['rsi'] = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / (-delta.where(delta < 0, 0).rolling(14).mean() + 1e-9))))
     df_h['vol_ma'] = df_h['volume'].rolling(24).mean()
 
-    risk_usd = cap * (rpct / 100.0)
-    reward_usd = risk_usd * rr
-
-    htf_rec = df_h.to_dict('records')
-    ltf_rec = df_l.to_dict('records')
-    ts_arr = df_l['timestamp'].values
-    last_ts = pd.Timestamp(ts_arr[-1])
-    last_close = ltf_rec[-1]['close']
-    signals = []
+    risk_usd, reward_usd = cap * (rpct / 100.0), cap * (rpct / 100.0) * rr
+    htf_rec, ltf_rec, ts_arr = df_h.to_dict('records'), df_l.to_dict('records'), df_l['timestamp'].values
+    last_ts, last_close, signals = pd.Timestamp(ts_arr[-1]), ltf_rec[-1]['close'], []
 
     for i in range(100, len(htf_rec) - 1):
         row = htf_rec[i]
         if not (sh <= row['timestamp'].hour <= eh):
             continue
-        vol_ma = row['vol_ma'] if pd.notna(row['vol_ma']) else 1.0
-        vol_ratio = row['volume'] / (vol_ma + 1e-9)
+        vol_ratio = row['volume'] / ((row['vol_ma'] if pd.notna(row['vol_ma']) else 1.0) + 1e-9)
         if vol_ratio < 0.85:
             continue
-
         direction, pattern_name, base_ai = detect_candle_pattern(htf_rec, i)
         if not direction:
             continue
-
         atr = float(row['atr']) if pd.notna(row['atr']) else (row['high'] - row['low'])
         rsi = float(row['rsi']) if pd.notna(row['rsi']) else 50.0
         ai = round(min(base_ai + min(vol_ratio * 3.0, 9.5), 99.2), 1)
@@ -158,14 +118,10 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
         a = int(np.searchsorted(ts_arr, row['timestamp'].to_datetime64(), side='right'))
         end_ts = row['timestamp'] + pd.Timedelta(hours=12)
         b = int(np.searchsorted(ts_arr, end_ts.to_datetime64(), side='right'))
-        ltf_win = ltf_rec[a:b]
-        live_ok = end_ts > last_ts
+        ltf_win, live_ok = ltf_rec[a:b], end_ts > last_ts
 
-        # --- فلتر الاتجاه: الشراء فقط فوق EMA100 ---
         if direction == "BUY" and row['close'] > row['ema100'] and 35 < rsi < 66:
-            entry_zone = row['close']
             sl = row['low'] - (atr * sl_atr)
-            tp = entry_zone + (entry_zone - sl) * rr
             ent_c = next((r for r in ltf_win if r['close'] > row['high']), None)
             if ent_c:
                 entry = ent_c['close']
@@ -173,19 +129,13 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
                 st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
                 if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
                     st_res = "جارية"
-                signals.append({'timestamp': ent_c['timestamp'], 'type': 'شراء (BUY)', 'entry': round(entry, 4),
-                                'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai,
-                                'status': st_res, 'pnl': round(pnl, 2)})
+                signals.append({'timestamp': ent_c['timestamp'], 'type': 'شراء (BUY)', 'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
             elif live_ok and last_close > sl:
-                signals.append({'timestamp': row['timestamp'], 'type': 'شراء (BUY)', 'entry': round(row['high'], 4),
-                                'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai,
-                                'status': 'بانتظار الدخول', 'pnl': 0.0})
+                tp = row['high'] + (row['high'] - sl) * rr
+                signals.append({'timestamp': row['timestamp'], 'type': 'شراء (BUY)', 'entry': round(row['high'], 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai, 'status': 'بانتظار الدخول', 'pnl': 0.0})
 
-        # --- فلتر الاتجاه: البيع فقط تحت EMA100 ---
         elif direction == "SELL" and row['close'] < row['ema100'] and 34 < rsi < 65:
-            entry_zone = row['close']
             sl = row['high'] + (atr * sl_atr)
-            tp = entry_zone - (sl - entry_zone) * rr
             ent_c = next((r for r in ltf_win if r['close'] < row['low']), None)
             if ent_c:
                 entry = ent_c['close']
@@ -193,13 +143,10 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
                 st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd, be_r)
                 if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
                     st_res = "جارية"
-                signals.append({'timestamp': ent_c['timestamp'], 'type': 'بيع (SELL)', 'entry': round(entry, 4),
-                                'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai,
-                                'status': st_res, 'pnl': round(pnl, 2)})
+                signals.append({'timestamp': ent_c['timestamp'], 'type': 'بيع (SELL)', 'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
             elif live_ok and last_close < sl:
-                signals.append({'timestamp': row['timestamp'], 'type': 'بيع (SELL)', 'entry': round(row['low'], 4),
-                                'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai,
-                                'status': 'بانتظار الدخول', 'pnl': 0.0})
+                tp = row['low'] - (sl - row['low']) * rr
+                signals.append({'timestamp': row['timestamp'], 'type': 'بيع (SELL)', 'entry': round(row['low'], 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai, 'status': 'بانتظار الدخول', 'pnl': 0.0})
 
     df_res = pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type']) if signals else pd.DataFrame()
     if not df_res.empty:
@@ -207,18 +154,9 @@ def run_patterns_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=
     return df_res
 
 
-st.markdown(
-    "<style>.stApp{background:#09090d;color:#fff}"
-    ".box{background:#15151f;border-radius:15px;padding:16px;text-align:center;border:1px solid #2a2a3c;margin-bottom:10px;direction:rtl}"
-    ".rec{background:#161622;border-right:5px solid #00e676;border-radius:12px;padding:15px;margin-bottom:12px;direction:rtl;text-align:right;border:1px solid #262638}"
-    ".sell{border-right-color:#ff1744}"
-    ".badge{display:inline-block;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:bold;background:#252538;color:#00e5ff;margin-right:6px}"
-    "div.stButton>button{background:linear-gradient(90deg,#7c4dff,#00b0ff);color:#fff;font-weight:bold;border-radius:12px;width:100%;padding:10px}</style>",
-    unsafe_allow_html=True
-)
+st.markdown("<style>.stApp{background:#09090d;color:#fff}.box{background:#15151f;border-radius:15px;padding:16px;text-align:center;border:1px solid #2a2a3c;margin-bottom:10px;direction:rtl}.rec{background:#161622;border-right:5px solid #00e676;border-radius:12px;padding:15px;margin-bottom:12px;direction:rtl;text-align:right;border:1px solid #262638}.sell{border-right-color:#ff1744}.badge{display:inline-block;padding:3px 10px;border-radius:8px;font-size:12px;font-weight:bold;background:#252538;color:#00e5ff;margin-right:6px}div.stButton>button{background:linear-gradient(90deg,#7c4dff,#00b0ff);color:#fff;font-weight:bold;border-radius:12px;width:100%;padding:10px}</style>", unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("⚙️ إعدادات إضافية")
     cap = st.number_input("رأس المال ($):", 100.0, 1000000.0, 1000.0, 100.0)
     rpct = st.number_input("المخاطرة (%):", 0.5, 10.0, 1.0, 0.5)
     htf = st.selectbox("فريم النموذج (HTF):", ["1h", "4h"], index=0)
@@ -229,16 +167,11 @@ with st.sidebar:
     max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (AI)</h2>", unsafe_allow_html=True)
-
 c_f1, c_f2, c_f3, c_f4 = st.columns(4)
-with c_f1:
-    view = st.selectbox("📅 سجل تقييم الجودة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
-with c_f2:
-    asset = st.selectbox("🪙 الأصل المالي:", ["الكل"] + list(ASSETS_MAP.keys()))
-with c_f3:
-    sl_atr = st.number_input("🛑 وقف الخسارة (ATR SL):", min_value=0.2, max_value=10.0, value=3.5, step=0.1)
-with c_f4:
-    rr = st.number_input("🎯 العائد للمخاطرة (R : R):", min_value=0.5, max_value=10.0, value=3.5, step=0.1)
+with c_f1: view = st.selectbox("📅 سجل تقييم الجودة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
+with c_f2: asset = st.selectbox("🪙 الأصل المالي:", ["الكل"] + list(ASSETS_MAP.keys()))
+with c_f3: sl_atr = st.number_input("🛑 وقف الخسارة (ATR SL):", 0.2, 10.0, 3.5, 0.1)
+with c_f4: rr = st.number_input("🎯 العائد للمخاطرة (R : R):", 0.5, 10.0, 3.5, 0.1)
 
 if st.button("🔍 فحص وتحديث الصفقات بالإعدادات المختارة"):
     st.cache_data.clear()
@@ -246,13 +179,11 @@ if st.button("🔍 فحص وتحديث الصفقات بالإعدادات ال�
 now_utc = pd.Timestamp.utcnow().tz_localize(None)
 cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
-
 all_frames = []
-with st.spinner(f"جاري التحليل مع فلتر الاتجاه (ATR SL: {sl_atr} | R:R 1:{rr})..."):
+
+with st.spinner("جاري التحليل..."):
     for name, ticker in targets.items():
-        df_h = fetch_data(ticker, htf)
-        df_l = fetch_data(ticker, ltf)
-        res = run_patterns_cached(CACHE_VER, df_h, df_l, rr=rr, sh=sh, eh=eh, cap=cap, rpct=rpct, sl_atr=sl_atr)
+        res = run_patterns_cached(CACHE_VER, fetch_data(ticker, htf), fetch_data(ticker, ltf), rr, sh, eh, cap, rpct, 0.85, sl_atr)
         if not res.empty:
             res = res[res['ai'] >= min_ai].copy()
             if not res.empty:
@@ -260,38 +191,30 @@ with st.spinner(f"جاري التحليل مع فلتر الاتجاه (ATR SL: 
                 all_frames.append(res)
 
 all_df = pd.concat(all_frames, ignore_index=True) if all_frames else pd.DataFrame()
+st.markdown("<h4 style='direction:rtl;text-align:right;color:#b0b0c8'>📊 مؤشرات جودة الاستراتيجية</h4>", unsafe_allow_html=True)
 
-st.markdown("<h4 style='direction:rtl;text-align:right;color:#b0b0c8'>📊 مؤشرات جودة الاستراتيجية (للفترة المحددة)</h4>", unsafe_allow_html=True)
 if not all_df.empty:
-    period_df = all_df[all_df['timestamp'] >= cutoff]
-    closed_df = period_df[~period_df['status'].isin(LIVE_STATUSES + ["منتهية"])]
+    closed_df = all_df[(all_df['timestamp'] >= cutoff) & (~all_df['status'].isin(LIVE_STATUSES + ["منتهية"]))]
     wins = len(closed_df[closed_df['status'] == 'رابحة'])
     losses = len(closed_df[closed_df['status'] == 'خاسرة'])
     be_cnt = len(closed_df[closed_df['status'].str.contains('مؤمّنة', na=False)])
-    decided = wins + losses
-    win_rate = round((wins / decided) * 100, 1) if decided > 0 else 0.0
+    win_rate = round((wins / (wins + losses)) * 100, 1) if (wins + losses) > 0 else 0.0
     net_pnl = round(closed_df['pnl'].sum(), 2)
 else:
-    wins = losses = be_cnt = 0
-    win_rate = net_pnl = 0.0
+    wins = losses = be_cnt = win_rate = net_pnl = 0
 
 m1, m2, m3, m4 = st.columns(4)
 pnl_color = "#00e676" if net_pnl >= 0 else "#ff1744"
-with m1:
-    st.markdown(f"<div class='box'><div style='color:#9e9eb8'>الربح الصافي ($)</div><h3 style='color:{pnl_color};margin:5px 0'>{net_pnl:+.2f}$</h3></div>", unsafe_allow_html=True)
-with m2:
-    st.markdown(f"<div class='box'><div style='color:#9e9eb8'>نسبة النجاح</div><h3 style='color:#00b0ff;margin:5px 0'>{win_rate}%</h3></div>", unsafe_allow_html=True)
-with m3:
-    st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات رابحة</div><h3 style='color:#00e676;margin:5px 0'>{wins}</h3></div>", unsafe_allow_html=True)
-with m4:
-    st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات خاسرة (مؤمّنة: {be_cnt})</div><h3 style='color:#ff1744;margin:5px 0'>{losses}</h3></div>", unsafe_allow_html=True)
+with m1: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>الربح الصافي ($)</div><h3 style='color:{pnl_color};margin:5px 0'>{net_pnl:+.2f}$</h3></div>", unsafe_allow_html=True)
+with m2: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>نسبة النجاح</div><h3 style='color:#00b0ff;margin:5px 0'>{win_rate}%</h3></div>", unsafe_allow_html=True)
+with m3: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات رابحة</div><h3 style='color:#00e676;margin:5px 0'>{wins}</h3></div>", unsafe_allow_html=True)
+with m4: st.markdown(f"<div class='box'><div style='color:#9e9eb8'>صفقات خاسرة (مؤمّنة: {be_cnt})</div><h3 style='color:#ff1744;margin:5px 0'>{losses}</h3></div>", unsafe_allow_html=True)
 
-st.markdown(f"<h4 style='direction:rtl;text-align:right;color:#00e5ff;margin-top:15px'>⚡ صفقات النماذج الانعكاسية الحية وبانتظار الدخول (أحدث {max_cards} فرص)</h4>", unsafe_allow_html=True)
-
-if not all_df.empty:
-    fresh_cutoff = now_utc - pd.Timedelta(hours=max_age_hrs)
-    live_df = all_df[(all_df['status'].isin(LIVE_STATUSES)) & (all_df['timestamp'] >= fresh_cutoff)].copy()
-else:
-    live_df = pd.DataFrame()
+st.markdown(f"<h4 style='direction:rtl;text-align:right;color:#00e5ff;margin-top:15px'>⚡ الصفقات الحية وبانتظار الدخول (أحدث {max_cards} فرص)</h4>", unsafe_allow_html=True)
+live_df = all_df[(all_df['status'].isin(LIVE_STATUSES)) & (all_df['timestamp'] >= now_utc - pd.Timedelta(hours=max_age_hrs))].copy() if not all_df.empty else pd.DataFrame()
 
 if live_df.empty:
+    st.markdown(f"<div class='box' style='color:#9e9eb8'>لا توجد نماذج نشطة خلال آخر {max_age_hrs} ساعة.</div>", unsafe_allow_html=True)
+else:
+    for _, r in live_df.sort_values(by=['timestamp', 'ai'], ascending=[False, False]).head(max_cards).iterrows():
+        is_sell = "SELL" in r['type']
