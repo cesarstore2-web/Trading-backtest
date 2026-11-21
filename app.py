@@ -3,8 +3,8 @@ import pandas as pd
 from smc_engine import ASSETS_MAP, fetch_data, analyze_smc_strategy
 
 st.set_page_config(
-    page_title="SMC AI Pro Trading ($)",
-    page_icon="💵",
+    page_title="Whale SMC AI Pro ($)",
+    page_icon="🐋",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -75,7 +75,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# القائمة الجانبية للإعدادات وإدارة رأس المال
+# القائمة الجانبية لإدارة رأس المال والإعدادات
 with st.sidebar:
     st.markdown('<h3 class="rtl-text">💰 إدارة رأس المال والإعدادات</h3>', unsafe_allow_html=True)
     capital = st.number_input("رأس مال المحفظة ($ USD):", min_value=100.0, max_value=1000000.0, value=1000.0, step=100.0)
@@ -86,12 +86,12 @@ with st.sidebar:
     htf = st.selectbox("فريم تحديد المناطق (HTF):", ["1h", "4h"], index=0)
     ltf = st.selectbox("فريم الدخول والتأكيد (LTF):", ["15m", "5m"], index=0)
     start_h, end_h = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 60, 95, 70)
+    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 65, 95, 75)
 
 st.markdown("""
 <div class="rtl-text">
-    <h2 style="margin-bottom:0;">⚡ نظام التداول الذكي (SMC + AI)</h2>
-    <p style="color:#9e9eb8; font-size:0.95rem;">أقوى 3 توصيات متوافقة مع الاتجاه المؤسسي بالدولار الأمريكي ($)</p>
+    <h2 style="margin-bottom:0;">🐋 نظام تتبع سيولة الحيتان (SMC + FVG + AI)</h2>
+    <p style="color:#9e9eb8; font-size:0.95rem;">أقوى 3 توصيات مؤسسية بالدولار الأمريكي ($)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -107,7 +107,7 @@ st.button("🔍 فحص والبحث عن أعلى 3 توصيات")
 days_back = 30 if "شهري" in timeframe_view else 7
 cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_back)
 
-with st.spinner("جاري فحص السيولة والاتجاه المؤسسي بالذكاء الاصطناعي..."):
+with st.spinner("جاري تتبع بصمة الحيتان وفجوات القيمة العادلة (FVG)..."):
     all_results = []
     targets = ASSETS_MAP.items() if selected_asset == "الكل" else [(selected_asset, ASSETS_MAP[selected_asset])]
     
@@ -130,7 +130,6 @@ with st.spinner("جاري فحص السيولة والاتجاه المؤسسي 
 
 # حساب الإحصائيات بالدولار الأمريكي
 if not df_filtered.empty:
-    # الصفقات المغلقة بربح أو خسارة (تُستثنى المؤمّنة عند حساب نسبة الخسارة)
     win_count = len(df_filtered[df_filtered['status'] == 'رابحة'])
     loss_count = len(df_filtered[df_filtered['status'] == 'خاسرة'])
     be_count = len(df_filtered[df_filtered['status'].str.contains('مؤمّنة')])
@@ -215,19 +214,19 @@ if not df_filtered.empty:
         st.markdown(f"""
         <div class="{card_class}">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <span style="font-size:1.25rem; font-weight:900; color:#ffffff;">🪙 {row['symbol']} &nbsp;|&nbsp; <span style="color:{type_color};">{row['type']}</span></span>
-                <span style="background:#2a2245; color:#b388ff; padding:4px 12px; border-radius:20px; font-weight:800; font-size:0.9rem;">🤖 تقييم AI: {row['ai_score']}%</span>
+                <span style="font-size:1.2rem; font-weight:900; color:#ffffff;">🪙 {row['symbol']} &nbsp;|&nbsp; <span style="color:{type_color};">{row['type']}</span></span>
+                <span style="background:#2a2245; color:#b388ff; padding:4px 12px; border-radius:20px; font-weight:800; font-size:0.85rem;">🤖 AI: {row['ai_score']}%</span>
             </div>
             <div style="display:flex; justify-content:space-between; flex-wrap:wrap; font-size:0.95rem; color:#d0d0e0; margin-bottom:8px;">
                 <span>🎯 <b>الدخول:</b> ${row['entry']}</span>
                 <span>🛑 <b>الوقف:</b> ${row['sl']}</span>
                 <span>💰 <b>الهدف:</b> ${row['tp']}</span>
             </div>
-            <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:#8e8ea8; border-top:1px solid #28283a; padding-top:8px;">
-                <span>🕒 {row['timestamp'].strftime('%Y-%m-%d %H:%M')}</span>
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; font-size:0.82rem; color:#8e8ea8; border-top:1px solid #28283a; padding-top:8px;">
+                <span>🕒 {row['timestamp'].strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp; 📌 {row['fvg_tag']}</span>
                 <span style="font-weight:800; color:{pnl_color};">النتيجة: {row['status']} ({pnl_str})</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
 else:
-    st.info("لا توجد توصيات مطابقة للشروط الصارمة حالياً. جرب اختيار (الكل) من قائمة العملات.")
+    st.info("لا توجد توصيات مطابقة لشروط السيولة المؤسسية حالياً. جرب اختيار (الكل) من قائمة العملات.")
