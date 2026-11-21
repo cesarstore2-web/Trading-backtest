@@ -54,12 +54,10 @@ def detect_fvg(df_ltf, direction):
         c1 = df_ltf.iloc[idx - 2]
         c3 = df_ltf.iloc[idx]
         if direction == "BUY":
-            # فجوة شرائية: أدنى سعر للشمعة الثالثة أعلى من أعلى سعر للشمعة الأولى
             if float(c3['low']) > float(c1['high']):
                 fvg_mid = (float(c3['low']) + float(c1['high'])) / 2.0
                 return True, fvg_mid
         else:
-            # فجوة بيعية: أعلى سعر للشمعة الثالثة أقل من أدنى سعر للشمعة الأولى
             if float(c3['high']) < float(c1['low']):
                 fvg_mid = (float(c3['high']) + float(c1['low'])) / 2.0
                 return True, fvg_mid
@@ -67,18 +65,13 @@ def detect_fvg(df_ltf, direction):
 
 def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23, capital=1000.0, risk_pct=1.0):
     """
-    محرك التداول المؤسسي المتكامل (Whale Footprint + SMC + FVG + AI):
-    1. فلتر الاتجاه العام (EMA 100) + فلتر التشبع (RSI)
-    2. سحب سيولة واضح (Liquidity Sweep) لقمة/قاع 20 شمعة + انفجار حجم تداول (Whale Volume)
-    3. تأكيد كسر الهيكل (CHoCH) + وجود فجوة قيمة عادلة (FVG) على الفريم الصغير
-    4. الدخول عند إعادة اختبار الفجوة/منطقة الطلب + تأمين الصفقة على الدخول (Break-Even)
+    محرك التداول المؤسسي المتكامل (Whale Footprint + SMC + FVG + AI)
     """
     if df_htf.empty or df_ltf.empty or len(df_htf) < 105:
         return pd.DataFrame()
 
     df_htf = df_htf.copy()
     
-    # المؤشرات المؤسسية
     df_htf['tr'] = np.maximum(
         df_htf['high'] - df_htf['low'],
         np.maximum(abs(df_htf['high'] - df_htf['close'].shift(1)), abs(df_htf['low'] - df_htf['close'].shift(1)))
@@ -102,7 +95,6 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
         if not (start_hour <= row['timestamp'].hour <= end_hour):
             continue
 
-        # بصمة حجم الحيتان (يجب أن يكون حجم التداول أعلى من المتوسط)
         vol_ratio = float(row['volume']) / (vol_ma + 1e-9)
         if vol_ratio < 1.1:
             continue
@@ -121,7 +113,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
         lower_wick = min(float(row['open']), float(row['close'])) - float(row['low'])
         is_bullish_sweep = (
             (float(row['close']) > ema100) and
-            (rsi < 68) and  # عدم الشراء في قمة متشبعة
+            (rsi < 68) and
             (float(row['low']) < major_low) and
             (float(row['close']) > major_low) and
             (lower_wick >= candle_range * 0.38)
@@ -142,7 +134,6 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
                 choch_time = choch_break.head(1).squeeze()['timestamp']
                 has_fvg, fvg_level = detect_fvg(ltf_window.head(8), "BUY")
                 
-                # تحديد منطقة الدخول المثالية (FVG أو Order Block)
                 entry_zone = fvg_level if has_fvg else ((sub_high + float(row['low'])) / 2.0)
                 
                 retest_window = ltf_window[ltf_window['timestamp'] > choch_time]
@@ -178,7 +169,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
         upper_wick = float(row['high']) - max(float(row['open']), float(row['close']))
         is_bearish_sweep = (
             (float(row['close']) < ema100) and
-            (rsi > 32) and  # عدم البيع في قاع متشبع
+            (rsi > 32) and
             (float(row['high']) > major_high) and
             (float(row['close']) < major_high) and
             (upper_wick >= candle_range * 0.38)
@@ -234,3 +225,19 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
     return pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type'])
 
 def compute_whale_ai_score(vol_ratio, wick_ratio, has_fvg):
+    """نموذج الذكاء الاصطناعي لقياس بصمة الحيتان (0 - 100%)"""
+    vol_score = min(vol_ratio, 3.0) / 3.0 * 35.0
+    wick_score = min(wick_ratio, 0.85) / 0.85 * 35.0
+    fvg_bonus = 22.0 if has_fvg else 8.0
+    return round(min(max(vol_score + wick_score + fvg_bonus + 8.0, 68.0), 99.2), 1)
+
+def evaluate_trade_pro(df_ltf, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
+    """إدارة الصفقة باحترافية: تأمين الدخول عند 1:1 + جني الأرباح عند الهدف"""
+    future = df_ltf[df_ltf['timestamp'] > entry_time].head(280)
+    current_sl = sl
+    risk_dist = abs(entry - sl)
+
+    for _, bar in future.iterrows():
+        if direction == "BUY":
+            if float(bar['high']) >= entry + (risk_dist * 1.1):
+                current_sl = entry
