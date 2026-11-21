@@ -208,3 +208,10 @@ div.stButton>button{background:linear-gradient(90deg,#7c4dff,#00b0ff);color:#fff
 """, unsafe_allow_html=True)
 
 with st.sidebar:
+    cap = st.number_input("رأس المال ($):", 100.0, 1000000.0, 1000.0, 100.0)
+    rpct = st.number_input("نسبة الهامش لكل صفقة (%):", 0.5, 50.0, 5.0, 0.5)
+    sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
+    min_ai = st.slider("الحد الأدنى لقوة النموذج %:", 75, 95, 82)
+    max_age_hrs = st.slider("أقصى عمر للصفقة الحية (ساعات):", 6, 48, 24)
+    max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
+
