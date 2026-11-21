@@ -13,7 +13,7 @@ ASSETS_MAP = {
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v16_ema_opt"
+CACHE_VER = "v17_spot_futures"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -85,8 +85,9 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
                 return "رابحة", reward_usd
     return "منتهية", 0.0
 @st.cache_data(ttl=300, show_spinner=False)
-def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.85, sl_atr=2.30, ema_len=50):
-    if df_h.empty or df_l.empty or len(df_h) < 105:
+def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.85, sl_atr=2.30, ema_len=200, market_mode="عقود آجلة (Futures)"):
+    start_idx = max(ema_len, 100)
+    if df_h.empty or df_l.empty or len(df_h) < start_idx + 5:
         return pd.DataFrame()
 
     df_h = df_h.sort_values('timestamp').reset_index(drop=True).copy()
@@ -100,8 +101,9 @@ def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct
     risk_usd, reward_usd = cap * (rpct / 100.0), cap * (rpct / 100.0) * rr
     htf_rec, ltf_rec, ts_arr = df_h.to_dict('records'), df_l.to_dict('records'), df_l['timestamp'].values
     last_ts, last_close, signals = pd.Timestamp(ts_arr[-1]), ltf_rec[-1]['close'], []
+    allow_sell = ("Futures" in market_mode)
 
-    for i in range(100, len(htf_rec) - 1):
+    for i in range(start_idx, len(htf_rec) - 1):
         row = htf_rec[i]
         if not (sh <= row['timestamp'].hour <= eh):
             continue
@@ -134,7 +136,7 @@ def run_patterns_cached(_ver, df_h, df_l, rr=1.90, sh=0, eh=23, cap=1000.0, rpct
                 tp = row['high'] + (row['high'] - sl) * rr
                 signals.append({'timestamp': row['timestamp'], 'type': 'شراء (BUY)', 'entry': round(row['high'], 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': pattern_name, 'ai': ai, 'status': 'بانتظار الدخول', 'pnl': 0.0})
 
-        elif direction == "SELL" and row['close'] < row['ema_val'] and 34 < rsi < 65:
+        elif allow_sell and direction == "SELL" and row['close'] < row['ema_val'] and 34 < rsi < 65:
             sl = row['high'] + (atr * sl_atr)
             ent_c = next((r for r in ltf_win if r['close'] < row['low']), None)
             if ent_c:
@@ -167,12 +169,26 @@ with st.sidebar:
     max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🕯️ نظام النماذج الانعكاسية للشموع (AI)</h2>", unsafe_allow_html=True)
-c_f1, c_f2, c_f3, c_f4, c_f5 = st.columns(5)
-with c_f1: view = st.selectbox("📅 الفترة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
-with c_f2: asset = st.selectbox("🪙 الأصل:", ["الكل"] + list(ASSETS_MAP.keys()))
-with c_f3: ema_len = st.selectbox("📈 مؤشر EMA:", [20, 50, 100], index=1)
-with c_f4: sl_atr = st.number_input("🛑 وقف الخسارة (ATR):", 0.20, 10.00, 2.30, 0.10)
-with c_f5: rr = st.number_input("🎯 العائد (R : R):", 0.50, 10.00, 1.90, 0.10)
+
+# --- الصف الأول من نوافذ التحكم: نوع السوق + الرافعة المالية + EMA ---
+r1_c1, r1_c2, r1_c3 = st.columns(3)
+with r1_c1:
+    market_mode = st.selectbox("⚖️ نوع التداول:", ["عقود آجلة (Futures)", "سبوت (Spot)"])
+with r1_c2:
+    if "Spot" in market_mode:
+        leverage = 1
+        st.number_input("⚡ الرافعة المالية:", 1, 1, 1, disabled=True)
+    else:
+        leverage = st.number_input("⚡ الرافعة المالية (Leverage):", min_value=1, max_value=50, value=10, step=1)
+with r1_c3:
+    ema_len = st.selectbox("📈 مؤشر EMA:", [100, 200], index=1)
+
+# --- الصف الثاني من نوافذ التحكم: الفترة + الأصل + ATR + R:R ---
+r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
+with r2_c1: view = st.selectbox("📅 الفترة:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
+with r2_c2: asset = st.selectbox("🪙 الأصل:", ["الكل"] + list(ASSETS_MAP.keys()))
+with r2_c3: sl_atr = st.number_input("🛑 وقف الخسارة (ATR):", 0.20, 10.00, 2.30, 0.10)
+with r2_c4: rr = st.number_input("🎯 العائد (R : R):", 0.50, 10.00, 1.90, 0.10)
 
 if st.button("🔍 فحص وتحديث الصفقات بالإعدادات المختارة"):
     st.cache_data.clear()
@@ -182,9 +198,9 @@ cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
 all_frames = []
 
-with st.spinner(f"جاري التحليل (EMA {ema_len} | ATR {sl_atr} | R:R {rr})..."):
+with st.spinner(f"جاري التحليل ({market_mode} | رافعة {leverage}x | EMA {ema_len})..."):
     for name, ticker in targets.items():
-        res = run_patterns_cached(CACHE_VER, fetch_data(ticker, htf), fetch_data(ticker, ltf), rr, sh, eh, cap, rpct, 0.85, sl_atr, ema_len)
+        res = run_patterns_cached(CACHE_VER, fetch_data(ticker, htf), fetch_data(ticker, ltf), rr, sh, eh, cap, rpct, 0.85, sl_atr, ema_len, market_mode)
         if not res.empty:
             res = res[res['ai'] >= min_ai].copy()
             if not res.empty:
@@ -217,5 +233,4 @@ live_df = all_df[(all_df['status'].isin(LIVE_STATUSES)) & (all_df['timestamp'] >
 if live_df.empty:
     st.markdown(f"<div class='box' style='color:#9e9eb8'>لا توجد نماذج نشطة خلال آخر {max_age_hrs} ساعة.</div>", unsafe_allow_html=True)
 else:
-    for _, r in live_df.sort_values(by=['timestamp', 'ai'], ascending=[False, False]).head(max_cards).iterrows():
-        is_sell = "SELL" in r['type']
+    risk_usd = cap * (rpct / 100.0)
