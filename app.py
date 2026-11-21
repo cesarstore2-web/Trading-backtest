@@ -5,16 +5,21 @@ import numpy as np
 
 st.set_page_config(page_title="Whale SMC AI ($)", page_icon="🐋", layout="wide", initial_sidebar_state="collapsed")
 
-# التركيز على أفضل 10 أصول ذات سيولة مؤسسية منتظمة لتقليل الخسائر العشوائية
 ASSETS_MAP = {
-    "BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD",
-    "BNBUSDT": "BNB-USD", "XRPUSDT": "XRP-USD", "ADAUSDT": "ADA-USD",
-    "AVAXUSDT": "AVAX-USD", "LINKUSDT": "LINK-USD", "LTCUSDT": "LTC-USD",
+    "XLMUSDT": "XLM-USD",
+    "ZECUSDT": "ZEC-USD",
+    "XRPUSDT": "XRP-USD",
+    "HBARUSDT": "HBAR-USD",
+    "ADAUSDT": "ADA-USD",
+    "LTCUSDT": "LTC-USD",
+    "BTCUSDT": "BTC-USD",
+    "ETHUSDT": "ETH-USD",
+    "PAXGUSDT": "PAXG-USD",
     "XAUUSDT (الذهب)": "GC=F"
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v10_gold"
+CACHE_VER = "v13_atr35_r35"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -50,7 +55,8 @@ def detect_fvg(records, direction):
 def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, reward_usd, be_r):
     start = int(np.searchsorted(ts_arr, pd.Timestamp(entry_time).to_datetime64(), side='right'))
     cur_sl, dist = sl, abs(entry - sl)
-    for bar in ltf_rec[start:start + 160]:
+    # تمديد نافذة التتبع إلى 320 شمعة لتناسب أهداف 3.5R ووقف 3.5 ATR
+    for bar in ltf_rec[start:start + 320]:
         if direction == "BUY":
             if bar['high'] >= entry + dist * be_r:
                 cur_sl = entry
@@ -74,7 +80,7 @@ def make_signal(ts, typ, entry, sl, tp, fvg, ai, status, pnl):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def run_smc_cached(_ver, df_h, df_l, rr=1.8, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.75, sl_atr=0.55, req_fvg=False):
+def run_smc_cached(_ver, df_h, df_l, rr=3.5, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=1.0, sl_atr=3.5, req_fvg=False):
     if df_h.empty or df_l.empty or len(df_h) < 105:
         return pd.DataFrame()
 
@@ -101,9 +107,9 @@ def run_smc_cached(_ver, df_h, df_l, rr=1.8, sh=0, eh=23, cap=1000.0, rpct=1.0, 
     last_close = ltf_rec[-1]['close']
     signals = []
 
-    VOL_MIN = 0.65
-    WICK_MIN = 0.22
-    LOOKBACK = 8
+    VOL_MIN = 0.52
+    WICK_MIN = 0.16
+    LOOKBACK = 5
     WIN_HOURS = 18
 
     for i in range(100, len(htf_rec) - 1):
@@ -132,9 +138,9 @@ def run_smc_cached(_ver, df_h, df_l, rr=1.8, sh=0, eh=23, cap=1000.0, rpct=1.0, 
             continue
         live_ok = end_ts > last_ts
 
-        # ---------- BUY (EMA100 + سحب سيولة نظيف + تأكيد شمعة زخم) ----------
+        # ---------- BUY ----------
         l_wick = min(row['open'], row['close']) - row['low']
-        if (row['close'] > row['ema100'] and 38 < rsi < 68 and row['low'] < maj_low
+        if (row['close'] > row['ema100'] and 30 < rsi < 74 and row['low'] < maj_low
                 and row['close'] > maj_low and l_wick >= rng * WICK_MIN):
             sub_h = max(x['high'] for x in ltf_win[:3])
             choch = next((r for r in ltf_win if r['close'] > sub_h), None)
@@ -145,24 +151,23 @@ def run_smc_cached(_ver, df_h, df_l, rr=1.8, sh=0, eh=23, cap=1000.0, rpct=1.0, 
                     sl_lvl = row['low'] - (atr * sl_atr)
                     ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(l_wick / rng, 0.85) / 0.85 * 35)
                                        + (22 if fvg else 10) + 10, 70.0), 99.4), 1)
-                    # اشتراط أن تكون شمعة التأكيد ذات جسم إيجابي واضح (ليست دوجي ضعيفة)
                     ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
                                   and r['low'] <= zone and r['close'] > r['open']
-                                  and (r['close'] - r['open']) >= (r['high'] - r['low']) * 0.35), None)
+                                  and (r['close'] - r['open']) >= (r['high'] - r['low']) * 0.20), None)
                     if ent_c:
                         entry, sl = ent_c['close'], sl_lvl
                         if entry > sl:
                             tp = entry + (entry - sl) * rr
                             st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
-                            if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=24):
+                            if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
                                 st_res = "جارية"
                             signals.append(make_signal(ent_c['timestamp'], 'شراء (BUY)', entry, sl, tp, fvg, ai, st_res, pnl))
                     elif live_ok and zone > sl_lvl and last_close > sl_lvl:
                         tp = zone + (zone - sl_lvl) * rr
                         signals.append(make_signal(choch['timestamp'], 'شراء (BUY)', zone, sl_lvl, tp, fvg, ai, "بانتظار الدخول", 0.0))
-        # ---------- SELL (EMA100 + سحب سيولة نظيف + تأكيد شمعة زخم) ----------
+        # ---------- SELL ----------
         u_wick = row['high'] - max(row['open'], row['close'])
-        if (row['close'] < row['ema100'] and 32 < rsi < 62 and row['high'] > maj_high
+        if (row['close'] < row['ema100'] and 26 < rsi < 70 and row['high'] > maj_high
                 and row['close'] < maj_high and u_wick >= rng * WICK_MIN):
             sub_l = min(x['low'] for x in ltf_win[:3])
             choch = next((r for r in ltf_win if r['close'] < sub_l), None)
@@ -175,13 +180,13 @@ def run_smc_cached(_ver, df_h, df_l, rr=1.8, sh=0, eh=23, cap=1000.0, rpct=1.0, 
                                        + (22 if fvg else 10) + 10, 70.0), 99.4), 1)
                     ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
                                   and r['high'] >= zone and r['close'] < r['open']
-                                  and (r['open'] - r['close']) >= (r['high'] - r['low']) * 0.35), None)
+                                  and (r['open'] - r['close']) >= (r['high'] - r['low']) * 0.20), None)
                     if ent_c:
                         entry, sl = ent_c['close'], sl_lvl
                         if sl > entry:
                             tp = entry - (sl - entry) * rr
                             st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd, be_r)
-                            if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=24):
+                            if st_res == "منتهية" and (last_ts - ent_c['timestamp']) <= pd.Timedelta(hours=36):
                                 st_res = "جارية"
                             signals.append(make_signal(ent_c['timestamp'], 'بيع (SELL)', entry, sl, tp, fvg, ai, st_res, pnl))
                     elif live_ok and zone < sl_lvl and last_close < sl_lvl:
@@ -208,13 +213,14 @@ with st.sidebar:
     st.header("⚙️ إعدادات الاستراتيجية")
     cap = st.number_input("رأس المال ($):", 100.0, 1000000.0, 1000.0, 100.0)
     rpct = st.number_input("المخاطرة (%):", 0.5, 10.0, 1.0, 0.5)
-    rr = st.slider("العائد للمخاطرة (1:X):", 1.5, 4.0, 1.8, 0.1)
+    rr = st.slider("العائد للمخاطرة (1:R):", 1.5, 5.0, 3.5, 0.1)
+    sl_atr = st.slider("مضاعف وقف الخسارة (ATR):", 0.5, 5.0, 3.5, 0.1)
     htf = st.selectbox("فريم السيولة (HTF):", ["1h", "4h"], index=0)
     ltf = st.selectbox("فريم الدخول (LTF):", ["15m", "5m"], index=0)
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 70, 95, 73)
-    max_age_hrs = st.slider("أقصى عمر للصفقة الحية (ساعات):", 6, 36, 24)
-    max_cards = st.slider("عدد التوصيات المعروضة:", 3, 10, 5)
+    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 70, 95, 71)
+    max_age_hrs = st.slider("أقصى عمر للصفقة الحية (ساعات):", 6, 48, 24)
+    max_cards = st.slider("عدد التوصيات المعروضة:", 3, 12, 6)
     req_fvg = st.checkbox("اشتراط وجود FVG مؤكد فقط", value=False)
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🐋 نظام تتبع سيولة الحيتان (SMC + AI)</h2>", unsafe_allow_html=True)
@@ -232,11 +238,11 @@ cutoff = now_utc - pd.Timedelta(days=30 if "شهري" in view else 7)
 targets = ASSETS_MAP if asset == "الكل" else {asset: ASSETS_MAP[asset]}
 
 all_frames = []
-with st.spinner("جاري مسح الأسواق وتصفية صفقات الزخم..."):
+with st.spinner("جاري التحليل بإعدادات ATR 3.5 و R 3.5..."):
     for name, ticker in targets.items():
         df_h = fetch_data(ticker, htf)
         df_l = fetch_data(ticker, ltf)
-        res = run_smc_cached(CACHE_VER, df_h, df_l, rr=rr, sh=sh, eh=eh, cap=cap, rpct=rpct, req_fvg=req_fvg)
+        res = run_smc_cached(CACHE_VER, df_h, df_l, rr=rr, sh=sh, eh=eh, cap=cap, rpct=rpct, sl_atr=sl_atr, req_fvg=req_fvg)
         if not res.empty:
             res = res[res['ai'] >= min_ai].copy()
             if not res.empty:
@@ -279,7 +285,7 @@ else:
     live_df = pd.DataFrame()
 
 if live_df.empty:
-    st.markdown(f"<div class='box' style='color:#9e9eb8'>لا توجد صفقات نشطة خلال آخر {max_age_hrs} ساعة تطابق شروط الجودة العالية.</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='box' style='color:#9e9eb8'>لا توجد صفقات نشطة خلال آخر {max_age_hrs} ساعة تطابق شروط الجودة.</div>", unsafe_allow_html=True)
 else:
     live_df = live_df.sort_values(by=['timestamp', 'ai'], ascending=[False, False]).head(max_cards)
     for _, r in live_df.iterrows():
