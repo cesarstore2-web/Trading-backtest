@@ -23,7 +23,6 @@ def fetch_data(ticker, interval="1h", period="60d"):
         if df.empty:
             return pd.DataFrame()
         
-        # توحيد أسماء الأعمدة في حال كانت متعددة المستويات
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
@@ -55,30 +54,25 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
         return pd.DataFrame()
 
     df_htf = df_htf.copy()
-    # تحديد القمم والقيعان الرئيسية على الفريم الكبير (نافذة 5 شموع)
     df_htf['swing_high'] = df_htf['high'].rolling(window=5, center=True).max()
     df_htf['swing_low'] = df_htf['low'].rolling(window=5, center=True).min()
 
     signals = []
     for i in range(8, len(df_htf) - 2):
         row = df_htf.iloc[i]
-        # أخذ آخر قاع وقمة رئيسية سابقة مؤكدة
         prev_low = df_htf['swing_low'].iloc[i-3]
         prev_high = df_htf['swing_high'].iloc[i-3]
 
         if pd.isna(prev_low) or pd.isna(prev_high):
             continue
 
-        # فلتر توقيت التداول (UTC)
         if not (start_hour <= row['timestamp'].hour <= end_hour):
             continue
 
         # ==========================================
         # 1. شروط صفقة الشراء (BUY)
         # ==========================================
-        # اختراق القاع للأسفل بذيل شمعة ثم الإغلاق فوق القاع المكسور
         if row['low'] < prev_low and row['close'] > prev_low:
-            # مراقبة الفريم الصغير خلال الـ 8 ساعات التالية لتأكيد CHoCH
             ltf_window = df_ltf[
                 (df_ltf['timestamp'] >= row['timestamp']) &
                 (df_ltf['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=8))
@@ -86,14 +80,13 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
             if len(ltf_window) < 4:
                 continue
 
-            # كسر آخر قمة فرعية هابطة (CHoCH)
             sub_high = ltf_window['high'].iloc[:3].max()
             choch_candles = ltf_window[ltf_window['close'] > sub_high]
 
             if not choch_candles.empty:
-                confirm_candle = choch_candles.iloc
+                confirm_candle = choch_candles.iloc[0]
                 entry = float(confirm_candle['close'])
-                sl = float(row['low']) * 0.9985  # وقف الخسارة أسفل ذيل الكسر الكاذب بقليل
+                sl = float(row['low']) * 0.9985
                 risk = entry - sl
                 if risk <= 0:
                     continue
@@ -116,9 +109,7 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
         # ==========================================
         # 2. شروط صفقة البيع (SELL)
         # ==========================================
-        # اختراق القمة للأعلى بذيل شمعة ثم الإغلاق أسفل القمة المخترقة
         elif row['high'] > prev_high and row['close'] < prev_high:
-            # مراقبة الفريم الصغير خلال الـ 8 ساعات التالية لتأكيد CHoCH
             ltf_window = df_ltf[
                 (df_ltf['timestamp'] >= row['timestamp']) &
                 (df_ltf['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=8))
@@ -126,14 +117,13 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
             if len(ltf_window) < 4:
                 continue
 
-            # كسر آخر قاع فرعي صاعد (CHoCH)
             sub_low = ltf_window['low'].iloc[:3].min()
             choch_candles = ltf_window[ltf_window['close'] < sub_low]
 
             if not choch_candles.empty:
-                confirm_candle = choch_candles.iloc
+                confirm_candle = choch_candles.iloc[0]
                 entry = float(confirm_candle['close'])
-                sl = float(row['high']) * 1.0015  # وقف الخسارة أعلى ذيل الكسر الكاذب بقليل
+                sl = float(row['high']) * 1.0015
                 risk = sl - entry
                 if risk <= 0:
                     continue
@@ -156,7 +146,6 @@ def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23
     if not signals:
         return pd.DataFrame()
 
-    # إزالة أي إشارات مكررة لنفس التوقيت
     df_signals = pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type'])
     return df_signals
 
@@ -164,18 +153,15 @@ def compute_ai_quality(df_htf, idx, ltf_window):
     """نموذج الذكاء الاصطناعي لتقييم جودة الكسر الكاذب وزخم السيولة (0 - 100%)"""
     row = df_htf.iloc[idx]
     
-    # 1. تقييم حجم السيولة (Volume Spike)
     avg_vol = df_htf['volume'].iloc[max(0, idx-10):idx].mean()
     vol_ratio = (row['volume'] / (avg_vol + 1e-9)) if avg_vol > 0 else 1.0
     vol_score = min(vol_ratio, 2.5) / 2.5 * 40
 
-    # 2. تقييم طول ذيل مصيدة السيولة مقارنة بجسم الشمعة (Wick Rejection)
     total_range = row['high'] - row['low']
     body_size = abs(row['close'] - row['open'])
     wick_ratio = (total_range - body_size) / (total_range + 1e-9)
     wick_score = wick_ratio * 40
 
-    # 3. تقييم سرعة تأكيد CHoCH على الفريم الصغير
     momentum_score = 18.5 if len(ltf_window) >= 4 else 12.0
 
     final_score = round(min(max(vol_score + wick_score + momentum_score, 60.0), 98.5), 1)
@@ -185,7 +171,6 @@ def evaluate_trade(df_ltf, entry_time, direction, entry, sl, tp):
     """تتبع حركة السعر بعد الدخول لحساب الصفقات الرابحة والخاسرة والنقاط"""
     future = df_ltf[df_ltf['timestamp'] > entry_time].head(150)
     
-    # توحيد النقاط (بنظام النقاط القياسي للعملات والذهب)
     win_pts = round((abs(tp - entry) / entry) * 10000, 1)
     loss_pts = -round((abs(entry - sl) / entry) * 10000, 1)
 
