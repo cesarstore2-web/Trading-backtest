@@ -13,7 +13,7 @@ ASSETS_MAP = {
 }
 
 LIVE_STATUSES = ["جارية", "بانتظار الدخول"]
-CACHE_VER = "v4"  # غيّر هذا الرقم كلما عدّلت منطق run_smc لتجديد الكاش
+CACHE_VER = "v5"  # غيّر هذا الرقم كلما عدّلت منطق run_smc لتجديد الكاش
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -64,15 +64,23 @@ def eval_trade(ltf_rec, ts_arr, entry_time, direction, entry, sl, tp, risk_usd, 
                 return ("مؤمّنة (0$)", 0.0) if cur_sl == entry else ("خاسرة", -risk_usd)
             if bar['low'] <= tp:
                 return "رابحة", reward_usd
-    # لم تُحسم الصفقة: جارية فقط إذا وصلنا لآخر البيانات، وإلا منتهية
     if start + 280 >= len(ltf_rec):
         return "جارية", 0.0
     return "منتهية", 0.0
 
 
-def make_signal(ts, typ, entry, sl, tp, fvg, ai, status, pnl):
+def calc_quality(vol_ratio, wick_ratio, fvg, trend_ok, rsi_ok):
+    q = (min(vol_ratio, 3.0) / 3.0 * 25) + (min(wick_ratio, 0.85) / 0.85 * 25)
+    q += 20 if fvg else 8
+    q += 15 if trend_ok else 0
+    q += 10 if rsi_ok else 4
+    q += 5
+    return round(min(q, 100.0), 1)
+
+
+def make_signal(ts, typ, entry, sl, tp, fvg, ai, q, status, pnl):
     return {'timestamp': ts, 'type': typ, 'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4),
-            'fvg': "FVG مؤكد" if fvg else "Order Block", 'ai': ai, 'status': status, 'pnl': round(pnl, 2)}
+            'fvg': "FVG مؤكد" if fvg else "Order Block", 'ai': ai, 'q': q, 'status': status, 'pnl': round(pnl, 2)}
 
 
 def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_atr=0.5, req_fvg=False,
@@ -131,8 +139,8 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_
 
         # ---------- BUY ----------
         l_wick = min(row['open'], row['close']) - row['low']
-        ema_ok_b = (not use_ema) or (row['close'] > row['ema100'])
-        if (ema_ok_b and rsi < 78 and row['low'] < maj_low
+        trend_b = row['close'] > row['ema100']
+        if (((not use_ema) or trend_b) and rsi < 78 and row['low'] < maj_low
                 and row['close'] > maj_low and l_wick >= rng * wick_min):
             sub_h = max(x['high'] for x in ltf_win[:3])
             choch = next((r for r in ltf_win if r['close'] > sub_h), None)
@@ -143,6 +151,7 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_
                     sl_lvl = row['low'] - (atr * sl_atr)
                     ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(l_wick / rng, 0.85) / 0.85 * 35)
                                        + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
+                    q = calc_quality(vol_ratio, l_wick / rng, fvg, trend_b, rsi < 60)
                     ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
                                   and r['low'] <= zone and r['close'] > r['open']), None)
                     if ent_c:
@@ -150,15 +159,15 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_
                         if entry > sl:
                             tp = entry + (entry - sl) * rr
                             st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd, be_r)
-                            signals.append(make_signal(ent_c['timestamp'], 'شراء (BUY)', entry, sl, tp, fvg, ai, st_res, pnl))
+                            signals.append(make_signal(ent_c['timestamp'], 'شراء (BUY)', entry, sl, tp, fvg, ai, q, st_res, pnl))
                     elif live_ok and zone > sl_lvl and last_close > sl_lvl:
                         tp = zone + (zone - sl_lvl) * rr
-                        signals.append(make_signal(choch['timestamp'], 'شراء (BUY)', zone, sl_lvl, tp, fvg, ai, "بانتظار الدخول", 0.0))
+                        signals.append(make_signal(choch['timestamp'], 'شراء (BUY)', zone, sl_lvl, tp, fvg, ai, q, "بانتظار الدخول", 0.0))
 
         # ---------- SELL ----------
         u_wick = row['high'] - max(row['open'], row['close'])
-        ema_ok_s = (not use_ema) or (row['close'] < row['ema100'])
-        if (ema_ok_s and rsi > 22 and row['high'] > maj_high
+        trend_s = row['close'] < row['ema100']
+        if (((not use_ema) or trend_s) and rsi > 22 and row['high'] > maj_high
                 and row['close'] < maj_high and u_wick >= rng * wick_min):
             sub_l = min(x['low'] for x in ltf_win[:3])
             choch = next((r for r in ltf_win if r['close'] < sub_l), None)
@@ -169,6 +178,7 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_
                     sl_lvl = row['high'] + (atr * sl_atr)
                     ai = round(min(max((min(vol_ratio, 3.0) / 3.0 * 35) + (min(u_wick / rng, 0.85) / 0.85 * 35)
                                        + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
+                    q = calc_quality(vol_ratio, u_wick / rng, fvg, trend_s, rsi > 40)
                     ent_c = next((r for r in ltf_win if r['timestamp'] > choch['timestamp']
                                   and r['high'] >= zone and r['close'] < r['open']), None)
                     if ent_c:
@@ -176,32 +186,49 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0, be_r=0.8, sl_
                         if sl > entry:
                             tp = entry - (sl - entry) * rr
                             st_res, pnl = eval_trade(ltf_rec, ts_arr, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd, be_r)
-                            signals.append(make_signal(ent_c['timestamp'], 'بيع (SELL)', entry, sl, tp, fvg, ai, st_res, pnl))
+                            signals.append(make_signal(ent_c['timestamp'], 'بيع (SELL)', entry, sl, tp, fvg, ai, q, st_res, pnl))
                     elif live_ok and sl_lvl > zone and last_close < sl_lvl:
                         tp = zone - (sl_lvl - zone) * rr
-                        signals.append(make_signal(choch['timestamp'], 'بيع (SELL)', zone, sl_lvl, tp, fvg, ai, "بانتظار الدخول", 0.0))
+                        signals.append(make_signal(choch['timestamp'], 'بيع (SELL)', zone, sl_lvl, tp, fvg, ai, q, "بانتظار الدخول", 0.0))
 
     if not signals:
         return pd.DataFrame()
     out = pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type'])
     out['last'] = round(float(last_close), 4)
     return out
+def grade_of(q):
+    if q >= 75:
+        return "⭐⭐⭐ ممتازة", "g-top"
+    if q >= 60:
+        return "⭐⭐ جيدة", "g-good"
+    return "⭐ عادية", "g-norm"
+
+
 def render_card(r):
     is_buy = "BUY" in r['type']
     side_cls = "buy" if is_buy else "sell"
     tag = "شراء BUY" if is_buy else "بيع SELL"
     status = r['status']
-    last_price = r.get('last', '—')
-    if status == "بانتظار الدخول":
-        st_cls = "s-wait"
-    else:
-        st_cls = "s-run"
+    last_price = r.get('last', None)
+    st_cls = "s-wait" if status == "بانتظار الدخول" else "s-run"
+    g_txt, g_cls = grade_of(float(r.get('q', 0)))
+
+    dist_row = ""
+    last_txt = "—"
+    if last_price is not None and pd.notna(last_price):
+        last_txt = last_price
+        if status == "بانتظار الدخول" and float(last_price) != 0:
+            dist = abs(float(r['entry']) - float(last_price)) / float(last_price) * 100
+            dist_row = f"<div class='row'><span>المسافة للدخول</span><b dir='ltr'>{dist:.2f}%</b></div>"
+
     html = (
         f"<div class='rec {side_cls}'>"
         f"<div class='rec-head'><span class='sym'>{r['symbol']}</span>"
         f"<span class='tag {side_cls}'>{tag}</span>"
         f"<span class='ai'>🤖 {r['ai']}%</span></div>"
-        f"<div class='row'><span>السعر الحالي</span><b dir='ltr'>{last_price}</b></div>"
+        f"<div class='row'><span>الجودة</span><b class='{g_cls}'>{g_txt} ({r.get('q', 0)})</b></div>"
+        f"<div class='row'><span>السعر الحالي</span><b dir='ltr'>{last_txt}</b></div>"
+        f"{dist_row}"
         f"<div class='row'><span>الدخول</span><b dir='ltr'>{r['entry']}</b></div>"
         f"<div class='row'><span>وقف الخسارة SL</span><b dir='ltr' style='color:#ff5252'>{r['sl']}</b></div>"
         f"<div class='row'><span>الهدف TP</span><b dir='ltr' style='color:#00e676'>{r['tp']}</b></div>"
@@ -232,6 +259,7 @@ st.markdown(
     ".row span{color:#aab;font-weight:500}"
     ".row b{font-weight:800;font-size:19px;color:#fff}"
     ".s-run{color:#40c4ff!important}.s-wait{color:#ffab40!important}"
+    ".g-top{color:#ffd54f!important}.g-good{color:#69f0ae!important}.g-norm{color:#b0bec5!important}"
     ".time{font-size:14px;color:#889;margin-top:6px;text-align:right}"
     "div.stButton>button{background:linear-gradient(90deg,#7c4dff,#00b0ff);color:#fff;font-weight:bold;border-radius:12px;width:100%;padding:10px}"
     "</style>",
@@ -246,10 +274,12 @@ with st.sidebar:
     if be_r >= rr:
         st.warning("نقطة التأمين أكبر من أو تساوي R:R، فلن تعمل كتأمين فعلي.")
     st.markdown("---")
+    min_q = st.slider("الحد الأدنى للجودة (من 100):", 0, 95, 60)
+    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 50, 95, 50)
+    st.markdown("---")
     htf = st.selectbox("فريم السيولة (HTF):", ["1h", "4h"])
     ltf = st.selectbox("فريم الدخول (LTF):", ["15m", "5m"])
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 50, 95, 50)
     st.markdown("---")
     st.caption("تخفيف الفلاتر (قيم أقل = توصيات أكثر)")
     vol_min = st.number_input("أدنى نسبة حجم:", 0.0, 3.0, 0.5, 0.1)
@@ -287,16 +317,16 @@ df_all = pd.concat(res_list, ignore_index=True) if res_list else pd.DataFrame()
 df_f = pd.DataFrame()
 df_live = pd.DataFrame()
 if not df_all.empty:
-    df_all = df_all[df_all['ai'] >= min_ai].reset_index(drop=True)
+    df_all = df_all[(df_all['ai'] >= min_ai) & (df_all['q'] >= min_q)].reset_index(drop=True)
     df_f = df_all[df_all['timestamp'] >= cutoff].reset_index(drop=True)
     df_live = df_all[df_all['status'].isin(LIVE_STATUSES)].reset_index(drop=True)
 
 # ---------------- التوصيات الحالية (المستقبلية) ----------------
 st.markdown("<h3 style='direction:rtl;text-align:right'>🔮 توصيات حالية (مستقبلية)</h3>", unsafe_allow_html=True)
 if df_live.empty:
-    st.info("لا توجد توصيات حالية الآن. خفّف الفلاتر من الشريط الجانبي أو أعد الفحص لاحقاً.")
+    st.info("لا توجد توصيات حالية بهذه الجودة. خفّض الحد الأدنى للجودة أو خفّف الفلاتر من الشريط الجانبي.")
 else:
-    live_sorted = df_live.sort_values(['ai', 'timestamp'], ascending=[False, False]).head(8)
+    live_sorted = df_live.sort_values(['q', 'ai', 'timestamp'], ascending=[False, False, False]).head(8)
     for _, r in live_sorted.iterrows():
         render_card(r)
     st.caption("⚠️ إشارات خوارزمية وليست ضماناً. التزم بإدارة المخاطرة ووقف الخسارة.")
@@ -321,7 +351,6 @@ c4.markdown(f"<div class='box' style='border-top:4px solid #ff1744'><div>❌ ا�
 
 net_color = "#00e676" if net >= 0 else "#ff5252"
 st.markdown(f"<div class='box' style='border-top:4px solid {net_color}'><div>💰 صافي الربح</div><h1 style='color:{net_color}'><span dir='ltr'>{net}$</span></h1></div>", unsafe_allow_html=True)
-
 
 @st.cache_data(ttl=600, show_spinner=False)
 def scan_asset(name, tk, htf, ltf, rr, sh, eh, cap, rpct, be_r, sl_atr, req_fvg,
