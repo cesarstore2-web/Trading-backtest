@@ -1,6 +1,7 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-from smc_engine import ASSETS_MAP, fetch_data, analyze_smc_strategy
+import numpy as np
 
 st.set_page_config(
     page_title="Whale SMC AI Pro ($)",
@@ -9,224 +10,227 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+ASSETS_MAP = {
+    "BTCUSDT": "BTC-USD",
+    "ETHUSDT": "ETH-USD",
+    "XRPUSDT": "XRP-USD",
+    "XLMUSDT": "XLM-USD",
+    "ZECUSDT": "ZEC-USD",
+    "HBARUSDT": "HBAR-USD",
+    "ADAUSDT": "ADA-USD",
+    "LTCUSDT": "LTC-USD",
+    "PAXGUSDT": "PAXG-USD",
+    "XAUUSDT (الذهب)": "GC=F"
+}
+
+@st.cache_data(ttl=600)
+def fetch_data(ticker, interval="1h", period="60d"):
+    try:
+        df = yf.download(ticker, interval=interval, period=period, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.reset_index()
+        df.rename(columns={
+            'Datetime': 'timestamp', 'Date': 'timestamp',
+            'Open': 'open', 'High': 'high', 'Low': 'low',
+            'Close': 'close', 'Volume': 'volume'
+        }, inplace=True)
+        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+        return pd.DataFrame({
+            'timestamp': df['timestamp'],
+            'open': pd.to_numeric(df['open'], errors='coerce'),
+            'high': pd.to_numeric(df['high'], errors='coerce'),
+            'low': pd.to_numeric(df['low'], errors='coerce'),
+            'close': pd.to_numeric(df['close'], errors='coerce'),
+            'volume': pd.to_numeric(df['volume'], errors='coerce')
+        }).dropna()
+    except Exception:
+        return pd.DataFrame()
+
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / (loss + 1e-9)
+    return 100 - (100 / (1 + rs))
+
+def detect_fvg_from_list(records, direction):
+    if len(records) < 4:
+        return False, 0.0
+    limit = min(len(records), 8)
+    for idx in range(2, limit):
+        c1 = records[idx - 2]
+        c3 = records[idx]
+        if direction == "BUY":
+            if c3['low'] > c1['high']:
+                return True, (c3['low'] + c1['high']) / 2.0
+        else:
+            if c3['high'] < c1['low']:
+                return True, (c3['high'] + c1['low']) / 2.0
+    return False, 0.0
+
+def compute_whale_ai_score(vol_ratio, wick_ratio, has_fvg):
+    vol_score = min(vol_ratio, 3.0) / 3.0 * 35.0
+    wick_score = min(wick_ratio, 0.85) / 0.85 * 35.0
+    fvg_bonus = 22.0 if has_fvg else 8.0
+    return round(min(max(vol_score + wick_score + fvg_bonus + 8.0, 68.0), 99.2), 1)
+
+def evaluate_trade_pro(ltf_records, entry_time, direction, entry, sl, tp, risk_usd, reward_usd):
+    future_records = [r for r in ltf_records if r['timestamp'] > entry_time][:280]
+    current_sl = sl
+    risk_dist = abs(entry - sl)
+    for bar in future_records:
+        if direction == "BUY":
+            if bar['high'] >= entry + (risk_dist * 1.1):
+                current_sl = entry
+            if bar['low'] <= current_sl:
+                return ("مؤمّنة (0$)", 0.0) if current_sl == entry else ("خاسرة", -risk_usd)
+            if bar['high'] >= tp:
+                return "رابحة", reward_usd
+        else:
+            if bar['low'] <= entry - (risk_dist * 1.1):
+                current_sl = entry
+            if bar['high'] >= current_sl:
+                return ("مؤمّنة (0$)", 0.0) if current_sl == entry else ("خاسرة", -risk_usd)
+            if bar['low'] <= tp:
+                return "رابحة", reward_usd
+    return "جارية", 0.0
+
+def analyze_smc_strategy(df_htf, df_ltf, rr_ratio=2.0, start_hour=0, end_hour=23, capital=1000.0, risk_pct=1.0):
+    if df_htf.empty or df_ltf.empty or len(df_htf) < 105:
+        return pd.DataFrame()
+    df_htf = df_htf.copy()
+    df_htf['tr'] = np.maximum(
+        df_htf['high'] - df_htf['low'],
+        np.maximum(abs(df_htf['high'] - df_htf['close'].shift(1)), abs(df_htf['low'] - df_htf['close'].shift(1)))
+    )
+    df_htf['atr'] = df_htf['tr'].rolling(14).mean()
+    df_htf['ema100'] = df_htf['close'].ewm(span=100, adjust=False).mean()
+    df_htf['rsi'] = compute_rsi(df_htf['close'], 14)
+    df_htf['vol_ma30'] = df_htf['volume'].rolling(30).mean()
+
+    risk_usd = capital * (risk_pct / 100.0)
+    reward_usd = risk_usd * rr_ratio
+
+    htf_records = df_htf.to_dict('records')
+    ltf_records = df_ltf.to_dict('records')
+    signals = []
+
+    for i in range(100, len(htf_records) - 2):
+        row = htf_records[i]
+        atr = float(row['atr']) if pd.notna(row['atr']) else (row['high'] - row['low'])
+        ema100 = float(row['ema100'])
+        rsi = float(row['rsi']) if pd.notna(row['rsi']) else 50.0
+        vol_ma = float(row['vol_ma30']) if pd.notna(row['vol_ma30']) else 1.0
+
+        if not (start_hour <= row['timestamp'].hour <= end_hour):
+            continue
+
+        vol_ratio = row['volume'] / (vol_ma + 1e-9)
+        if vol_ratio < 1.1:
+            continue
+
+        past_slice = htf_records[i-20:i]
+        major_low = min(x['low'] for x in past_slice)
+        major_high = max(x['high'] for x in past_slice)
+
+        candle_range = row['high'] - row['low']
+        if candle_range == 0:
+            continue
+
+        t_start = row['timestamp']
+        t_end = t_start + pd.Timedelta(hours=8)
+        ltf_window = [r for r in ltf_records if t_start < r['timestamp'] <= t_end]
+        if len(ltf_window) < 6:
+            continue
+
+        lower_wick = min(row['open'], row['close']) - row['low']
+        is_bullish_sweep = (
+            (row['close'] > ema100) and
+            (rsi < 68) and
+            (row['low'] < major_low) and
+            (row['close'] > major_low) and
+            (lower_wick >= candle_range * 0.38)
+        )
+
+        if is_bullish_sweep:
+            sub_high = max(x['high'] for x in ltf_window[:3])
+            choch_candle = next((r for r in ltf_window if r['close'] > sub_high), None)
+            if choch_candle is not None:
+                choch_time = choch_candle['timestamp']
+                has_fvg, fvg_level = detect_fvg_from_list(ltf_window, "BUY")
+                entry_zone = fvg_level if has_fvg else ((sub_high + row['low']) / 2.0)
+                entry_candle = next(
+                    (r for r in ltf_window if r['timestamp'] > choch_time and r['low'] <= entry_zone and r['close'] > r['open']),
+                    None
+                )
+                if entry_candle is not None:
+                    entry = entry_candle['close']
+                    sl = row['low'] - (atr * 0.35)
+                    risk = entry - sl
+                    if risk > 0:
+                        tp = entry + (risk * rr_ratio)
+                        ai_score = compute_whale_ai_score(vol_ratio, lower_wick / candle_range, has_fvg)
+                        status, pnl_usd = evaluate_trade_pro(ltf_records, entry_candle['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd)
+                        signals.append({
+                            'timestamp': entry_candle['timestamp'],
+                            'type': 'شراء (BUY)',
+                            'entry': round(entry, 4),
+                            'sl': round(sl, 4),
+                            'tp': round(tp, 4),
+                            'fvg_tag': "نعم (FVG مؤكد)" if has_fvg else "Order Block",
+                            'ai_score': ai_score,
+                            'status': status,
+                            'pnl_usd': round(pnl_usd, 2)
+                        })
+
+        upper_wick = row['high'] - max(row['open'], row['close'])
+        is_bearish_sweep = (
+            (row['close'] < ema100) and
+            (rsi > 32) and
+            (row['high'] > major_high) and
+            (row['close'] < major_high) and
+            (upper_wick >= candle_range * 0.38)
+        )
+
+        if is_bearish_sweep:
+            sub_low = min(x['low'] for x in ltf_window[:3])
+            choch_candle = next((r for r in ltf_window if r['close'] < sub_low), None)
+            if choch_candle is not None:
+                choch_time = choch_candle['timestamp']
+                has_fvg, fvg_level = detect_fvg_from_list(ltf_window, "SELL")
+                entry_zone = fvg_level if has_fvg else ((sub_low + row['high']) / 2.0)
+                entry_candle = next(
+                    (r for r in ltf_window if r['timestamp'] > choch_time and r['high'] >= entry_zone and r['close'] < r['open']),
+                    None
+                )
+                if entry_candle is not None:
+                    entry = entry_candle['close']
+                    sl = row['high'] + (atr * 0.35)
+                    risk = sl - entry
+                    if risk > 0:
+                        tp = entry - (risk * rr_ratio)
+                        ai_score = compute_whale_ai_score(vol_ratio, upper_wick / candle_range, has_fvg)
+                        status, pnl_usd = evaluate_trade_pro(ltf_records, entry_candle['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd)
+                        signals.append({
+                            'timestamp': entry_candle['timestamp'],
+                            'type': 'بيع (SELL)',
+                            'entry': round(entry, 4),
+                            'sl': round(sl, 4),
+                            'tp': round(tp, 4),
+                            'fvg_tag': "نعم (FVG مؤكد)" if has_fvg else "Order Block",
+                            'ai_score': ai_score,
+                            'status': status,
+                            'pnl_usd': round(pnl_usd, 2)
+                        })
+
+    if not signals:
+        return pd.DataFrame()
+    return pd.DataFrame(signals).drop_duplicates(subset=['timestamp', 'type'])
+
 st.markdown("""
 <style>
     @import url('https://googleapis.com');
-    
-    .stApp {
-        background-color: #09090d;
-        color: #ffffff;
-        font-family: 'Cairo', sans-serif;
-    }
-    .rtl-text {
-        direction: rtl;
-        text-align: right;
-        font-family: 'Cairo', sans-serif;
-    }
-    div.stButton > button:first-child {
-        background: linear-gradient(90deg, #7c4dff, #00b0ff);
-        color: white;
-        font-family: 'Cairo', sans-serif;
-        font-size: 1.15rem;
-        font-weight: 800;
-        border: none;
-        border-radius: 14px;
-        padding: 0.75rem 1.5rem;
-        width: 100%;
-        box-shadow: 0 4px 15px rgba(124, 77, 255, 0.4);
-    }
-    .stat-box {
-        background: linear-gradient(145deg, #13131b, #191924);
-        border-radius: 16px;
-        padding: 18px;
-        text-align: center;
-        border: 1px solid #262636;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.4);
-        margin-bottom: 12px;
-        direction: rtl;
-    }
-    .box-purple { border-top: 4px solid #8c52ff; }
-    .box-blue { border-top: 4px solid #00b0ff; }
-    .box-green { border-top: 4px solid #00e676; }
-    .box-red { border-top: 4px solid #ff1744; }
-    .box-net {
-        background: linear-gradient(135deg, #161324, #22193d);
-        border: 1px solid #7c4dff;
-        border-radius: 18px;
-        padding: 22px;
-        text-align: center;
-        margin: 10px 0 20px 0;
-        direction: rtl;
-    }
-    .rec-card {
-        background: linear-gradient(145deg, #14141f, #1c1c2b);
-        border-right: 5px solid #00e676;
-        border-radius: 14px;
-        padding: 16px 20px;
-        margin-bottom: 12px;
-        direction: rtl;
-        text-align: right;
-        box-shadow: 0 6px 16px rgba(0,0,0,0.35);
-    }
-    .rec-sell { border-right-color: #ff1744; }
-    .stat-label { font-size: 1rem; color: #a5a5c0; font-weight: 700; }
-    .stat-number { font-size: 2.1rem; font-weight: 900; margin: 5px 0; }
-    .stat-sub { font-size: 0.85rem; color: #9a9ab5; }
-</style>
-""", unsafe_allow_html=True)
-
-# القائمة الجانبية لإدارة رأس المال والإعدادات
-with st.sidebar:
-    st.markdown('<h3 class="rtl-text">💰 إدارة رأس المال والإعدادات</h3>', unsafe_allow_html=True)
-    capital = st.number_input("رأس مال المحفظة ($ USD):", min_value=100.0, max_value=1000000.0, value=1000.0, step=100.0)
-    risk_per_trade = st.number_input("نسبة المخاطرة لكل صفقة (%):", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
-    rr_ratio = st.slider("نسبة العائد للمخاطرة (Risk : Reward):", 1.5, 5.0, 2.0, 0.5)
-    
-    st.markdown("---")
-    htf = st.selectbox("فريم تحديد المناطق (HTF):", ["1h", "4h"], index=0)
-    ltf = st.selectbox("فريم الدخول والتأكيد (LTF):", ["15m", "5m"], index=0)
-    start_h, end_h = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 65, 95, 75)
-
-st.markdown("""
-<div class="rtl-text">
-    <h2 style="margin-bottom:0;">🐋 نظام تتبع سيولة الحيتان (SMC + FVG + AI)</h2>
-    <p style="color:#9e9eb8; font-size:0.95rem;">أقوى 3 توصيات مؤسسية بالدولار الأمريكي ($)</p>
-</div>
-""", unsafe_allow_html=True)
-
-# الفلاتر الرئيسية
-col1, col2 = st.columns(2)
-with col1:
-    timeframe_view = st.selectbox("📅 سجل الأداء والنتائج:", ["شهري (30 يوم)", "أسبوعي (7 أيام)"])
-with col2:
-    selected_asset = st.selectbox("🪙 اختر العملة أو الذهب:", ["الكل"] + list(ASSETS_MAP.keys()))
-
-st.button("🔍 فحص والبحث عن أعلى 3 توصيات")
-
-days_back = 30 if "شهري" in timeframe_view else 7
-cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_back)
-
-with st.spinner("جاري تتبع بصمة الحيتان وفجوات القيمة العادلة (FVG)..."):
-    all_results = []
-    targets = ASSETS_MAP.items() if selected_asset == "الكل" else [(selected_asset, ASSETS_MAP[selected_asset])]
-    
-    for name, ticker in targets:
-        df_h = fetch_data(ticker, interval=htf, period="60d")
-        df_l = fetch_data(ticker, interval=ltf, period="60d")
-        res = analyze_smc_strategy(
-            df_h, df_l, rr_ratio=rr_ratio, start_hour=start_h, end_hour=end_h,
-            capital=capital, risk_pct=risk_per_trade
-        )
-        if not res.empty:
-            res['symbol'] = name
-            all_results.append(res)
-
-    if all_results:
-        df_all = pd.concat(all_results, ignore_index=True)
-        df_filtered = df_all[(df_all['timestamp'] >= cutoff_date) & (df_all['ai_score'] >= min_ai)].copy()
-    else:
-        df_filtered = pd.DataFrame()
-
-# حساب الإحصائيات بالدولار الأمريكي
-if not df_filtered.empty:
-    win_count = len(df_filtered[df_filtered['status'] == 'رابحة'])
-    loss_count = len(df_filtered[df_filtered['status'] == 'خاسرة'])
-    be_count = len(df_filtered[df_filtered['status'].str.contains('مؤمّنة')])
-    total_count = win_count + loss_count + be_count
-    
-    decisive_trades = win_count + loss_count
-    win_rate = round((win_count / decisive_trades * 100), 2) if decisive_trades > 0 else 0.0
-    
-    gross_profit_usd = round(df_filtered[df_filtered['status'] == 'رابحة']['pnl_usd'].sum(), 2)
-    gross_loss_usd = round(df_filtered[df_filtered['status'] == 'خاسرة']['pnl_usd'].sum(), 2)
-    net_profit_usd = round(gross_profit_usd + gross_loss_usd, 2)
-    net_percent = round((net_profit_usd / capital) * 100, 2)
-else:
-    total_count = win_count = loss_count = be_count = 0
-    win_rate = gross_profit_usd = gross_loss_usd = net_profit_usd = net_percent = 0.0
-
-# عرض البطاقات الإحصائية
-c1, c2 = st.columns(2)
-with c1:
-    st.markdown(f"""
-    <div class="stat-box box-purple">
-        <div class="stat-label">🎯 نسبة النجاح</div>
-        <div class="stat-number" style="color:#b388ff;">{win_rate}%</div>
-        <div class="stat-sub">تقييم ذكاء اصطناعي ≥ {min_ai}%</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c2:
-    st.markdown(f"""
-    <div class="stat-box box-blue">
-        <div class="stat-label">📊 الصفقات المكتملة</div>
-        <div class="stat-number" style="color:#40c4ff;">{total_count}</div>
-        <div class="stat-sub">منها {be_count} صفقة مؤمّنة على الدخول</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-c3, c4 = st.columns(2)
-with c3:
-    st.markdown(f"""
-    <div class="stat-box box-green">
-        <div class="stat-label">✅ الصفقات الناجحة</div>
-        <div class="stat-number" style="color:#00e676;">{win_count}</div>
-        <div class="stat-sub">إجمالي الأرباح: <b>+${gross_profit_usd}</b></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c4:
-    st.markdown(f"""
-    <div class="stat-box box-red">
-        <div class="stat-label">❌ الصفقات الخاسرة</div>
-        <div class="stat-number" style="color:#ff5252;">{loss_count}</div>
-        <div class="stat-sub">إجمالي الخسائر: <b>${gross_loss_usd}</b></div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# بطاقة صافي الأرباح بالدولار الأمريكي
-net_color = "#00e676" if net_profit_usd >= 0 else "#ff5252"
-net_sign = "+" if net_profit_usd > 0 else ""
-st.markdown(f"""
-<div class="box-net">
-    <div class="stat-label">💵 صافي الأرباح بالدولار ({timeframe_view})</div>
-    <div class="stat-number" style="color:{net_color};">{net_sign}${net_profit_usd} USD</div>
-    <div class="stat-sub" style="font-size:0.95rem; color:#ffffff;">
-        رأس المال: <b>${capital:,.0f}</b> &nbsp;|&nbsp; العائد: <b>{net_sign}{net_percent}%</b> (مخاطرة {risk_per_trade}% = ${capital*(risk_per_trade/100):.1f})
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# عرض أعلى 3 توصيات فقط
-if not df_filtered.empty:
-    st.markdown('<h3 class="rtl-text">🏆 أعلى 3 توصيات تقييماً بالذكاء الاصطناعي</h3>', unsafe_allow_html=True)
-    top_3 = df_filtered.sort_values(by=['ai_score', 'timestamp'], ascending=[False, False]).head(3)
-    
-    for idx, row in top_3.iterrows():
-        is_sell = "بيع" in row['type']
-        card_class = "rec-card rec-sell" if is_sell else "rec-card"
-        type_color = "#ff5252" if is_sell else "#00e676"
-        pnl_val = row['pnl_usd']
-        pnl_str = f"+${pnl_val}" if pnl_val > 0 else (f"-${abs(pnl_val)}" if pnl_val < 0 else ("$0.0 (مؤمّنة)" if "مؤمّنة" in row['status'] else "جارية الآن ⏳"))
-        pnl_color = "#00e676" if pnl_val > 0 else ("#ff5252" if pnl_val < 0 else "#ffd740")
-
-        st.markdown(f"""
-        <div class="{card_class}">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <span style="font-size:1.2rem; font-weight:900; color:#ffffff;">🪙 {row['symbol']} &nbsp;|&nbsp; <span style="color:{type_color};">{row['type']}</span></span>
-                <span style="background:#2a2245; color:#b388ff; padding:4px 12px; border-radius:20px; font-weight:800; font-size:0.85rem;">🤖 AI: {row['ai_score']}%</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; font-size:0.95rem; color:#d0d0e0; margin-bottom:8px;">
-                <span>🎯 <b>الدخول:</b> ${row['entry']}</span>
-                <span>🛑 <b>الوقف:</b> ${row['sl']}</span>
-                <span>💰 <b>الهدف:</b> ${row['tp']}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; font-size:0.82rem; color:#8e8ea8; border-top:1px solid #28283a; padding-top:8px;">
-                <span>🕒 {row['timestamp'].strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp; 📌 {row['fvg_tag']}</span>
-                <span style="font-weight:800; color:{pnl_color};">النتيجة: {row['status']} ({pnl_str})</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-else:
-    st.info("لا توجد توصيات مطابقة لشروط السيولة المؤسسية حالياً. جرب اختيار (الكل) من قائمة العملات.")
+    .stApp { background-color: #09090d; color: #ffffff; font-family: 'Cairo', sans-serif; }
