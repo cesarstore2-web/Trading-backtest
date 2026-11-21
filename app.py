@@ -59,6 +59,17 @@ st.markdown("""
         margin: 10px 0 20px 0;
         direction: rtl;
     }
+    .rec-card {
+        background: linear-gradient(145deg, #14141f, #1c1c2b);
+        border-right: 5px solid #00e676;
+        border-radius: 14px;
+        padding: 16px 20px;
+        margin-bottom: 12px;
+        direction: rtl;
+        text-align: right;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    }
+    .rec-sell { border-right-color: #ff1744; }
     .stat-label { font-size: 1rem; color: #a5a5c0; font-weight: 700; }
     .stat-number { font-size: 2.1rem; font-weight: 900; margin: 5px 0; }
     .stat-sub { font-size: 0.85rem; color: #9a9ab5; }
@@ -70,18 +81,18 @@ with st.sidebar:
     st.markdown('<h3 class="rtl-text">💰 إدارة رأس المال والإعدادات</h3>', unsafe_allow_html=True)
     capital = st.number_input("رأس مال المحفظة ($ USD):", min_value=100.0, max_value=1000000.0, value=1000.0, step=100.0)
     risk_per_trade = st.number_input("نسبة المخاطرة لكل صفقة (%):", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
-    rr_ratio = st.slider("نسبة العائد للمخاطرة (Risk : Reward):", 1.5, 5.0, 2.0, 0.5)
+    rr_ratio = st.slider("نسبة العائد للمخاطرة (Risk : Reward):", 1.5, 5.0, 2.5, 0.5)
     
     st.markdown("---")
     htf = st.selectbox("فريم تحديد المناطق (HTF):", ["1h", "4h"], index=0)
     ltf = st.selectbox("فريم الدخول والتأكيد (LTF):", ["15m", "5m"], index=0)
     start_h, end_h = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 55, 95, 65)
+    min_ai = st.slider("الحد الأدنى لتقييم AI (%):", 60, 95, 75)
 
 st.markdown("""
 <div class="rtl-text">
     <h2 style="margin-bottom:0;">⚡ نظام التداول الذكي (SMC + AI)</h2>
-    <p style="color:#9e9eb8; font-size:0.95rem;">تتبع السيولة، الكسر الكاذب، وتأكيد CHoCH بالدولار الأمريكي ($)</p>
+    <p style="color:#9e9eb8; font-size:0.95rem;">أقوى 3 توصيات مفلترة بالذكاء الاصطناعي بالدولار الأمريكي ($)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -92,12 +103,12 @@ with col1:
 with col2:
     selected_asset = st.selectbox("🪙 اختر العملة أو الذهب:", ["الكل"] + list(ASSETS_MAP.keys()))
 
-st.button("🔍 فحص والبحث عن توصيات الآن")
+st.button("🔍 فحص والبحث عن أعلى 3 توصيات")
 
 days_back = 30 if "شهري" in timeframe_view else 7
 cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_back)
 
-with st.spinner("جاري فحص السيولة وحساب الأرباح بالدولار الأمريكي..."):
+with st.spinner("جاري فحص السيولة وانتقاء أقوى 3 توصيات بالذكاء الاصطناعي..."):
     all_results = []
     targets = ASSETS_MAP.items() if selected_asset == "الكل" else [(selected_asset, ASSETS_MAP[selected_asset])]
     
@@ -186,27 +197,38 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# جدول التوصيات الأعلى تقييماً بالدولار الأمريكي
+# عرض أعلى 3 توصيات فقط بتصميم بطاقات احترافي
 if not df_filtered.empty:
-    st.markdown('<h4 class="rtl-text">🔥 التوصيات الأعلى تقييماً بالذكاء الاصطناعي ($)</h4>', unsafe_allow_html=True)
-    top_recs = df_filtered.sort_values(by=['ai_score', 'timestamp'], ascending=[False, False]).head(15)
+    st.markdown('<h3 class="rtl-text">🏆 أعلى 3 توصيات تقييماً بالذكاء الاصطناعي</h3>', unsafe_allow_html=True)
+    top_3 = df_filtered.sort_values(by=['ai_score', 'timestamp'], ascending=[False, False]).head(3)
     
-    display_df = top_recs[['timestamp', 'symbol', 'type', 'entry', 'sl', 'tp', 'ai_score', 'status', 'pnl_usd']].copy()
-    display_df['entry'] = display_df['entry'].apply(lambda x: f"${x}")
-    display_df['sl'] = display_df['sl'].apply(lambda x: f"${x}")
-    display_df['tp'] = display_df['tp'].apply(lambda x: f"${x}")
-    display_df['pnl_usd'] = display_df['pnl_usd'].apply(lambda x: f"+${x}" if x > 0 else (f"-${abs(x)}" if x < 0 else "$0.0"))
-    
-    display_df.columns = ['التوقيت', 'العملة/الذهب', 'النوع', 'سعر الدخول ($)', 'وقف الخسارة ($)', 'الهدف ($)', 'تقييم AI%', 'الحالة', 'الربح/الخسارة ($)']
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    for idx, row in top_3.iterrows():
+        is_sell = "بيع" in row['type']
+        card_class = "rec-card rec-sell" if is_sell else "rec-card"
+        type_color = "#ff5252" if is_sell else "#00e676"
+        pnl_val = row['pnl_usd']
+        pnl_str = f"+${pnl_val}" if pnl_val > 0 else (f"-${abs(pnl_val)}" if pnl_val < 0 else "جارية الآن ⏳")
+        pnl_color = "#00e676" if pnl_val > 0 else ("#ff5252" if pnl_val < 0 else "#ffd740")
 
-    st.markdown('<h4 class="rtl-text">📈 منحنى نمو المحفظة بالدولار ($)</h4>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="{card_class}">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-size:1.25rem; font-weight:900; color:#ffffff;">🪙 {row['symbol']} &nbsp;|&nbsp; <span style="color:{type_color};">{row['type']}</span></span>
+                <span style="background:#2a2245; color:#b388ff; padding:4px 12px; border-radius:20px; font-weight:800; font-size:0.9rem;">🤖 تقييم AI: {row['ai_score']}%</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; font-size:0.95rem; color:#d0d0e0; margin-bottom:8px;">
+                <span>🎯 <b>الدخول:</b> ${row['entry']}</span>
+                <span>🛑 <b>الوقف:</b> ${row['sl']}</span>
+                <span>💰 <b>الهدف:</b> ${row['tp']}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:0.85rem; color:#8e8ea8; border-top:1px solid #28283a; padding-top:8px;">
+                <span>🕒 {row['timestamp'].strftime('%Y-%m-%d %H:%M')}</span>
+                <span style="font-weight:800; color:{pnl_color};">النتيجة: {row['status']} ({pnl_str})</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown('<h4 class="rtl-text" style="margin-top:20px;">📈 منحنى نمو المحفظة بالدولار ($)</h4>', unsafe_allow_html=True)
     df_chart = df_filtered.sort_values('timestamp').copy()
     df_chart['cumulative_usd'] = capital + df_chart['pnl_usd'].cumsum()
     
-    fig = px.area(df_chart, x='timestamp', y='cumulative_usd', labels={'timestamp': 'التوقيت', 'cumulative_usd': 'رصيد المحفظة ($)'}, template="plotly_dark")
-    fig.update_traces(line_color='#00e676', fillcolor='rgba(0, 230, 118, 0.2)')
-    fig.update_layout(plot_bgcolor='#09090d', paper_bgcolor='#09090d', margin=dict(l=10, r=10, t=20, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("اضغط على زر الفحص أعلاه أو اختر (الكل) من قائمة العملات لعرض جميع التوصيات والأرباح بالدولار.")
