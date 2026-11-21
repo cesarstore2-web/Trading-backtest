@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from lightgbm import LGBMClassifier
 
 # إعداد صفحة التطبيق
-st.set_page_config(page_title="ماسح AI: استراتيجية كسر ترند RSI", layout="wide")
+st.set_page_config(page_title="ماسح AI التلقائي: كسر ترند RSI (+80%)", layout="wide")
 
 # ضبط التوقيت المغربي الرسمي (Africa/Casablanca)
 MOROCCO_TZ = ZoneInfo("Africa/Casablanca")
@@ -20,15 +20,15 @@ market_open_time = now_ma.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close_time = now_ma.replace(hour=15, minute=30, second=0, microsecond=0)
 is_casa_open = is_weekday and (market_open_time <= now_ma <= market_close_time)
 
-st.title("🤖 ماسح الذكاء الاصطناعي: استراتيجية كسر ترند RSI")
-st.caption("استراتيجية: RSI Trendline Breakout (في مناطق التشبع) + فلترة وتأكيد عبر نموذج LightGBM")
+st.title("🤖 ماسح الذكاء الاصطناعي التلقائي: كسر ترند RSI")
+st.caption("مسح أوتوماتيكي لجميع الفريمات (1H - 4H - 1D) | الفلتر مثبت: تأكيد الذكاء الاصطناعي +80% فقط")
 
 st.info(
     f"🇲🇦 التوقيت الحالي في المغرب: **{now_ma.strftime('%Y-%m-%d %H:%M')}** | "
     f"بورصة الدار البيضاء: **{'🟢 مفتوحة (تحليل على آخر إغلاق مكتمل)' if is_casa_open else '🔴 مغلقة (تحليل على الإغلاق الرسمي)'}**"
 )
 
-# 1. قائمة العملات الرقمية والذهب (فريم يومي 1D)
+# 1. قائمة العملات الرقمية والذهب
 CRYPTO_GOLD_ASSETS = [
     ("BTC/USDT", "عملة رقمية", "USDT"),
     ("ETH/USDT", "عملة رقمية", "USDT"),
@@ -57,7 +57,7 @@ CASABLANCA_STOCKS = [
     ("CSR", "كوسومار (CSR)", "MAD")
 ]
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=900)
 def fetch_crypto_gold(symbol, timeframe='1d', limit=730):
     exchange_ids = ['kraken', 'gate', 'kucoin', 'okx', 'coinbase']
     for ex_id in exchange_ids:
@@ -127,7 +127,7 @@ def detect_rsi_trendline_strategy(df):
     df['atr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
     df['volatility'] = df['atr'] / df['close']
 
-    # تحديد القمم والقيعان المحلية (Swing Highs / Lows)
+    # تحديد القمم والقيعان المحلية
     df['swing_low'] = df['low'][(df['low'] < df['low'].shift(1)) & (df['low'] < df['low'].shift(-1))]
     df['swing_high'] = df['high'][(df['high'] > df['high'].shift(1)) & (df['high'] > df['high'].shift(-1))]
 
@@ -146,7 +146,7 @@ def detect_rsi_trendline_strategy(df):
         prev_rsi = df.loc[i - 1, 'rsi']
         atr = df.loc[i, 'atr']
 
-        # 1. فرصة البيع (SHORT POSITION) - كسر ترند صاعد في التشبع الشرائي
+        # 1. فرصة البيع (SHORT) - كسر ترند صاعد في التشبع الشرائي
         s_lows = window.dropna(subset=['swing_low'])
         if len(s_lows) >= 2:
             p1, p2 = s_lows.iloc[-2], s_lows.iloc[-1]
@@ -172,7 +172,7 @@ def detect_rsi_trendline_strategy(df):
                         signals[i] = -1
                         stop_losses[i] = sl
                         take_profits[i] = tp
-        # 2. فرصة الشراء (LONG POSITION) - كسر ترند هابط في التشبع البيعي
+        # 2. فرصة الشراء (LONG) - كسر ترند هابط في التشبع البيعي
         if signals[i] == 0:
             s_highs = window.dropna(subset=['swing_high'])
             if len(s_highs) >= 2:
@@ -228,7 +228,7 @@ def detect_rsi_trendline_strategy(df):
     df['target'] = targets
     return df
 
-def analyze_with_ai(df, symbol, label, currency, is_stock=False):
+def analyze_with_ai(df, symbol, label, currency, tf_label, is_stock=False):
     df = detect_rsi_trendline_strategy(df)
     features = ['signal', 'rsi', 'rsi_slope', 'dist_ema20', 'dist_ema50', 'vol_ratio', 'volatility']
     
@@ -247,7 +247,7 @@ def analyze_with_ai(df, symbol, label, currency, is_stock=False):
     if len(test_df) > 0:
         test_probs = model.predict_proba(test_df[features])[:, 1] * 100
         for prob, actual in zip(test_probs, test_df['target']):
-            if prob >= 60:
+            if prob >= 80.0:
                 if actual == 1:
                     wins += 1
                 else:
@@ -270,6 +270,7 @@ def analyze_with_ai(df, symbol, label, currency, is_stock=False):
         "has_signal": True,
         "الأصل": label,
         "الرمز": symbol,
+        "الفريم": tf_label,
         "الاتجاه": direction,
         "تأكيد الذكاء الاصطناعي (%)": round(ai_confidence, 1),
         "سعر الدخول": round(entry_price, decimals),
@@ -283,59 +284,74 @@ def analyze_with_ai(df, symbol, label, currency, is_stock=False):
 
 # --- واجهة المستخدم ---
 scope = st.radio(
-    "اختر نطاق الفحص (الفريم اليومي 1D لجميع الأسواق):",
+    "اختر نطاق المسح التلقائي:",
     [
-        "الكل (كريبتو + ذهب + بورصة الدار البيضاء)",
-        "العملات الرقمية والذهب فقط",
-        "بورصة الدار البيضاء فقط"
+        "الكل (كريبتو + ذهب على 1D/4H/1H + بورصة الدار البيضاء 1D)",
+        "العملات الرقمية والذهب فقط (مسح تلقائي 1D / 4H / 1H)",
+        "بورصة الدار البيضاء فقط (فريم 1D)"
     ]
 )
 
-min_conf = st.slider("الحد الأدنى لتأكيد الذكاء الاصطناعي على الكسر (%):", 50, 90, 75)
+MIN_CONFIDENCE = 80.0  # الحد الأدنى للتقييم مثبت عند 80%
+st.markdown(f"🔒 **الفلتر الذكي مفعل تلقائياً:** يعرض فقط الفرص بتقييم **≥ {int(MIN_CONFIDENCE)}%** مرتبة من الأعلى تقييماً إلى الأقل.")
 
-if st.button("بدء الفحص ومراقبة الكسورات بالذكاء الاصطناعي 🚀", type="primary"):
+if st.button("بدء المسح التلقائي الشامل لجميع الفريمات 🚀", type="primary"):
     opportunities = []
     total_wins = 0
     total_losses = 0
 
-    assets_to_scan = []
+    # بناء قائمة المهام (الأصل + الفريم) للانتقال التلقائي بينها
+    scan_tasks = []
     if "الكل" in scope or "الرقمية" in scope:
         for sym, lbl, cur in CRYPTO_GOLD_ASSETS:
-            assets_to_scan.append((sym, lbl, cur, False))
+            for tf in ['1d', '4h', '1h']:
+                scan_tasks.append((sym, lbl, cur, tf, False))
+                
     if "الكل" in scope or "الدار البيضاء" in scope:
         for sym, lbl, cur in CASABLANCA_STOCKS:
-            assets_to_scan.append((sym, lbl, cur, True))
+            scan_tasks.append((sym, lbl, cur, '1d', True))
 
     progress = st.progress(0)
-    for idx, (sym, lbl, cur, is_stock) in enumerate(assets_to_scan):
+    status_text = st.empty()
+
+    for idx, (sym, lbl, cur, tf, is_stock) in enumerate(scan_tasks):
+        tf_upper = tf.upper()
+        status_text.text(f"⏳ جاري فحص {lbl} ({sym}) على فريم {tf_upper}...")
+
         if is_stock:
             df, _ = fetch_casablanca_stock(sym, is_casa_open)
         else:
-            df, _ = fetch_crypto_gold(sym, timeframe='1d')
+            df, _ = fetch_crypto_gold(sym, timeframe=tf)
 
         if df is not None:
-            res = analyze_with_ai(df, sym, lbl, cur, is_stock=is_stock)
+            res = analyze_with_ai(df, sym, lbl, cur, tf_upper, is_stock=is_stock)
             if res:
                 total_wins += res["wins"]
                 total_losses += res["losses"]
-                if res["has_signal"] and res["تأكيد الذكاء الاصطناعي (%)"] >= min_conf:
+                if res["has_signal"] and res["تأكيد الذكاء الاصطناعي (%)"] >= MIN_CONFIDENCE:
                     opportunities.append({
                         k: v for k, v in res.items() if k not in ["has_signal", "wins", "losses"]
                     })
 
-        progress.progress((idx + 1) / len(assets_to_scan))
+        progress.progress((idx + 1) / len(scan_tasks))
 
+    status_text.empty()
     st.divider()
+
     if opportunities:
-        st.success(f"✅ تم العثور على {len(opportunities)} فرصة كسر ترند RSI مؤكدة من الذكاء الاصطناعي:")
-        st.dataframe(pd.DataFrame(opportunities), use_container_width=True)
+        df_opps = pd.DataFrame(opportunities)
+        # ترتيب الفرص تنازلياً من الأكثر تقييماً إلى الأقل
+        df_opps = df_opps.sort_values(by="تأكيد الذكاء الاصطناعي (%)", ascending=False).reset_index(drop=True)
+        
+        st.success(f"✅ تم العثور على {len(df_opps)} فرصة كسر ترند RSI بتقييم 80% أو أعلى (مرتبة من الأقوى):")
+        st.dataframe(df_opps, use_container_width=True)
     else:
-        st.warning("⏳ لا يوجد حالياً أي كسر لخط اتجاه RSI يستوفي شروط التشبع وتأكيد الذكاء الاصطناعي. (الانتظار يحمي رأس المال).")
+        st.warning("⏳ لا يوجد حالياً أي كسر لخط اتجاه RSI على فريمات (1D / 4H / 1H) يصل تقييمه إلى 80% أو أكثر.")
 
     total_trades = total_wins + total_losses
     win_rate = round((total_wins / total_trades * 100), 1) if total_trades > 0 else 0.0
     
-    st.subheader("📊 أداء الاستراتيجية المؤكدة بالذكاء الاصطناعي (اختبار رجعي)")
+    st.subheader("📊 أداء الاستراتيجية المؤكدة بالذكاء الاصطناعي (تقييم +80%)")
     col1, col2, col3 = st.columns(3)
     col1.metric("نسبة نجاح الكسورات المؤكدة (%)", f"{win_rate}%")
     col2.metric("صفقات حققت الهدف (1:2)", f"✅ {total_wins}")
