@@ -60,18 +60,18 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
         row = htf_rec[i]
         if not (sh <= row['timestamp'].hour <= eh): continue
         vol_ratio = row['volume'] / ((row['vol_ma'] if pd.notna(row['vol_ma']) else 1.0) + 1e-9)
-        if vol_ratio < 1.1: continue
+        if vol_ratio < 0.9: continue
         atr = float(row['atr']) if pd.notna(row['atr']) else (row['high'] - row['low'])
         rsi = float(row['rsi']) if pd.notna(row['rsi']) else 50.0
         rng = row['high'] - row['low']
         if rng == 0: continue
-        past = htf_rec[i-20:i]
+        past = htf_rec[i-12:i]
         maj_low, maj_high = min(x['low'] for x in past), max(x['high'] for x in past)
-        ltf_win = [r for r in ltf_rec if row['timestamp'] < r['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=8)]
-        if len(ltf_win) < 6: continue
+        ltf_win = [r for r in ltf_rec if row['timestamp'] < r['timestamp'] <= row['timestamp'] + pd.Timedelta(hours=10)]
+        if len(ltf_win) < 5: continue
 
         l_wick = min(row['open'], row['close']) - row['low']
-        if row['close'] > row['ema100'] and rsi < 68 and row['low'] < maj_low and row['close'] > maj_low and l_wick >= rng * 0.38:
+        if row['close'] > row['ema100'] and rsi < 72 and row['low'] < maj_low and row['close'] > maj_low and l_wick >= rng * 0.28:
             sub_h = max(x['high'] for x in ltf_win[:3])
             choch = next((r for r in ltf_win if r['close'] > sub_h), None)
             if choch:
@@ -82,12 +82,12 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
                     entry, sl = ent_c['close'], row['low'] - (atr * 0.35)
                     if entry > sl:
                         tp = entry + (entry - sl) * rr
-                        ai = round(min(max((min(vol_ratio, 3.0)/3.0*35) + (min(l_wick/rng, 0.85)/0.85*35) + (22 if fvg else 8) + 8, 68.0), 99.2), 1)
+                        ai = round(min(max((min(vol_ratio, 3.0)/3.0*35) + (min(l_wick/rng, 0.85)/0.85*35) + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
                         st_res, pnl = eval_trade(ltf_rec, ent_c['timestamp'], "BUY", entry, sl, tp, risk_usd, reward_usd)
                         signals.append({'timestamp': ent_c['timestamp'], 'type': 'شراء (BUY)', 'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': "FVG مؤكد" if fvg else "Order Block", 'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
 
         u_wick = row['high'] - max(row['open'], row['close'])
-        if row['close'] < row['ema100'] and rsi > 32 and row['high'] > maj_high and row['close'] < maj_high and u_wick >= rng * 0.38:
+        if row['close'] < row['ema100'] and rsi > 28 and row['high'] > maj_high and row['close'] < maj_high and u_wick >= rng * 0.28:
             sub_l = min(x['low'] for x in ltf_win[:3])
             choch = next((r for r in ltf_win if r['close'] < sub_l), None)
             if choch:
@@ -98,7 +98,7 @@ def run_smc(df_h, df_l, rr=2.0, sh=0, eh=23, cap=1000.0, rpct=1.0):
                     entry, sl = ent_c['close'], row['high'] + (atr * 0.35)
                     if sl > entry:
                         tp = entry - (sl - entry) * rr
-                        ai = round(min(max((min(vol_ratio, 3.0)/3.0*35) + (min(u_wick/rng, 0.85)/0.85*35) + (22 if fvg else 8) + 8, 68.0), 99.2), 1)
+                        ai = round(min(max((min(vol_ratio, 3.0)/3.0*35) + (min(u_wick/rng, 0.85)/0.85*35) + (22 if fvg else 10) + 10, 68.0), 99.2), 1)
                         st_res, pnl = eval_trade(ltf_rec, ent_c['timestamp'], "SELL", entry, sl, tp, risk_usd, reward_usd)
                         signals.append({'timestamp': ent_c['timestamp'], 'type': 'بيع (SELL)', 'entry': round(entry, 4), 'sl': round(sl, 4), 'tp': round(tp, 4), 'fvg': "FVG مؤكد" if fvg else "Order Block", 'ai': ai, 'status': st_res, 'pnl': round(pnl, 2)})
 
@@ -113,7 +113,7 @@ with st.sidebar:
     htf = st.selectbox("فريم السيولة (HTF):", ["1h", "4h"])
     ltf = st.selectbox("فريم الدخول (LTF):", ["15m", "5m"])
     sh, eh = st.slider("ساعات العمل (UTC):", 0, 23, (0, 23))
-    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 65, 95, 75)
+    min_ai = st.slider("الحد الأدنى لتقييم AI%:", 65, 95, 70)
 
 st.markdown("<h2 style='direction:rtl;text-align:right'>🐋 نظام تتبع سيولة الحيتان (SMC + AI)</h2>", unsafe_allow_html=True)
 c_f1, c_f2 = st.columns(2)
@@ -145,6 +145,3 @@ c1.markdown(f"<div class='box' style='border-top:4px solid #8c52ff'><div>🎯 ن
 c2.markdown(f"<div class='box' style='border-top:4px solid #00b0ff'><div>📊 الصفقات (مؤمّنة: {bes})</div><h1 style='color:#40c4ff'>{wins+losses+bes}</h1></div>", unsafe_allow_html=True)
 c3, c4 = st.columns(2)
 c3.markdown(f"<div class='box' style='border-top:4px solid #00e676'><div>✅ الناجحة (+${gp})</div><h1 style='color:#00e676'>{wins}</h1></div>", unsafe_allow_html=True)
-c4.markdown(f"<div class='box' style='border-top:4px solid #ff1744'><div>❌ الخاسرة (${gl})</div><h1 style='color:#ff5252'>{losses}</h1></div>", unsafe_allow_html=True)
-
-nc = "#00e676" if net >= 0 else "#ff5252"
