@@ -2,8 +2,4 @@ streamlit
 ccxt
 pandas
 numpy
-lightgbm
-scikit-learn
-requests
-tzdata
-
+plotly
