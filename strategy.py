@@ -2,7 +2,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-# ربط رموز USDT بمصادر البيانات الحية
 TICKER_MAP = {
     "XLMUSDT": "XLM-USD",
     "ZECUSDT": "ZEC-USD",
@@ -16,15 +15,20 @@ TICKER_MAP = {
     "PAXGUSDT": "PAXG-USD"
 }
 
-def fetch_data(symbol_usdt, interval, period="7d"):
+def fetch_data(symbol_usdt, interval, period="10d"):
     yf_symbol = TICKER_MAP.get(symbol_usdt, "BTC-USD")
     df = yf.download(yf_symbol, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
 
-def calculate_indicators(df, ema_len, atr_len=14):
-    df['EMA'] = df['Close'].ewm(span=ema_len, adjust=False).mean()
+def calculate_indicators(df, atr_len=14):
+    # حساب المتوسطات الثلاثة (5, 13, 34)
+    df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
+    df['EMA_13'] = df['Close'].ewm(span=13, adjust=False).mean()
+    df['EMA_34'] = df['Close'].ewm(span=34, adjust=False).mean()
+    
+    # حساب ATR لتحديد وقف الخسارة
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -51,17 +55,18 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
     trade_type = ""
     entry, sl, tp = 0.0, 0.0, 0.0
 
-    for i in range(25, len(df)):
+    for i in range(36, len(df)):
         current_time = df.index[i]
-        # مطابقة اتجاه 4 ساعات في الخلفية
         past_trends = trend_series[trend_series.index <= current_time]
         current_trend = past_trends.iloc[-1] if not past_trends.empty else "صاعد 🟢"
 
         close_p = df['Close'].iloc[i]
-        open_p = df['Open'].iloc[i]
         high_p = df['High'].iloc[i]
         low_p = df['Low'].iloc[i]
         atr_val = df['ATR'].iloc[i]
+
+        e5_curr, e13_curr, e34_curr = df['EMA_5'].iloc[i], df['EMA_13'].iloc[i], df['EMA_34'].iloc[i]
+        e5_prev, e13_prev, e34_prev = df['EMA_5'].iloc[i-1], df['EMA_13'].iloc[i-1], df['EMA_34'].iloc[i-1]
 
         if pd.isna(atr_val) or atr_val == 0:
             continue
@@ -86,21 +91,19 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
                     total_profit_pct += abs((tp - entry) / entry) * 100
                     in_trade = False
         else:
-            demand_bottom = df['Low'].iloc[i-20:i-1].min()
-            demand_top = demand_bottom + (atr_val * 0.5)
-            supply_top = df['High'].iloc[i-20:i-1].max()
-            supply_bottom = supply_top - (atr_val * 0.5)
+            # تقاطع صاعد: EMA 5 > 13 > 34 ولم يكن متحققاً في الشمعة السابقة
+            bullish_cross = (e5_curr > e13_curr > e34_curr) and not (e5_prev > e13_prev > e34_prev)
+            # تقاطع هابط: EMA 5 < 13 < 34 ولم يكن متحققاً في الشمعة السابقة
+            bearish_cross = (e5_curr < e13_curr < e34_curr) and not (e5_prev < e13_prev < e34_prev)
 
-            # شرط الشراء
-            if "صاعد" in current_trend and close_p > open_p and close_p > demand_top and df['Low'].iloc[i-1] <= demand_top:
+            if "صاعد" in current_trend and bullish_cross:
                 in_trade = True
                 trade_type = "BUY"
                 entry = close_p
                 sl = entry - (atr_val * atr_sl_mult)
                 tp = entry + ((entry - sl) * rr_ratio)
 
-            # شرط البيع
-            elif "هابط" in current_trend and close_p < open_p and close_p < supply_bottom and df['High'].iloc[i-1] >= supply_bottom:
+            elif "هابط" in current_trend and bearish_cross:
                 in_trade = True
                 trade_type = "SELL"
                 entry = close_p
@@ -121,59 +124,56 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
         "net_profit": net_profit
     }
 
-def run_analysis(symbol_usdt, tf_code, ema_period, atr_sl_mult, rr_ratio):
+def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio):
     df = fetch_data(symbol_usdt, tf_code, period="10d")
-    df_5m = fetch_data(symbol_usdt, "5m", period="2d")
-    
-    if df.empty or df_5m.empty:
+    if df.empty:
         return None
         
-    df = calculate_indicators(df, ema_period)
+    df = calculate_indicators(df)
     trend_series = get_4h_trend_series(symbol_usdt)
     trend_4h = trend_series.iloc[-1] if not trend_series.empty else "غير محدد"
     
-    # حساب سجل الأداء التاريخي
     stats = run_backtest(df, trend_series, atr_sl_mult, rr_ratio)
     
     atr_val = df['ATR'].iloc[-1]
-    ema_val = df['EMA'].iloc[-1]
+    e5 = df['EMA_5'].iloc[-1]
+    e13 = df['EMA_13'].iloc[-1]
+    e34 = df['EMA_34'].iloc[-1]
     
-    demand_bottom = df['Low'].iloc[-20:-2].min()
-    demand_top = demand_bottom + (atr_val * 0.5)
+    e5_prev = df['EMA_5'].iloc[-2]
+    e13_prev = df['EMA_13'].iloc[-2]
+    e34_prev = df['EMA_34'].iloc[-2]
     
-    supply_top = df['High'].iloc[-20:-2].max()
-    supply_bottom = supply_top - (atr_val * 0.5)
+    current_price = df['Close'].iloc[-1]
     
-    last_5m_close = df_5m['Close'].iloc[-1]
-    last_5m_open = df_5m['Open'].iloc[-1]
-    prev_5m_high = df_5m['High'].iloc[-2]
-    prev_5m_low = df_5m['Low'].iloc[-2]
-    
-    signal = "انتظار (لا توجد فرصة مكتملة)"
+    signal = "انتظار (لا يوجد تقاطع جديد)"
     entry, sl, tp = 0.0, 0.0, 0.0
-    reason = "السعر لم يخترق المنطقة بشمعة 5 دقائق متوافقة مع اتجاه 4 ساعات."
+    reason = "المتوسطات في حالة استمرار أو لم يتطابق ترتيبها (5, 13, 34) مع اتجاه 4 ساعات."
 
-    # صفقة شراء
-    if "صاعد" in trend_4h and last_5m_close > last_5m_open and last_5m_close > demand_top and last_5m_close > prev_5m_high:
+    bullish_cross = (e5 > e13 > e34) and not (e5_prev > e13_prev > e34_prev)
+    bearish_cross = (e5 < e13 < e34) and not (e5_prev < e13_prev < e34_prev)
+
+    if "صاعد" in trend_4h and bullish_cross:
         signal = "توصية شراء (BUY) 🚀"
-        entry = last_5m_close
+        entry = current_price
         sl = entry - (atr_val * atr_sl_mult)
         tp = entry + ((entry - sl) * rr_ratio)
-        reason = f"اختراق منطقة الطلب بشمعة 5 دقائق صاعدة مع دعم اتجاه 4 ساعات."
+        reason = "تحقق تقاطع صاعد للمتوسطات (EMA 5 > 13 > 34) مع توافق الاتجاه العام (4 ساعات)."
 
-    # صفقة بيع
-    elif "هابط" in trend_4h and last_5m_close < last_5m_open and last_5m_close < supply_bottom and last_5m_close < prev_5m_low:
+    elif "هابط" in trend_4h and bearish_cross:
         signal = "توصية بيع (SELL) 📉"
-        entry = last_5m_close
+        entry = current_price
         sl = entry + (atr_val * atr_sl_mult)
         tp = entry - ((sl - entry) * rr_ratio)
-        reason = f"كسر منطقة العرض بشمعة 5 دقائق هابطة مع دعم اتجاه 4 ساعات."
+        reason = "تحقق تقاطع هابط للمتوسطات (EMA 5 < 13 < 34) مع توافق الاتجاه العام (4 ساعات)."
+    elif e5 > e13 > e34:
+        reason = "المتوسطات مرتبة صعودياً (5 > 13 > 34) حالياً، بانتظار تقاطع جديد للدخول."
+    elif e5 < e13 < e34:
+        reason = "المتوسطات مرتبة هبوطياً (5 < 13 < 34) حالياً، بانتظار تقاطع جديد للدخول."
 
     return {
         "signal": signal, "entry": entry, "sl": sl, "tp": tp,
-        "demand_bottom": demand_bottom, "demand_top": demand_top,
-        "supply_bottom": supply_bottom, "supply_top": supply_top,
-        "ema": ema_val, "trend_4h": trend_4h,
-        "current_price": last_5m_close, "reason": reason,
-        "stats": stats
+        "ema_5": e5, "ema_13": e13, "ema_34": e34,
+        "trend_4h": trend_4h, "current_price": current_price,
+        "reason": reason, "stats": stats
     }
