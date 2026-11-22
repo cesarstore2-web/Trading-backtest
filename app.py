@@ -88,22 +88,15 @@ def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
                         else:
                             if low_p <= sl:
                                 loss_pct = (sl - entry) / entry
-                                backtest_trades.append({
-                                    "coin": coin_name, "status": "loss",
-                                    "pnl": trade_size_usd * loss_pct
-                                })
+                                backtest_trades.append({"coin": coin_name, "status": "loss", "pnl": trade_size_usd * loss_pct})
                                 i = j
                                 break
                             elif high_p >= target:
                                 win_pct = (target - entry) / entry
-                                backtest_trades.append({
-                                    "coin": coin_name, "status": "win",
-                                    "pnl": trade_size_usd * win_pct
-                                })
+                                backtest_trades.append({"coin": coin_name, "status": "win", "pnl": trade_size_usd * win_pct})
                                 i = j
                                 break
                 i += max(1, window // 3)
-
             recent_df = df.iloc[-window:]
             mid_point = len(recent_df) // 2
             wave_0 = recent_df['low'].iloc[:mid_point].min()
@@ -137,9 +130,7 @@ def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
     return pd.DataFrame(signals_results), pd.DataFrame(backtest_trades)
 
 with st.spinner(f"جاري فحص بيانات السوق الحقيقية لآخر ({selected_period})..."):
-    df_signals, df_trades = run_real_analysis_and_backtest(
-        SYMBOLS, selected_tf, config["limit"], config["window"]
-    )
+    df_signals, df_trades = run_real_analysis_and_backtest(SYMBOLS, selected_tf, config["limit"], config["window"])
 
 if selected_coin != "الكل":
     display_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else df_signals
@@ -188,15 +179,7 @@ st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صا
 st.markdown(f"### 🤖 التوصيات المستقبلية الحالية — إطار ({selected_tf})")
 
 if not display_signals.empty:
-    sorted_df = display_signals.sort_values(by="ai", ascending=False)
-    for _, row in sorted_df.iterrows():
-        card_html = f"""
-        <div class='signal-box'>
-            <div style='display:flex; justify-content:space-between; align-items:center;'>
-                <span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span>
-                <span style='background-color:#805ad5; padding:3px 10px; border-radius:12px; font-size:13px;'>تقييم AI: {row['ai']}%</span>
-            </div>
-            <hr style='border-color:#2d3748; margin:10px 0;'>
-            <div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'>
-                <span>🔵 <b>الدخول (2):</b> ${row['entry']}</span>
-                <span class='green-text'>🟢 <b>الهدف (5):</b> ${row['target']}</span>
+    for _, row in display_signals.sort_values(by="ai", ascending=False).iterrows():
+        st.markdown(f"<div class='signal-box'><div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span><span style='background-color:#805ad5; padding:3px 10px; border-radius:12px; font-size:13px;'>تقييم AI: {row['ai']}%</span></div><hr style='border-color:#2d3748; margin:10px 0;'><div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'><span>🔵 <b>الدخول (2):</b> ${row['entry']}</span><span class='green-text'>🟢 <b>الهدف (5):</b> ${row['target']}</span><span class='red-text'>🔴 <b>ستوب لوس (0):</b> ${row['sl']}</span></div></div>", unsafe_allow_html=True)
+else:
+    st.warning("تعذر جلب البيانات حالياً من المنصة.")
