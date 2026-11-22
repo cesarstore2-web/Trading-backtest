@@ -40,7 +40,8 @@ with col_set2:
 
 @st.cache_data(ttl=300)
 def run_fast_elliott_system(symbols_list, capital_per_trade):
-    exchange = ccxt.binance({'enableRateLimit': True})
+    # استخدام KuCoin لأنه لا يحظر خوادم Streamlit الأمريكية
+    exchange = ccxt.kucoin({'enableRateLimit': True})
     closed_trades = []
     future_signals = []
 
@@ -49,17 +50,14 @@ def run_fast_elliott_system(symbols_list, capital_per_trade):
             fetch_sym = "PAXG/USDT" if sym == "XAU/USDT" else sym
             coin_name = sym.replace("/USDT", "")
             
-            # جلب 200 شمعة على فريم 4 ساعات (تغطي آخر 33 يوماً تقريباً)
-            # فريم 4 ساعات يعطي صفقات تكتمل خلال 1 إلى 3 أيام
             bars = exchange.fetch_ohlcv(fetch_sym, timeframe="4h", limit=200)
+            if not bars:
+                continue
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            # 1. اختبار رجعي لآخر 30 يوماً سابقة (180 شمعة 4 ساعات)
-            for start_idx in range(0, 150, 15):
+            # 1. اختبار رجعي لآخر 30 يوماً سابقة
+            for start_idx in range(0, len(df) - 30, 12):
                 sub_df = df.iloc[start_idx : start_idx + 30].reset_index(drop=True)
-                if len(sub_df) < 20:
-                    continue
-                
                 wave_0 = sub_df['low'].iloc[:8].min()
                 wave_1 = sub_df['high'].iloc[4:14].max()
                 
@@ -86,7 +84,7 @@ def run_fast_elliott_system(symbols_list, capital_per_trade):
                                 closed_trades.append({"coin": coin_name, "pnl": pnl_usd})
                                 break
 
-            # 2. توليد التوصيات المستقبلية الحالية (مدتها المتوقعة 1 إلى 3 أيام)
+            # 2. توليد التوصيات المستقبلية الحالية (1 - 3 أيام)
             recent_df = df.iloc[-24:]
             w0 = recent_df['low'].iloc[:12].min()
             w1 = recent_df['high'].iloc[12:].max()
@@ -99,7 +97,6 @@ def run_fast_elliott_system(symbols_list, capital_per_trade):
             t5 = w0 + (d * 1.618)
             curr = recent_df['close'].iloc[-1]
             
-            # تقدير المدة المتوقعة للصفقة بناءً على المسافة السعرية والتذبذب
             pct_move = ((t5 - e2) / e2) * 100
             est_days = "1 يوم" if pct_move < 4 else ("2 يوم" if pct_move < 8 else "3 أيام")
             
@@ -121,7 +118,7 @@ def run_fast_elliott_system(symbols_list, capital_per_trade):
 
     return pd.DataFrame(closed_trades), pd.DataFrame(future_signals)
 
-with st.spinner("جاري تحليل السوق وتوليد التوصيات السريعة..."):
+with st.spinner("جاري جلب البيانات الحية من KuCoin وتحليل الموجات..."):
     df_trades, df_signals = run_fast_elliott_system(SYMBOLS, trade_amount_usd)
 
 if selected_coin != "الكل":
@@ -188,3 +185,5 @@ if not filtered_signals.empty:
             f"</div></div>"
         )
         st.markdown(card_html, unsafe_allow_html=True)
+else:
+    st.error("تعذر الاتصال بمصدر البيانات، يرجى إعادة تحميل الصفحة.")
