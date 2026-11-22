@@ -63,18 +63,17 @@ with c5:
 with c6:
     dev_val = st.number_input("DEVIATION:", min_value=0, max_value=100, value=5, step=1)
 
-@st.cache_data(ttl=180)
-def fetch_gateio_data(symbols_list, tf, cache_buster="v3"):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"}
+@st.cache_data(ttl=120)
+def fetch_gateio_data(symbols_list, tf, v="v4_fixed"):
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
     kraken_map = {"5m": 5, "15m": 15, "1h": 60}
-    coinbase_map = {"5m": 300, "15m": 900, "1h": 3600}
-    kucoin_map = {"5m": "5min", "15m": "15min", "1h": "1hour"}
+    cc_map = {"5m": ("histominute", 5), "15m": ("histominute", 15), "1h": ("histohour", 1)}
     data_dict = {}
 
     for coin in symbols_list:
         df = None
 
-        # 1. Kraken Public API (سيرفرات أمريكية وأوروبية سريعة ومفتوحة)
+        # 1. Kraken Public API (تم إصلاح keys[0])
         try:
             k_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
             r = requests.get("https://kraken.com", params={"pair": k_pair, "interval": kraken_map[tf]}, headers=headers, timeout=8)
@@ -91,28 +90,17 @@ def fetch_gateio_data(symbols_list, tf, cache_buster="v3"):
         except Exception:
             df = None
 
-        # 2. Coinbase Exchange API (احتياطي سريع ومفتوح في أمريكا)
+        # 2. CryptoCompare Public API (مفتوح عالمياً وسريع جداً)
         if df is None or df.empty:
             try:
-                r = requests.get(f"https://coinbase.com{coin}-USD/candles", params={"granularity": coinbase_map[tf]}, headers=headers, timeout=8)
-                if r.status_code == 200:
-                    raw = r.json()
-                    if isinstance(raw, list) and len(raw) > 0:
-                        df = pd.DataFrame(raw, columns=['timestamp', 'low', 'high', 'open', 'close', 'volume'])
-                        for col in ['open', 'high', 'low', 'close']:
-                            df[col] = df[col].astype(float)
-                        df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
-                        df = df.sort_values('timestamp').reset_index(drop=True)
-            except Exception:
-                df = None
-
-        # 3. KuCoin Public API (احتياطي ثالث)
-        if df is None or df.empty:
-            try:
-                r = requests.get("https://kucoin.com", params={"type": kucoin_map[tf], "symbol": f"{coin}-USDT"}, headers=headers, timeout=8)
-                if r.status_code == 200 and r.json().get("data"):
-                    raw = r.json()["data"]
-                    df = pd.DataFrame(raw, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'turnover'])
+                endpoint, agg = cc_map[tf]
+                url_cc = f"https://cryptocompare.com{endpoint}"
+                r = requests.get(url_cc, params={"fsym": coin, "tsym": "USDT", "limit": 800, "aggregate": agg}, headers=headers, timeout=8)
+                res = r.json()
+                if r.status_code == 200 and res.get("Response") == "Success":
+                    raw = res["Data"]["Data"]
+                    df = pd.DataFrame(raw)
+                    df = df[['time', 'open', 'high', 'low', 'close', 'volumefrom']].rename(columns={'time': 'timestamp', 'volumefrom': 'volume'})
                     for col in ['open', 'high', 'low', 'close']:
                         df[col] = df[col].astype(float)
                     df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
