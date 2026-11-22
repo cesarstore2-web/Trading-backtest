@@ -4,12 +4,12 @@ import pandas as pd
 
 st.set_page_config(page_title="نظام موجات إليوت - Spot", layout="centered")
 
-# تنسيق CSS لمطابقة الصورة وتصغير البطاقات
+# تنسيق CSS لمطابقة التصميم وتصغير البطاقات
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #ffffff; direction: rtl; }
     div[role="radiogroup"] { justify-content: center; flex-direction: row-reverse; gap: 15px; }
-    label, .stSelectbox label, .stNumberInput label { text-align: right !important; display: block; width: 100%; color: #fafafa !important; }
+    label, .stSelectbox label { text-align: right !important; display: block; width: 100%; color: #fafafa !important; }
     
     .metric-card {
         background-color: #161920;
@@ -52,7 +52,6 @@ st.markdown("""
 
 # إعدادات افتراضية في الخفاء
 capital = 100.0
-fib_entry = 0.618
 
 # 1. شريط اختيار الفترة وتحديد الفريم المناسب لكل فترة
 timeframe_choice = st.radio("", ["24 ساعة", "أسبوع", "شهر"], index=2, horizontal=True)
@@ -66,10 +65,7 @@ selected_interval = tf_config[timeframe_choice]["interval"]
 window_size = tf_config[timeframe_choice]["window"]
 step_size = tf_config[timeframe_choice]["step"]
 
-# 2. المدخلات الظاهرة
-atr_sl_mult = st.number_input("ATR SL:", min_value=0.1, value=4.00, step=0.10, format="%.2f")
-rr_ratio = st.number_input("R : R:", min_value=0.5, value=3.70, step=0.10, format="%.2f")
-
+# 2. اختيار العملة فقط
 symbols_dict = {
     "الكل": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"],
     "BTC-USD": ["BTC-USD"],
@@ -85,18 +81,12 @@ def get_crypto_data(ticker, per, interv):
     df = yf.download(ticker, period=per, interval=interv, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    if not df.empty:
-        high_low = df['High'] - df['Low']
-        high_close = (df['High'] - df['Close'].shift()).abs()
-        low_close = (df['Low'] - df['Close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['ATR'] = tr.rolling(14).mean().bfill()
     return df
 winning_trades, losing_trades = 0, 0
 total_profit, total_loss = 0.0, 0.0
 trades_log = []
 
-# 3. حساب النتائج التاريخية للفترة والفريم المحددين (Spot شراء فقط)
+# 3. حساب النتائج التاريخية حسب قاعدة موجات إليوت الصافية (Spot شراء فقط)
 for sym in symbols_dict[selected_coin]:
     df = get_crypto_data(sym, selected_period, selected_interval)
     if df.empty or len(df) < window_size:
@@ -105,40 +95,45 @@ for sym in symbols_dict[selected_coin]:
     for i in range(0, len(df) - window_size, step_size):
         sub_df = df.iloc[i : i + window_size]
         mid = len(sub_df) // 2
+        
         wave_0 = float(sub_df.iloc[:mid]['Low'].min())
         wave_1 = float(sub_df.iloc[mid:]['High'].max())
 
         if wave_1 > wave_0:
             diff = wave_1 - wave_0
-            entry_2 = wave_1 - (diff * fib_entry)
-            atr_val = float(sub_df['ATR'].iloc[-1])
-            
-            sl_atr = entry_2 - (atr_val * atr_sl_mult)
-            stop_loss_0 = max(wave_0, sl_atr) if sl_atr < entry_2 else wave_0
-            risk = entry_2 - stop_loss_0
-            if risk <= 0:
-                continue
-            target_5 = entry_2 + (risk * rr_ratio)
+            entry_2 = wave_1 - (diff * 0.618)
+            target_5 = wave_0 + (diff * 1.618)
+            stop_loss_0 = wave_0
 
             future_df = df.iloc[i + window_size : i + (window_size * 2)]
             entered = False
             for date, row in future_df.iterrows():
                 low_p, high_p = float(row['Low']), float(row['High'])
+                
                 if not entered and low_p <= entry_2:
                     entered = True
                     continue
+                
                 if entered:
                     if low_p <= stop_loss_0:
-                        loss_usd = capital * (risk / entry_2)
+                        loss_usd = capital * ((entry_2 - stop_loss_0) / entry_2)
                         losing_trades += 1
                         total_loss += loss_usd
-                        trades_log.append({"العملة": sym, "الفريم": selected_interval, "الحالة": "خاسرة ❌", "الدخول": round(entry_2, 2), "الإغلاق": round(stop_loss_0, 2), "النتيجة": f"-${loss_usd:.2f}"})
+                        trades_log.append({
+                            "العملة": sym, "الفريم": selected_interval, "الحالة": "خاسرة ❌",
+                            "الدخول": round(entry_2, 2), "الإغلاق": round(stop_loss_0, 2),
+                            "النتيجة": f"-${loss_usd:.2f}"
+                        })
                         break
                     elif high_p >= target_5:
                         profit_usd = capital * ((target_5 - entry_2) / entry_2)
                         winning_trades += 1
                         total_profit += profit_usd
-                        trades_log.append({"العملة": sym, "الفريم": selected_interval, "الحالة": "رابحة ✅", "الدخول": round(entry_2, 2), "الإغلاق": round(target_5, 2), "النتيجة": f"+${profit_usd:.2f}"})
+                        trades_log.append({
+                            "العملة": sym, "الفريم": selected_interval, "الحالة": "رابحة ✅",
+                            "الدخول": round(entry_2, 2), "الإغلاق": round(target_5, 2),
+                            "النتيجة": f"+${profit_usd:.2f}"
+                        })
                         break
 
 total_trades = winning_trades + losing_trades
@@ -172,21 +167,20 @@ for sym in symbols_dict[selected_coin]:
         df_rec = get_crypto_data(sym, tf_per, tf_name)
         if df_rec.empty or len(df_rec) < tf_win:
             continue
+        
         rec_slice = df_rec.tail(tf_win)
         mid_r = len(rec_slice) // 2
         w0_c = float(rec_slice.iloc[:mid_r]['Low'].min())
         w1_c = float(rec_slice.iloc[mid_r:]['High'].max())
         curr_p = float(df_rec['Close'].iloc[-1])
-        curr_atr = float(df_rec['ATR'].iloc[-1])
 
         if w1_c > w0_c:
             diff_c = w1_c - w0_c
-            ent_c = w1_c - (diff_c * fib_entry)
-            sl_c_raw = ent_c - (curr_atr * atr_sl_mult)
-            sl_c = max(w0_c, sl_c_raw) if sl_c_raw < ent_c else w0_c
-            risk_c = ent_c - sl_c
-            if risk_c > 0 and curr_p > sl_c:
-                tgt_c = ent_c + (risk_c * rr_ratio)
+            ent_c = w1_c - (diff_c * 0.618)
+            tgt_c = w0_c + (diff_c * 1.618)
+            sl_c = w0_c
+            
+            if curr_p > sl_c:
                 recommendations.append((sym, tf_name, curr_p, ent_c, tgt_c, sl_c))
 
 if recommendations:
@@ -195,9 +189,9 @@ if recommendations:
         st.markdown(f"""
         <div class="rec-box">
             <b>{sym}</b> <span class="tf-badge">{tf_n}</span> | السعر: <code>{cp:.2f}</code> ({status})<br>
-            <span style="color:#4caf50;">🟢 الدخول: <b>{ent:.2f}</b></span> &nbsp;|&nbsp;
-            <span style="color:#2196f3;">🎯 الهدف: <b>{tgt:.2f}</b></span> &nbsp;|&nbsp;
-            <span style="color:#ef5350;">🛑 الوقف: <b>{sl:.2f}</b></span>
+            <span style="color:#4caf50;">🟢 الدخول (entry_2): <b>{ent:.2f}</b></span> &nbsp;|&nbsp;
+            <span style="color:#2196f3;">🎯 الهدف (target_5): <b>{tgt:.2f}</b></span> &nbsp;|&nbsp;
+            <span style="color:#ef5350;">🛑 الوقف (wave_0): <b>{sl:.2f}</b></span>
         </div>
         """, unsafe_allow_html=True)
 else:
