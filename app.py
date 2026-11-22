@@ -20,8 +20,8 @@ sel_p = st.radio("المدة:", list(PERIODS.keys()), horizontal=True, label_vis
 tf, yf_p, hrs = PERIODS[sel_p]
 
 c1, c2, c3 = st.columns(3)
-atr_m = c1.number_input("ATR SL:", 0.1, 10.0, 1.5, 0.1)
-rr_val = c2.number_input("R : R :", 0.5, 15.0, 2.0, 0.1)
+atr_m = c1.number_input("ATR SL:", 0.1, 10.0, 4.0, 0.1)
+rr_val = c2.number_input("R : R :", 0.5, 15.0, 3.7, 0.1)
 sel_coin = c3.selectbox("العملة:", ["الكل"] + SYMBOLS)
 
 @st.cache_data(ttl=180)
@@ -132,5 +132,5 @@ st.markdown(f"<div class='card c-purp'><div>✨ صافي الربح</div><h2 sty
 st.markdown("### 🤖 أحدث الإشارات")
 for _, r in (df_s.sort_values("ago") if not df_s.empty else df_s).iterrows():
     cls = "sig-b" if r["buy"] else "sig-s"
-    tag = "شراء" if r["buy"] else "بيع"
+    tag = "<span style='color:#03ff85; font-size:1.15em; font-weight:900;'>شراء</span>" if r["buy"] else "<span style='color:#fc0808; font-size:1.15em; font-weight:900;'>بيع</span>"
     st.markdown(f"<div class='{cls}'><b>🪙 {r['coin']} (${r['p']}) — {tag} (منذ {r['ago']} شمعة)</b><br>🔵 دخول: ${r['e']} | 🟢 هدف: ${r['tp']} | 🔴 وقف: ${r['sl']}</div>", unsafe_allow_html=True)
