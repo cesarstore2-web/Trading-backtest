@@ -31,9 +31,9 @@ st.markdown(css_style, unsafe_allow_html=True)
 SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
 
 period_config = {
-    "24 ساعة": {"tf": "5m",  "kucoin_tf": "5min",  "kraken_min": 5,  "hours": 24},
-    "أسبوع":   {"tf": "15m", "kucoin_tf": "15min", "kraken_min": 15, "hours": 168},
-    "شهر":     {"tf": "1h",  "kucoin_tf": "1hour", "kraken_min": 60, "hours": 720}
+    "24 ساعة": {"tf": "5m",  "hours": 24},
+    "أسبوع":   {"tf": "15m", "hours": 168},
+    "شهر":     {"tf": "1h",  "hours": 720}
 }
 
 selected_period = st.radio(
@@ -63,41 +63,56 @@ with c5:
 with c6:
     dev_val = st.number_input("DEVIATION:", min_value=0, max_value=100, value=5, step=1)
 
-@st.cache_data(ttl=300)
-def fetch_gateio_data(symbols_list, tf):
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    kucoin_map = {"5m": "5min", "15m": "15min", "1h": "1hour"}
+@st.cache_data(ttl=180)
+def fetch_gateio_data(symbols_list, tf, cache_buster="v3"):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"}
     kraken_map = {"5m": 5, "15m": 15, "1h": 60}
+    coinbase_map = {"5m": 300, "15m": 900, "1h": 3600}
+    kucoin_map = {"5m": "5min", "15m": "15min", "1h": "1hour"}
     data_dict = {}
 
     for coin in symbols_list:
         df = None
-        # 1. المحاولة الأولى: KuCoin Public API (يعمل عالمياً وبلا حظر)
+
+        # 1. Kraken Public API (سيرفرات أمريكية وأوروبية سريعة ومفتوحة)
         try:
-            url_kc = "https://kucoin.com"
-            r = requests.get(url_kc, params={"type": kucoin_map[tf], "symbol": f"{coin}-USDT"}, headers=headers, timeout=8)
-            if r.status_code == 200 and r.json().get("data"):
-                raw = r.json()["data"]
-                # صيغة KuCoin: [time_sec, open, close, high, low, volume, turnover]
-                df = pd.DataFrame(raw, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'turnover'])
-                for col in ['open', 'high', 'low', 'close']:
-                    df[col] = df[col].astype(float)
-                df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
-                df = df.sort_values('timestamp').reset_index(drop=True)
+            k_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
+            r = requests.get("https://kraken.com", params={"pair": k_pair, "interval": kraken_map[tf]}, headers=headers, timeout=8)
+            res = r.json()
+            if r.status_code == 200 and not res.get("error") and res.get("result"):
+                keys = [k for k in res["result"].keys() if k != "last"]
+                if keys:
+                    raw = res["result"][keys[0]]
+                    df = pd.DataFrame(raw, columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
+                    for col in ['open', 'high', 'low', 'close']:
+                        df[col] = df[col].astype(float)
+                    df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
+                    df = df.sort_values('timestamp').reset_index(drop=True)
         except Exception:
             df = None
 
-        # 2. المحاولة الثانية (احتياطي): Kraken Public API (مرخص في أمريكا وأوروبا)
+        # 2. Coinbase Exchange API (احتياطي سريع ومفتوح في أمريكا)
         if df is None or df.empty:
             try:
-                k_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
-                url_kr = "https://kraken.com"
-                r = requests.get(url_kr, params={"pair": k_pair, "interval": kraken_map[tf]}, headers=headers, timeout=8)
-                res_json = r.json()
-                if r.status_code == 200 and not res_json.get("error"):
-                    pair_key = [k for k in res_json["result"].keys() if k != "last"][0]
-                    raw = res_json["result"][pair_key]
-                    df = pd.DataFrame(raw, columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
+                r = requests.get(f"https://coinbase.com{coin}-USD/candles", params={"granularity": coinbase_map[tf]}, headers=headers, timeout=8)
+                if r.status_code == 200:
+                    raw = r.json()
+                    if isinstance(raw, list) and len(raw) > 0:
+                        df = pd.DataFrame(raw, columns=['timestamp', 'low', 'high', 'open', 'close', 'volume'])
+                        for col in ['open', 'high', 'low', 'close']:
+                            df[col] = df[col].astype(float)
+                        df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
+                        df = df.sort_values('timestamp').reset_index(drop=True)
+            except Exception:
+                df = None
+
+        # 3. KuCoin Public API (احتياطي ثالث)
+        if df is None or df.empty:
+            try:
+                r = requests.get("https://kucoin.com", params={"type": kucoin_map[tf], "symbol": f"{coin}-USDT"}, headers=headers, timeout=8)
+                if r.status_code == 200 and r.json().get("data"):
+                    raw = r.json()["data"]
+                    df = pd.DataFrame(raw, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'turnover'])
                     for col in ['open', 'high', 'low', 'close']:
                         df[col] = df[col].astype(float)
                     df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
