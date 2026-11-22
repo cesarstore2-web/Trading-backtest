@@ -31,10 +31,11 @@ SYMBOLS = [
     "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
 ]
 
+# فريم 5 دقائق و 15 دقيقة مع عدد الشموع المناسب
 period_config = {
-    "24 ساعة": {"tf": "15m", "limit": 96,  "window": 24},
-    "أسبوع":   {"tf": "1h",  "limit": 168, "window": 36},
-    "شهر":     {"tf": "4h",  "limit": 180, "window": 40}
+    "24 ساعة": {"tf": "5m",  "limit": 288,  "window": 36},  # 288 شمعة × 5 دقائق = 24 ساعة
+    "أسبوع":   {"tf": "15m", "limit": 672,  "window": 48},  # 672 شمعة × 15 دقيقة = 7 أيام
+    "شهر":     {"tf": "15m", "limit": 1000, "window": 60}   # 1000 شمعة × 15 دقيقة = ~10.5 أيام (الحد الأقصى لمنصة Binance في الطلب الواحد)
 }
 
 selected_period = st.radio(
