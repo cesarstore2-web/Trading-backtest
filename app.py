@@ -4,7 +4,7 @@ import numpy as np
 import requests
 import time
 
-st.set_page_config(page_title="Tricks HeLaL V 0.01 — Gate.io", layout="centered")
+st.set_page_config(page_title="Tricks HeLaL V 0.01 — Backtest", layout="centered")
 
 css_style = """
 <style>
@@ -28,16 +28,12 @@ div[role='radiogroup'] label { padding: 8px 16px; border-radius: 8px; color: #ff
 """
 st.markdown(css_style, unsafe_allow_html=True)
 
-# أزواج العملات بصيغة Gate.io
-SYMBOLS = [
-    "XLM_USDT", "ZEC_USDT", "XRP_USDT", "HBAR_USDT", "ADA_USDT",
-    "LTC_USDT", "BTC_USDT", "ETH_USDT", "PAXG_USDT"
-]
+SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
 
 period_config = {
-    "24 ساعة": {"tf": "5m",  "hours": 24},
-    "أسبوع":   {"tf": "15m", "hours": 168},
-    "شهر":     {"tf": "1h",  "hours": 720}
+    "24 ساعة": {"tf": "5m",  "kucoin_tf": "5min",  "kraken_min": 5,  "hours": 24},
+    "أسبوع":   {"tf": "15m", "kucoin_tf": "15min", "kraken_min": 15, "hours": 168},
+    "شهر":     {"tf": "1h",  "kucoin_tf": "1hour", "kraken_min": 60, "hours": 720}
 }
 
 selected_period = st.radio(
@@ -50,17 +46,15 @@ selected_period = st.radio(
 config = period_config[selected_period]
 selected_tf = config["tf"]
 
-# نوافذ التحكم: ATR SL و R:R والعملة
 c1, c2, c3 = st.columns(3)
 with c1:
     atr_mult = st.number_input("مضاعف ATR SL:", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
 with c2:
     rr_ratio = st.number_input("نسبة R : R :", min_value=0.5, max_value=15.0, value=2.0, step=0.1)
 with c3:
-    filter_options = ["الكل"] + [s.replace("_USDT", "") for s in SYMBOLS]
+    filter_options = ["الكل"] + SYMBOLS
     selected_coin = st.selectbox("العملة:", filter_options)
 
-# إعدادات المؤشر
 c4, c5, c6 = st.columns(3)
 with c4:
     depth_val = st.number_input("DEPTH:", min_value=2, max_value=100, value=30, step=1)
@@ -71,24 +65,49 @@ with c6:
 
 @st.cache_data(ttl=300)
 def fetch_gateio_data(symbols_list, tf):
-    base_url = "https://gateio.ws"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    kucoin_map = {"5m": "5min", "15m": "15min", "1h": "1hour"}
+    kraken_map = {"5m": 5, "15m": 15, "1h": 60}
     data_dict = {}
-    for sym in symbols_list:
+
+    for coin in symbols_list:
+        df = None
+        # 1. المحاولة الأولى: KuCoin Public API (يعمل عالمياً وبلا حظر)
         try:
-            resp = requests.get(base_url, params={"currency_pair": sym, "interval": tf, "limit": 1000}, timeout=10)
-            if resp.status_code == 200:
-                raw = resp.json()
-                # صيغة Gate.io: [timestamp_sec, quote_vol, close, high, low, open, base_vol, is_closed]
-                df = pd.DataFrame(raw, columns=[
-                    'timestamp', 'quote_vol', 'close', 'high', 'low', 'open', 'volume', 'is_closed'
-                ])
+            url_kc = "https://kucoin.com"
+            r = requests.get(url_kc, params={"type": kucoin_map[tf], "symbol": f"{coin}-USDT"}, headers=headers, timeout=8)
+            if r.status_code == 200 and r.json().get("data"):
+                raw = r.json()["data"]
+                # صيغة KuCoin: [time_sec, open, close, high, low, volume, turnover]
+                df = pd.DataFrame(raw, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume', 'turnover'])
                 for col in ['open', 'high', 'low', 'close']:
                     df[col] = df[col].astype(float)
                 df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
                 df = df.sort_values('timestamp').reset_index(drop=True)
-                data_dict[sym.replace("_USDT", "")] = df
         except Exception:
-            continue
+            df = None
+
+        # 2. المحاولة الثانية (احتياطي): Kraken Public API (مرخص في أمريكا وأوروبا)
+        if df is None or df.empty:
+            try:
+                k_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
+                url_kr = "https://kraken.com"
+                r = requests.get(url_kr, params={"pair": k_pair, "interval": kraken_map[tf]}, headers=headers, timeout=8)
+                res_json = r.json()
+                if r.status_code == 200 and not res_json.get("error"):
+                    pair_key = [k for k in res_json["result"].keys() if k != "last"][0]
+                    raw = res_json["result"][pair_key]
+                    df = pd.DataFrame(raw, columns=['timestamp', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
+                    for col in ['open', 'high', 'low', 'close']:
+                        df[col] = df[col].astype(float)
+                    df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
+                    df = df.sort_values('timestamp').reset_index(drop=True)
+            except Exception:
+                df = None
+
+        if df is not None and not df.empty:
+            data_dict[coin] = df
+
     return data_dict
 
 def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth, backstep, deviation, period_hours, min_bars=8):
