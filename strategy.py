@@ -189,12 +189,12 @@ def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter):
         if res:
             results.append({
                 "العملة": coin,
-                "السعر": round(res['current_price'], 4),
+                "السعر": f"{res['current_price']:.4f}",
                 "التوصية": res['signal'],
                 "اتجاه 4H": res['trend_4h'],
-                "الدخول": round(res['entry'], 4) if res['entry'] > 0 else "-",
-                "الهدف (TP)": round(res['tp'], 4) if res['tp'] > 0 else "-",
-                "الوقف (SL)": round(res['sl'], 4) if res['sl'] > 0 else "-",
+                "الدخول": f"{res['entry']:.4f}" if res['entry'] > 0 else "-",
+                "الهدف (TP)": f"{res['tp']:.4f}" if res['tp'] > 0 else "-",
+                "الوقف (SL)": f"{res['sl']:.4f}" if res['sl'] > 0 else "-",
                 "نسبة النجاح": f"{res['stats']['win_rate']:.1f}%",
                 "صافي الربح": f"{res['stats']['net_profit']:+.2f}%"
             })
