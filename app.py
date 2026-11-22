@@ -9,7 +9,7 @@ css_style = (
     "<style>"
     ".stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }"
     "div[role='radiogroup'] { display: flex; justify-content: space-around; flex-wrap: wrap; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }"
-    "div[role='radiogroup'] label { padding: 8px 14px; border-radius: 8px; color: #ffffff !important; }"
+    "div[role='radiogroup'] label { padding: 8px 16px; border-radius: 8px; color: #ffffff !important; }"
     ".metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }"
     ".card-blue { border: 1.5px solid #2b6cb0; }"
     ".card-purple { border: 1.5px solid #805ad5; }"
@@ -31,53 +31,91 @@ SYMBOLS = [
     "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
 ]
 
-# الفريمات الزمنية الجديدة
-timeframe_map = {
-    "15 دقيقة": "15m",
-    "ساعة": "1h",
-    "4 ساعات": "4h",
-    "يومي": "1d"
+# ربط المدة الزمنية بالإطار الزمني وعدد الشموع الحقيقي
+period_config = {
+    "24 ساعة": {"tf": "15m", "limit": 96,  "window": 24},  # 96 شمعة × 15 دقيقة = 24 ساعة
+    "أسبوع":   {"tf": "1h",  "limit": 168, "window": 36},  # 168 شمعة × 1 ساعة = 7 أيام
+    "شهر":     {"tf": "4h",  "limit": 180, "window": 40}   # 180 شمعة × 4 ساعات = 30 يوم
 }
 
-selected_tf_label = st.radio(
-    "الإطار الزمني:",
-    options=list(timeframe_map.keys()),
+selected_period = st.radio(
+    "مدة الاختبار والتحليل:",
+    options=list(period_config.keys()),
     horizontal=True,
     label_visibility="collapsed"
 )
-selected_tf = timeframe_map[selected_tf_label]
+
+config = period_config[selected_period]
+selected_tf = config["tf"]
 
 filter_options = ["الكل"] + [s.replace("/USDT", "") for s in SYMBOLS]
 selected_coin = st.selectbox("تصفية حسب العملة:", filter_options)
 
 @st.cache_data(ttl=300)
-def analyze_elliott_waves(symbols_list, tf):
+def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
     exchange = ccxt.binance({'enableRateLimit': True})
-    results = []
-    
-    # تحديد عدد الشموع المناسب لكل إطار زمني
-    if tf == "15m":
-        lookback = 96   # آخر 24 ساعة
-    elif tf == "1h":
-        lookback = 72   # آخر 3 أيام
-    elif tf == "4h":
-        lookback = 60   # آخر 10 أيام
-    else:
-        lookback = 30   # آخر 30 يوم
+    signals_results = []
+    backtest_trades = []
+    trade_size_usd = 1000.0  # حجم الصفقة الافتراضي لحساب الأرباح بالدولار
 
     for sym in symbols_list:
         try:
             fetch_sym = "PAXG/USDT" if sym == "XAU/USDT" else sym
-            bars = exchange.fetch_ohlcv(fetch_sym, timeframe=tf, limit=lookback)
+            bars = exchange.fetch_ohlcv(fetch_sym, timeframe=tf, limit=limit)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            coin_name = sym.replace("/USDT", "")
 
-            mid_point = len(df) // 2
-            wave_0 = df['low'].iloc[:mid_point].min()
-            wave_1 = df['high'].iloc[mid_point:].max()
+            # --- 1. الاختبار الرجعي الحقيقي (Backtest) على الفترة المحددة ---
+            i = window
+            while i < len(df) - 1:
+                sub_df = df.iloc[i - window : i]
+                mid = len(sub_df) // 2
+                w0 = sub_df['low'].iloc[:mid].min()
+                w1 = sub_df['high'].iloc[mid:].max()
+
+                if w1 > w0:
+                    diff = w1 - w0
+                    entry = w1 - (diff * 0.618)
+                    target = w0 + (diff * 1.618)
+                    sl = w0
+
+                    # تتبع الشموع التالية لمعرفة هل تفعلت الصفقة ونتيجتها
+                    triggered = False
+                    for j in range(i, len(df)):
+                        low_p = df['low'].iloc[j]
+                        high_p = df['high'].iloc[j]
+
+                        if not triggered:
+                            if low_p <= entry <= high_p:
+                                triggered = True
+                        else:
+                            if low_p <= sl:
+                                loss_pct = (sl - entry) / entry
+                                backtest_trades.append({
+                                    "coin": coin_name, "status": "loss",
+                                    "pnl": trade_size_usd * loss_pct
+                                })
+                                i = j
+                                break
+                            elif high_p >= target:
+                                win_pct = (target - entry) / entry
+                                backtest_trades.append({
+                                    "coin": coin_name, "status": "win",
+                                    "pnl": trade_size_usd * win_pct
+                                })
+                                i = j
+                                break
+                i += max(1, window // 3)
+
+            # --- 2. التوصيات المستقبلية الحالية بناءً على آخر شموع ---
+            recent_df = df.iloc[-window:]
+            mid_point = len(recent_df) // 2
+            wave_0 = recent_df['low'].iloc[:mid_point].min()
+            wave_1 = recent_df['high'].iloc[mid_point:].max()
 
             if wave_1 <= wave_0:
-                wave_0 = df['low'].min()
-                wave_1 = df['high'].max()
+                wave_0 = recent_df['low'].min()
+                wave_1 = recent_df['high'].max()
 
             diff = wave_1 - wave_0
             entry_2 = wave_1 - (diff * 0.618)
@@ -89,8 +127,8 @@ def analyze_elliott_waves(symbols_list, tf):
             ai_score = max(65, min(98, int(98 - (distance_ratio * 150))))
             decimals = 2 if current_price > 10 else 4
 
-            results.append({
-                "coin": sym.replace("/USDT", ""),
+            signals_results.append({
+                "coin": coin_name,
                 "price": round(current_price, decimals),
                 "entry": round(entry_2, decimals),
                 "target": round(target_5, decimals),
@@ -99,42 +137,43 @@ def analyze_elliott_waves(symbols_list, tf):
             })
         except Exception:
             continue
-    return pd.DataFrame(results)
 
-with st.spinner(f"جاري تحليل بيانات الإطار ({selected_tf_label})..."):
-    df_signals = analyze_elliott_waves(SYMBOLS, selected_tf)
+    return pd.DataFrame(signals_results), pd.DataFrame(backtest_trades)
 
-if selected_coin != "الكل" and not df_signals.empty:
-    display_df = df_signals[df_signals["coin"] == selected_coin]
+with st.spinner(f"جاري فحص بيانات السوق الحقيقية لآخر ({selected_period})..."):
+    df_signals, df_trades = run_real_analysis_and_backtest(
+        SYMBOLS, selected_tf, config["limit"], config["window"]
+    )
+
+# تصفية النتائج حسب العملة المختارة
+if selected_coin != "الكل":
+    display_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else df_signals
+    display_trades = df_trades[df_trades["coin"] == selected_coin] if not df_trades.empty else df_trades
 else:
-    display_df = df_signals
+    display_signals = df_signals
+    display_trades = df_trades
 
-st.markdown(f"### 📊 سجل الأداء والنتائج السابقة ({selected_tf_label})")
+st.markdown(f"### 📊 النتائج الفعلية من السوق — آخر ({selected_period})")
+st.caption(f"الإطار الزمني للتحليل: {selected_tf} | رأس مال الصفقة الافتراضي: $1,000")
 
-# تحديث الإحصائيات لتطابق الفريمات الجديدة
-stats_by_tf = {
-    "15 دقيقة": {"total": 45, "win": 34, "loss": 11, "profit_usd": 1850, "loss_usd": 420},
-    "ساعة":     {"total": 32, "win": 25, "loss": 7,  "profit_usd": 2400, "loss_usd": 390},
-    "4 ساعات":  {"total": 24, "win": 19, "loss": 5,  "profit_usd": 2950, "loss_usd": 380},
-    "يومي":     {"total": 19, "win": 15, "loss": 2,  "profit_usd": 3653, "loss_usd": 353}
-}
-
-current_stats = stats_by_tf[selected_tf_label]
-multiplier = 1.0 if selected_coin == "الكل" else 0.15
-
-total_trades = max(1, int(current_stats["total"] * multiplier))
-win_trades = max(1, int(current_stats["win"] * multiplier))
-loss_trades = max(0, int(current_stats["loss"] * multiplier))
-win_rate = round((win_trades / total_trades) * 100, 2)
-total_profit_usd = round(current_stats["profit_usd"] * multiplier, 2)
-total_loss_usd = round(current_stats["loss_usd"] * multiplier, 2)
-net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
+# حساب الإحصائيات الحقيقية من الصفقات المكتملة
+if not display_trades.empty:
+    total_trades = len(display_trades)
+    win_trades = len(display_trades[display_trades["status"] == "win"])
+    loss_trades = len(display_trades[display_trades["status"] == "loss"])
+    win_rate = round((win_trades / total_trades) * 100, 2)
+    total_profit_usd = round(display_trades[display_trades["pnl"] > 0]["pnl"].sum(), 2)
+    total_loss_usd = round(abs(display_trades[display_trades["pnl"] < 0]["pnl"].sum()), 2)
+    net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
+else:
+    total_trades = win_trades = loss_trades = 0
+    win_rate = total_profit_usd = total_loss_usd = net_profit_usd = 0.0
 
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown(f"<div class='metric-card card-blue'><div class='card-title'>🤝 عدد الصفقات</div><div class='card-value white-text'>{total_trades}</div><div style='font-size:12px; color:#a0aec0;'>صفقات</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-blue'><div class='card-title'>🤝 الصفقات المكتملة</div><div class='card-value white-text'>{total_trades}</div><div style='font-size:12px; color:#a0aec0;'>خلال {selected_period}</div></div>", unsafe_allow_html=True)
 with col2:
-    st.markdown(f"<div class='metric-card card-purple'><div class='card-title'>🎯 نسبة النجاح</div><div class='card-value white-text'>{win_rate}%</div><div style='font-size:12px; color:#805ad5;'>معدل الأداء</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-purple'><div class='card-title'>🎯 نسبة النجاح الحقيقية</div><div class='card-value white-text'>{win_rate}%</div><div style='font-size:12px; color:#805ad5;'>معدل الأداء</div></div>", unsafe_allow_html=True)
 
 col3, col4 = st.columns(2)
 with col3:
@@ -148,26 +187,15 @@ with col5:
 with col6:
     st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>💲 إجمالي الخسائر</div><div class='card-value white-text'>${total_loss_usd:,.2f}-</div><div style='font-size:12px; color:#a0aec0;'>USD</div></div>", unsafe_allow_html=True)
 
-st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صافي الأرباح ({selected_tf_label})</div><div class='card-value green-text'>${net_profit_usd:,.2f}+ <span style='font-size:16px; color:#fff;'>USD</span></div></div>", unsafe_allow_html=True)
+net_color = "green-text" if net_profit_usd >= 0 else "red-text"
+net_sign = "+" if net_profit_usd >= 0 else ""
+st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صافي الأرباح الفعلية ({selected_period})</div><div class='card-value {net_color}'>${net_profit_usd:,.2f}{net_sign} <span style='font-size:16px; color:#fff;'>USD</span></div></div>", unsafe_allow_html=True)
 
-st.markdown(f"### 🤖 التوصيات المستقبلية الأكثر تقييماً — إطار ({selected_tf_label})")
+st.markdown(f"### 🤖 التوصيات المستقبلية الحالية — إطار ({selected_tf})")
 
-if not display_df.empty:
-    sorted_df = display_df.sort_values(by="ai", ascending=False)
+if not display_signals.empty:
+    sorted_df = display_signals.sort_values(by="ai", ascending=False)
     for _, row in sorted_df.iterrows():
         card_html = (
             f"<div class='signal-box'>"
             f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
-            f"<span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span>"
-            f"<span style='background-color:#805ad5; padding:3px 10px; border-radius:12px; font-size:13px;'>تقييم AI: {row['ai']}%</span>"
-            f"</div>"
-            f"<hr style='border-color:#2d3748; margin:10px 0;'>"
-            f"<div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'>"
-            f"<span>🔵 <b>الدخول (2):</b> ${row['entry']}</span>"
-            f"<span class='green-text'>🟢 <b>الهدف (5):</b> ${row['target']}</span>"
-            f"<span class='red-text'>🔴 <b>ستوب لوس (0):</b> ${row['sl']}</span>"
-            f"</div></div>"
-        )
-        st.markdown(card_html, unsafe_allow_html=True)
-else:
-    st.warning("تعذر جلب البيانات حالياً من المنصة، يرجى تحديث الصفحة بعد لحظات.")
