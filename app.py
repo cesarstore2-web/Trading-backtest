@@ -4,7 +4,7 @@ import numpy as np
 import yfinance as yf
 import time
 
-st.set_page_config(page_title="Tricks HeLaL AI — لوحة التوصيات", layout="centered")
+st.set_page_config(page_title="Tricks HeLaL V 0.01 — yfinance", layout="centered")
 
 css_style = """
 <style>
@@ -30,10 +30,11 @@ st.markdown(css_style, unsafe_allow_html=True)
 
 SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
 
+# إعدادات المدة والفريم متوافقة مع قيود yfinance
 period_config = {
-    "24 ساعة": {"tf": "5m",  "hours": 24},
-    "أسبوع":   {"tf": "15m", "hours": 168},
-    "شهر":     {"tf": "1h",  "hours": 720}
+    "24 ساعة": {"tf": "5m",  "yf_period": "5d",  "hours": 24},
+    "أسبوع":   {"tf": "15m", "yf_period": "1mo", "hours": 168},
+    "شهر":     {"tf": "1h",  "yf_period": "3mo", "hours": 720}
 }
 
 selected_period = st.radio(
@@ -46,18 +47,25 @@ selected_period = st.radio(
 config = period_config[selected_period]
 selected_tf = config["tf"]
 
-# نافذتان فقط لإدارة المخاطر (ATR SL و R:R) + تصفية العملة
 c1, c2, c3 = st.columns(3)
 with c1:
-    atr_mult = st.number_input("مضاعف وقف الخسارة (ATR SL):", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
+    atr_mult = st.number_input("مضاعف ATR SL:", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
 with c2:
-    rr_ratio = st.number_input("نسبة العائد (R : R):", min_value=0.5, max_value=15.0, value=2.0, step=0.1)
+    rr_ratio = st.number_input("نسبة R : R :", min_value=0.5, max_value=15.0, value=2.0, step=0.1)
 with c3:
     filter_options = ["الكل"] + SYMBOLS
-    selected_coin = st.selectbox("تصفية العملة:", filter_options)
+    selected_coin = st.selectbox("العملة:", filter_options)
+
+c4, c5, c6 = st.columns(3)
+with c4:
+    depth_val = st.number_input("DEPTH:", min_value=2, max_value=100, value=30, step=1)
+with c5:
+    backstep_val = st.number_input("BACKSTEP:", min_value=1, max_value=100, value=30, step=1)
+with c6:
+    dev_val = st.number_input("DEVIATION:", min_value=0, max_value=100, value=5, step=1)
 
 @st.cache_data(ttl=180)
-def fetch_all_candles(symbols_list, tf):
+def fetch_all_candles(symbols_list, tf, version="yf_v1"):
     yf_period_map = {"5m": "5d", "15m": "1mo", "1h": "3mo"}
     p_str = yf_period_map.get(tf, "1mo")
     data_dict = {}
@@ -68,6 +76,7 @@ def fetch_all_candles(symbols_list, tf):
             ticker = f"{coin}-USD"
             df = yf.download(ticker, period=p_str, interval=tf, progress=False, auto_adjust=False)
             if df is not None and not df.empty:
+                # معالجة أعمدة MultiIndex في الإصدارات الحديثة من yfinance
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 df = df.reset_index()
@@ -92,13 +101,7 @@ def fetch_all_candles(symbols_list, tf):
 
     return data_dict, errors_log
 
-def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
-    # إعدادات الاستراتيجية تعمل في الخفاء
-    depth = 30
-    backstep = 30
-    deviation = 5
-    min_bars = 8
-
+def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth, backstep, deviation, period_hours, min_bars=8):
     signals_results = []
     backtest_trades = []
     trade_size_usd = 1000.0
@@ -157,7 +160,6 @@ def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
                     last_pivot_price = price_at_sig
                     last_signal_bar = bar_index
                     confirmed_signals.append((bar_index, "SELL" if is_sell else "BUY"))
-        # فحص الصفقات الحقيقية عند إغلاق شمعة الإشارة
         active_until = -1
         for sig_idx, side in confirmed_signals:
             if sig_idx <= active_until:
@@ -202,13 +204,10 @@ def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
                         active_until = j
                         break
 
-        # استخراج أحدث إشارة مؤكدة لكل عملة بدون أي فلتر تقييم
         if confirmed_signals:
             last_idx, last_side = confirmed_signals[-1]
             entry_p = closes[last_idx]
-            atr_sig = atrs[last_idx]
-            sl_d = atr_sig * atr_mult
-
+            sl_d = atrs[last_idx] * atr_mult
             if last_side == "BUY":
                 sl_p = entry_p - sl_d
                 tp_p = entry_p + (sl_d * rr_ratio)
@@ -222,7 +221,7 @@ def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
 
             signals_results.append({
                 "coin": coin_name,
-                "side": "شراء (Buy)" if last_side == "BUY" else "بيع (Sell)",
+                "side": "شراء (Buy-point)" if last_side == "BUY" else "بيع (Sell-point)",
                 "is_buy": last_side == "BUY",
                 "price": round(curr_p, dec),
                 "entry": round(entry_p, dec),
@@ -233,11 +232,13 @@ def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
 
     return pd.DataFrame(signals_results), pd.DataFrame(backtest_trades)
 
-with st.spinner(f"جاري فحص الصفقات الحقيقية من yfinance ({selected_period})..."):
+with st.spinner(f"جاري جلب البيانات وفحص إشارات Tricks HeLaL لآخر ({selected_period})..."):
     market_data, fetch_errors = fetch_all_candles(SYMBOLS, selected_tf)
     if not market_data:
-        st.error(f"تعذر جلب البيانات من yfinance. التفاصيل: {fetch_errors[:2]}")
-    df_signals, df_trades = run_tricks_helal_ai(market_data, atr_mult, rr_ratio, config["hours"])
+        st.error(f"تعذر جلب البيانات من الخوادم. التفاصيل: {fetch_errors[:2]}")
+    df_signals, df_trades = run_tricks_helal_strategy(
+        market_data, atr_mult, rr_ratio, int(depth_val), int(backstep_val), int(dev_val), config["hours"]
+    )
 
 if selected_coin != "الكل":
     display_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else df_signals
@@ -246,8 +247,8 @@ else:
     display_signals = df_signals
     display_trades = df_trades
 
-st.markdown(f"### 📊 سجل الصفقات الحقيقية — آخر ({selected_period})")
-st.caption(f"الفريم: {selected_tf} | وقف الخسارة: {atr_mult}x ATR | العائد: 1:{rr_ratio}")
+st.markdown(f"### 📊 نتائج Tricks HeLaL الفعلية — آخر ({selected_period})")
+st.caption(f"الفريم: {selected_tf} | العملات المتصلة: {len(market_data)} | ATR SL: {atr_mult}x | R:R: 1:{rr_ratio}")
 
 if not display_trades.empty:
     total_trades = len(display_trades)
@@ -283,13 +284,13 @@ net_color = "green-text" if net_profit_usd >= 0 else "red-text"
 net_sign = "+" if net_profit_usd >= 0 else ""
 st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صافي الأرباح الفعلية ({selected_period})</div><div class='card-value {net_color}'>${net_profit_usd:,.2f}{net_sign} <span style='font-size:16px; color:#fff;'>USD</span></div></div>", unsafe_allow_html=True)
 
-st.markdown(f"### 🤖 أحدث الإشارات المؤكدة — إطار ({selected_tf})")
+st.markdown(f"### 🤖 أحدث إشارات Tricks HeLaL المؤكدة — إطار ({selected_tf})")
 
 if not display_signals.empty:
     for _, row in display_signals.sort_values(by="bars_ago", ascending=True).iterrows():
         box_cls = "signal-box-buy" if row["is_buy"] else "signal-box-sell"
         badge_bg = "#38a169" if row["is_buy"] else "#e53e3e"
-        st.markdown(f"<div class='{box_cls}'><div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span><span style='background-color:{badge_bg}; padding:3px 10px; border-radius:10px; font-size:12px;'>{row['side']} | منذ {row['bars_ago']} شمعة</span></div><hr style='border-color:#2d3748; margin:10px 0;'><div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'><span>🔵 <b>الدخول:</b> ${row['entry']}</span><span class='green-text'>🟢 <b>الهدف:</b> ${row['target']}</span><span class='red-text'>🔴 <b>ستوب لوس:</b> ${row['sl']}</span></div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='{box_cls}'><div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span><span style='background-color:{badge_bg}; padding:3px 10px; border-radius:12px; font-size:13px;'>{row['side']} | منذ {row['bars_ago']} شمعة</span></div><hr style='border-color:#2d3748; margin:10px 0;'><div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'><span>🔵 <b>الدخول (إغلاق):</b> ${row['entry']}</span><span class='green-text'>🟢 <b>الهدف (TP):</b> ${row['target']}</span><span class='red-text'>🔴 <b>ستوب لوس (SL):</b> ${row['sl']}</span></div></div>", unsafe_allow_html=True)
 else:
     st.warning("لا توجد إشارات مؤكدة حالياً.")
 # END
