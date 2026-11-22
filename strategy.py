@@ -15,7 +15,7 @@ TICKER_MAP = {
     "PAXGUSDT": "PAXG-USD"
 }
 
-def fetch_data(symbol_usdt, interval, period="10d"):
+def fetch_data(symbol_usdt, interval, period="30d"):
     yf_symbol = TICKER_MAP.get(symbol_usdt, "BTC-USD")
     df = yf.download(yf_symbol, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
@@ -36,7 +36,8 @@ def calculate_indicators(df, atr_len=14):
     return df
 
 def get_4h_trend_series(symbol_usdt):
-    df_1h = fetch_data(symbol_usdt, "1h", period="30d")
+    # جلب 45 يوماً من فريم الساعة لضمان استقرار EMA 50 على فريم 4 ساعات طوال الشهر السابق
+    df_1h = fetch_data(symbol_usdt, "1h", period="45d")
     if df_1h.empty:
         return pd.Series(dtype=str)
     df_4h = df_1h.resample('4h').agg({
@@ -127,7 +128,8 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter):
     }
 
 def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True):
-    df = fetch_data(symbol_usdt, tf_code, period="10d")
+    # جلب بيانات شهر كامل (30 يوماً) لتقييم الاستراتيجية
+    df = fetch_data(symbol_usdt, tf_code, period="30d")
     if df.empty:
         return None
         
@@ -195,7 +197,9 @@ def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter):
                 "الدخول": f"{res['entry']:.4f}" if res['entry'] > 0 else "-",
                 "الهدف (TP)": f"{res['tp']:.4f}" if res['tp'] > 0 else "-",
                 "الوقف (SL)": f"{res['sl']:.4f}" if res['sl'] > 0 else "-",
+                "الناجحة": res['stats']['wins'],
+                "الخاسرة": res['stats']['losses'],
                 "نسبة النجاح": f"{res['stats']['win_rate']:.1f}%",
-                "صافي الربح": f"{res['stats']['net_profit']:+.2f}%"
+                "صافي الربح (شهر)": f"{res['stats']['net_profit']:+.2f}%"
             })
     return pd.DataFrame(results)
