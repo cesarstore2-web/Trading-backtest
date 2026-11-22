@@ -64,19 +64,24 @@ with c6:
     dev_val = st.number_input("DEVIATION:", min_value=0, max_value=100, value=5, step=1)
 
 @st.cache_data(ttl=120)
-def fetch_all_candles(symbols_list, tf, version="v6_fixed_url"):
+def fetch_all_candles(symbols_list, tf, version="v7_clean_parts"):
     cc_map = {"5m": ("histominute", 5), "15m": ("histominute", 15), "1h": ("histohour", 1)}
     cb_map = {"5m": 300, "15m": 900, "1h": 3600}
     data_dict = {}
     errors_log = []
 
+    proto = "https" + chr(58) + chr(47) + chr(47)
+    host_cc = ".".join(["min-api", "cryptocompare", "com"])
+    host_cb = ".".join(["api", "exchange", "coinbase", "com"])
+
     for coin in symbols_list:
         df = None
 
-        # 1. CryptoCompare API (بناء الرابط بأمان لمنع سقوط الشرطة المائلة)
+        # 1. CryptoCompare API
         try:
             endpoint, agg = cc_map[tf]
-            url_cc = "https:/" + f"/://cryptocompare.com{endpoint}"
+            path_cc = chr(47).join(["data", "v2", endpoint])
+            url_cc = proto + host_cc + chr(47) + path_cc
             r = requests.get(
                 url_cc,
                 params={"fsym": coin, "tsym": "USDT", "limit": 800, "aggregate": agg},
@@ -97,10 +102,11 @@ def fetch_all_candles(symbols_list, tf, version="v6_fixed_url"):
             errors_log.append(f"CC({coin}): {str(e)}")
             df = None
 
-        # 2. Coinbase Exchange API (احتياطي ثاني مفتوح وسريع)
+        # 2. Coinbase API
         if df is None or df.empty:
             try:
-                url_cb = "https:/" + f"/://coinbase.com{coin}-USD/candles"
+                path_cb = chr(47).join(["products", f"{coin}-USD", "candles"])
+                url_cb = proto + host_cb + chr(47) + path_cb
                 r = requests.get(url_cb, params={"granularity": cb_map[tf]}, timeout=10)
                 if r.status_code == 200:
                     raw = r.json()
