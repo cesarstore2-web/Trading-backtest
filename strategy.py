@@ -23,12 +23,10 @@ def fetch_data(symbol_usdt, interval, period="10d"):
     return df
 
 def calculate_indicators(df, atr_len=14):
-    # حساب المتوسطات الثلاثة (5, 13, 34)
     df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
     df['EMA_13'] = df['Close'].ewm(span=13, adjust=False).mean()
     df['EMA_34'] = df['Close'].ewm(span=34, adjust=False).mean()
     
-    # حساب ATR لتحديد وقف الخسارة
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -48,7 +46,7 @@ def get_4h_trend_series(symbol_usdt):
     df_4h['Trend'] = np.where(df_4h['Close'] > df_4h['EMA_50'], "صاعد 🟢", "هابط 🔴")
     return df_4h['Trend']
 
-def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
+def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter):
     wins, losses = 0, 0
     total_profit_pct, total_loss_pct = 0.0, 0.0
     in_trade = False
@@ -57,8 +55,11 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
 
     for i in range(36, len(df)):
         current_time = df.index[i]
-        past_trends = trend_series[trend_series.index <= current_time]
-        current_trend = past_trends.iloc[-1] if not past_trends.empty else "صاعد 🟢"
+        if use_4h_filter and not trend_series.empty:
+            past_trends = trend_series[trend_series.index <= current_time]
+            current_trend = past_trends.iloc[-1] if not past_trends.empty else "صاعد 🟢"
+        else:
+            current_trend = "ALL"
 
         close_p = df['Close'].iloc[i]
         high_p = df['High'].iloc[i]
@@ -91,19 +92,20 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
                     total_profit_pct += abs((tp - entry) / entry) * 100
                     in_trade = False
         else:
-            # تقاطع صاعد: EMA 5 > 13 > 34 ولم يكن متحققاً في الشمعة السابقة
             bullish_cross = (e5_curr > e13_curr > e34_curr) and not (e5_prev > e13_prev > e34_prev)
-            # تقاطع هابط: EMA 5 < 13 < 34 ولم يكن متحققاً في الشمعة السابقة
             bearish_cross = (e5_curr < e13_curr < e34_curr) and not (e5_prev < e13_prev < e34_prev)
 
-            if "صاعد" in current_trend and bullish_cross:
+            allow_buy = (not use_4h_filter) or ("صاعد" in current_trend)
+            allow_sell = (not use_4h_filter) or ("هابط" in current_trend)
+
+            if allow_buy and bullish_cross:
                 in_trade = True
                 trade_type = "BUY"
                 entry = close_p
                 sl = entry - (atr_val * atr_sl_mult)
                 tp = entry + ((entry - sl) * rr_ratio)
 
-            elif "هابط" in current_trend and bearish_cross:
+            elif allow_sell and bearish_cross:
                 in_trade = True
                 trade_type = "SELL"
                 entry = close_p
@@ -124,56 +126,76 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio):
         "net_profit": net_profit
     }
 
-def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio):
+def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True):
     df = fetch_data(symbol_usdt, tf_code, period="10d")
     if df.empty:
         return None
         
     df = calculate_indicators(df)
-    trend_series = get_4h_trend_series(symbol_usdt)
-    trend_4h = trend_series.iloc[-1] if not trend_series.empty else "غير محدد"
+    trend_series = get_4h_trend_series(symbol_usdt) if use_4h_filter else pd.Series(dtype=str)
+    trend_4h = trend_series.iloc[-1] if (use_4h_filter and not trend_series.empty) else "معطّل ⚪"
     
-    stats = run_backtest(df, trend_series, atr_sl_mult, rr_ratio)
+    stats = run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter)
     
     atr_val = df['ATR'].iloc[-1]
-    e5 = df['EMA_5'].iloc[-1]
-    e13 = df['EMA_13'].iloc[-1]
-    e34 = df['EMA_34'].iloc[-1]
-    
-    e5_prev = df['EMA_5'].iloc[-2]
-    e13_prev = df['EMA_13'].iloc[-2]
-    e34_prev = df['EMA_34'].iloc[-2]
-    
+    e5, e13, e34 = df['EMA_5'].iloc[-1], df['EMA_13'].iloc[-1], df['EMA_34'].iloc[-1]
+    e5_prev, e13_prev, e34_prev = df['EMA_5'].iloc[-2], df['EMA_13'].iloc[-2], df['EMA_34'].iloc[-2]
     current_price = df['Close'].iloc[-1]
     
-    signal = "انتظار (لا يوجد تقاطع جديد)"
+    signal = "انتظار ⏳"
     entry, sl, tp = 0.0, 0.0, 0.0
-    reason = "المتوسطات في حالة استمرار أو لم يتطابق ترتيبها (5, 13, 34) مع اتجاه 4 ساعات."
+    reason = "لا يوجد تقاطع جديد حالياً."
 
     bullish_cross = (e5 > e13 > e34) and not (e5_prev > e13_prev > e34_prev)
     bearish_cross = (e5 < e13 < e34) and not (e5_prev < e13_prev < e34_prev)
 
-    if "صاعد" in trend_4h and bullish_cross:
-        signal = "توصية شراء (BUY) 🚀"
+    allow_buy = (not use_4h_filter) or ("صاعد" in trend_4h)
+    allow_sell = (not use_4h_filter) or ("هابط" in trend_4h)
+
+    if allow_buy and bullish_cross:
+        signal = "شراء (BUY) 🚀"
         entry = current_price
         sl = entry - (atr_val * atr_sl_mult)
         tp = entry + ((entry - sl) * rr_ratio)
-        reason = "تحقق تقاطع صاعد للمتوسطات (EMA 5 > 13 > 34) مع توافق الاتجاه العام (4 ساعات)."
+        reason = "تحقق تقاطع صاعد للمتوسطات (EMA 5 > 13 > 34)."
 
-    elif "هابط" in trend_4h and bearish_cross:
-        signal = "توصية بيع (SELL) 📉"
+    elif allow_sell and bearish_cross:
+        signal = "بيع (SELL) 📉"
         entry = current_price
         sl = entry + (atr_val * atr_sl_mult)
         tp = entry - ((sl - entry) * rr_ratio)
-        reason = "تحقق تقاطع هابط للمتوسطات (EMA 5 < 13 < 34) مع توافق الاتجاه العام (4 ساعات)."
+        reason = "تحقق تقاطع هابط للمتوسطات (EMA 5 < 13 < 34)."
+    elif bullish_cross and not allow_buy:
+        reason = "يوجد تقاطع صاعد لكن فلتر 4 ساعات هابط (تم حجب الصفقة)."
+    elif bearish_cross and not allow_sell:
+        reason = "يوجد تقاطع هابط لكن فلتر 4 ساعات صاعد (تم حجب الصفقة)."
     elif e5 > e13 > e34:
-        reason = "المتوسطات مرتبة صعودياً (5 > 13 > 34) حالياً، بانتظار تقاطع جديد للدخول."
+        reason = "المتوسطات مرتبة صعودياً (5 > 13 > 34) حالياً."
     elif e5 < e13 < e34:
-        reason = "المتوسطات مرتبة هبوطياً (5 < 13 < 34) حالياً، بانتظار تقاطع جديد للدخول."
+        reason = "المتوسطات مرتبة هبوطياً (5 < 13 < 34) حالياً."
 
     return {
+        "coin": symbol_usdt,
         "signal": signal, "entry": entry, "sl": sl, "tp": tp,
         "ema_5": e5, "ema_13": e13, "ema_34": e34,
         "trend_4h": trend_4h, "current_price": current_price,
         "reason": reason, "stats": stats
     }
+
+def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter):
+    results = []
+    for coin in coins_list:
+        res = run_analysis(coin, tf_code, atr_sl_mult, rr_ratio, use_4h_filter)
+        if res:
+            results.append({
+                "العملة": coin,
+                "السعر": round(res['current_price'], 4),
+                "التوصية": res['signal'],
+                "اتجاه 4H": res['trend_4h'],
+                "الدخول": round(res['entry'], 4) if res['entry'] > 0 else "-",
+                "الهدف (TP)": round(res['tp'], 4) if res['tp'] > 0 else "-",
+                "الوقف (SL)": round(res['sl'], 4) if res['sl'] > 0 else "-",
+                "نسبة النجاح": f"{res['stats']['win_rate']:.1f}%",
+                "صافي الربح": f"{res['stats']['net_profit']:+.2f}%"
+            })
+    return pd.DataFrame(results)
