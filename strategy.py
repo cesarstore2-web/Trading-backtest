@@ -79,29 +79,23 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_s
             if trade_type == "BUY":
                 if low_p <= sl:
                     losses += 1
-                    loss_pct = abs((sl - entry) / entry)
-                    net_profit_usd -= (trade_size_usd * loss_pct)
+                    net_profit_usd -= trade_size_usd * abs((sl - entry) / entry)
                     in_trade = False
                 elif high_p >= tp:
                     wins += 1
-                    win_pct = abs((tp - entry) / entry)
-                    net_profit_usd += (trade_size_usd * win_pct)
+                    net_profit_usd += trade_size_usd * abs((tp - entry) / entry)
                     in_trade = False
             elif trade_type == "SELL":
                 if high_p >= sl:
                     losses += 1
-                    loss_pct = abs((sl - entry) / entry)
-                    net_profit_usd -= (trade_size_usd * loss_pct)
+                    net_profit_usd -= trade_size_usd * abs((sl - entry) / entry)
                     in_trade = False
                 elif low_p <= tp:
                     wins += 1
-                    win_pct = abs((tp - entry) / entry)
-                    net_profit_usd += (trade_size_usd * win_pct)
+                    net_profit_usd += trade_size_usd * abs((tp - entry) / entry)
                     in_trade = False
         else:
-            # شرط اختراق شمعة مع ترتيب المتوسطات (5 > 13 > 34)
             bullish_breakout = (e5_curr > e13_curr > e34_curr) and (close_p > open_p) and (close_p > prev_high) and (df['Close'].iloc[i-1] <= df['High'].iloc[i-2])
-            # شرط كسر شمعة مع ترتيب المتوسطات (5 < 13 < 34)
             bearish_breakout = (e5_curr < e13_curr < e34_curr) and (close_p < open_p) and (close_p < prev_low) and (df['Close'].iloc[i-1] >= df['Low'].iloc[i-2])
 
             allow_buy = (not use_4h_filter) or ("صاعد" in current_trend)
@@ -148,14 +142,14 @@ def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True
     
     current_open = df['Open'].iloc[-1]
     current_price = df['Close'].iloc[-1]
+    current_high = df['High'].iloc[-1]
+    current_low = df['Low'].iloc[-1]
     prev_high = df['High'].iloc[-2]
     prev_low = df['Low'].iloc[-2]
     
-    signal = "انتظار ⏳"
+    signal = "انتظار الاختراق ⏳"
     entry, sl, tp = 0.0, 0.0, 0.0
-    reason = "بانتظار إغلاق شمعة اختراق مؤكدة مع ترتيب المتوسطات (5, 13, 34)."
 
-    # شرط اختراق الشمعة الحالية لقمة/قاع الشمعة السابقة
     bullish_breakout = (e5 > e13 > e34) and (current_price > current_open) and (current_price > prev_high)
     bearish_breakout = (e5 < e13 < e34) and (current_price < current_open) and (current_price < prev_low)
 
@@ -163,30 +157,39 @@ def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True
     allow_sell = (not use_4h_filter) or ("هابط" in trend_4h)
 
     if allow_buy and bullish_breakout:
-        signal = "شراء (BUY) 🚀"
+        signal = "شراء فوري (BUY) 🚀"
         entry = current_price
         sl = entry - (atr_val * atr_sl_mult)
         tp = entry + ((entry - sl) * rr_ratio)
-        reason = f"تم اختراق قمة الشمعة السابقة ({prev_high:.4f}) بشمعة صاعدة مع توافق EMA 5 > 13 > 34."
 
     elif allow_sell and bearish_breakout:
-        signal = "بيع (SELL) 📉"
+        signal = "بيع فوري (SELL) 📉"
         entry = current_price
         sl = entry + (atr_val * atr_sl_mult)
         tp = entry - ((sl - entry) * rr_ratio)
-        reason = f"تم كسر قاع الشمعة السابقة ({prev_low:.4f}) بشمعة هابطة مع توافق EMA 5 < 13 < 34."
 
-    # حساب درجة التقييم لاختيار أفضل 3 توصيات
+    # --- حساب التوصية المستقبلية القادمة (نقطة الاختراق المنتظرة) ---
+    if (e5 >= e13 or allow_buy) and not ("هابط" in trend_4h and use_4h_filter):
+        future_dir = "شراء مستقبلي عند اختراق القمة 🟢"
+        fut_entry = max(current_high, prev_high)
+        fut_sl = fut_entry - (atr_val * atr_sl_mult)
+        fut_tp = fut_entry + ((fut_entry - fut_sl) * rr_ratio)
+    else:
+        future_dir = "بيع مستقبلي عند كسر القاع 🔴"
+        fut_entry = min(current_low, prev_low)
+        fut_sl = fut_entry + (atr_val * atr_sl_mult)
+        fut_tp = fut_entry - ((fut_sl - fut_entry) * rr_ratio)
+
     score = (stats['net_profit_usd'] * 0.6) + (stats['win_rate'] * 0.4)
-    if "شراء" in signal or "بيع" in signal:
-        score += 50  # أولوية للعملات التي أعطت إشارة اختراق حالية
+    if "فوري" in signal:
+        score += 50
 
     return {
         "coin": symbol_usdt,
         "signal": signal, "entry": entry, "sl": sl, "tp": tp,
-        "ema_5": e5, "ema_13": e13, "ema_34": e34,
+        "future_dir": future_dir, "fut_entry": fut_entry, "fut_sl": fut_sl, "fut_tp": fut_tp,
         "trend_4h": trend_4h, "current_price": current_price,
-        "reason": reason, "stats": stats, "score": score
+        "stats": stats, "score": score
     }
 
 def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd):
@@ -200,15 +203,15 @@ def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter, tr
             table_rows.append({
                 "العملة": coin,
                 "السعر": f"{res['current_price']:.4f}",
-                "التوصية": res['signal'],
-                "الدخول": f"{res['entry']:.4f}" if res['entry'] > 0 else "-",
-                "الهدف (TP)": f"{res['tp']:.4f}" if res['tp'] > 0 else "-",
-                "الوقف (SL)": f"{res['sl']:.4f}" if res['sl'] > 0 else "-",
+                "الحالة": res['signal'],
+                "الدخول المستقبلي": f"{res['fut_entry']:.4f}",
+                "الهدف القادم": f"{res['fut_tp']:.4f}",
+                "الوقف القادم": f"{res['fut_sl']:.4f}",
                 "الناجحة": res['stats']['wins'],
                 "الخاسرة": res['stats']['losses'],
                 "الربح الصافي ($)": f"{res['stats']['net_profit_usd']:+.2f}$"
             })
             
-    # ترتيب العملات لاستخراج أفضل 3 توصيات دقة وتقييماً
     top_3 = sorted(all_data, key=lambda x: x['score'], reverse=True)[:3]
-    return pd.DataFrame(table_rows), top_3
+    return pd.DataFrame(table_rows), top_3 = sorted(all_data, key=lambda x: x['score'], reverse=True)[:3]
+    return pd.DataFrame(table_rows), 
