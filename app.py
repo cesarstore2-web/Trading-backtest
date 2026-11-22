@@ -3,13 +3,11 @@ import pandas as pd
 import numpy as np
 import ccxt
 
-st.set_page_config(page_title="لوحة التوصيات وموجات إليوت", layout="centered")
+st.set_page_config(page_title="صافي الأرباح - آخر 30 يوم", layout="centered")
 
 css_style = (
     "<style>"
     ".stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }"
-    "div[role='radiogroup'] { display: flex; justify-content: space-around; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }"
-    "div[role='radiogroup'] label { padding: 8px 20px; border-radius: 8px; color: #ffffff !important; }"
     ".metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }"
     ".card-blue { border: 1.5px solid #2b6cb0; }"
     ".card-purple { border: 1.5px solid #805ad5; }"
@@ -31,111 +29,149 @@ SYMBOLS = [
     "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
 ]
 
-timeframe_map = {"يومي": "1d", "أسبوعي": "1w", "شهري": "1M"}
-selected_tf_label = st.radio(
-    "الإطار الزمني:",
-    options=list(timeframe_map.keys()),
-    horizontal=True,
-    label_visibility="collapsed"
-)
-selected_tf = timeframe_map[selected_tf_label]
+# إعداد حجم رأس المال لكل صفقة لحساب الربح الصافي بالدولار
+st.markdown("### ⚙️ إعدادات المحفظة (آخر 30 يوماً)")
+col_set1, col_set2 = st.columns(2)
+with col_set1:
+    trade_amount_usd = st.number_input("مبلغ الدخول لكل صفقة ($):", min_value=10, max_value=100000, value=1000, step=100)
+with col_set2:
+    filter_options = ["الكل"] + [s.replace("/USDT", "") for s in SYMBOLS]
+    selected_coin = st.selectbox("تصفية حسب العملة:", filter_options)
 
-filter_options = ["الكل"] + [s.replace("/USDT", "") for s in SYMBOLS]
-selected_coin = st.selectbox("تصفية حسب العملة:", filter_options)
-
-@st.cache_data(ttl=300)
-def analyze_elliott_waves(symbols_list, tf):
+@st.cache_data(ttl=600)
+def backtest_last_month(symbols_list, capital_per_trade):
     exchange = ccxt.binance({'enableRateLimit': True})
-    results = []
-    lookback = 30 if tf == "1d" else (20 if tf == "1w" else 12)
+    closed_trades = []
+    future_signals = []
 
     for sym in symbols_list:
         try:
             fetch_sym = "PAXG/USDT" if sym == "XAU/USDT" else sym
-            bars = exchange.fetch_ohlcv(fetch_sym, timeframe=tf, limit=lookback)
+            coin_name = sym.replace("/USDT", "")
+            
+            # جلب بيانات آخر 45 شمعة يومية (لرصد الموجة ثم اختبار نتائج آخر 30 يوماً)
+            bars = exchange.fetch_ohlcv(fetch_sym, timeframe="1d", limit=45)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            mid_point = len(df) // 2
-            wave_0 = df['low'].iloc[:mid_point].min()
-            wave_1 = df['high'].iloc[mid_point:].max()
+            # 1. محاكاة صفقات آخر 30 يوم سابقة (Backtest)
+            # تقسيم الفترة السابقة لاكتشاف موجات 0-1 واختبار وصولها للهدف 5 أو وقف الخسارة 0
+            for start_idx in:
+                sub_df = df.iloc[start_idx : start_idx + 25].reset_index(drop=True)
+                if len(sub_df) < 15:
+                    continue
+                
+                wave_0 = sub_df['low'].iloc[:6].min()
+                wave_1 = sub_df['high'].iloc[3:10].max()
+                
+                if wave_1 > wave_0:
+                    diff = wave_1 - wave_0
+                    entry_2 = wave_1 - (diff * 0.618)
+                    target_5 = wave_0 + (diff * 1.618)
+                    sl_0 = wave_0
+                    
+                    # فحص حركة السعر بعد تكوين الموجة 1
+                    test_window = sub_df.iloc[10:]
+                    entered = False
+                    for _, candle in test_window.iterrows():
+                        if not entered and candle['low'] <= entry_2 <= candle['high']:
+                            entered = True
+                        elif entered:
+                            if candle['low'] <= sl_0:
+                                loss_pct = (sl_0 - entry_2) / entry_2
+                                pnl_usd = capital_per_trade * loss_pct
+                                closed_trades.append({"coin": coin_name, "pnl": pnl_usd, "status": "loss"})
+                                break
+                            elif candle['high'] >= target_5:
+                                profit_pct = (target_5 - entry_2) / entry_2
+                                pnl_usd = capital_per_trade * profit_pct
+                                closed_trades.append({"coin": coin_name, "pnl": pnl_usd, "status": "win"})
+                                break
 
-            if wave_1 <= wave_0:
-                wave_0 = df['low'].min()
-                wave_1 = df['high'].max()
+            # 2. حساب التوصيات المستقبلية الحالية على فريم 1 يوم
+            recent_df = df.iloc[-30:]
+            w0 = recent_df['low'].iloc[:15].min()
+            w1 = recent_df['high'].iloc[15:].max()
+            if w1 <= w0:
+                w0 = recent_df['low'].min()
+                w1 = recent_df['high'].max()
+            
+            d = w1 - w0
+            e2 = w1 - (d * 0.618)
+            t5 = w0 + (d * 1.618)
+            curr = recent_df['close'].iloc[-1]
+            dist = abs(curr - e2) / curr
+            ai_score = max(65, min(98, int(98 - (dist * 150))))
+            dec = 2 if curr > 10 else 4
 
-            diff = wave_1 - wave_0
-            entry_2 = wave_1 - (diff * 0.618)
-            target_5 = wave_0 + (diff * 1.618)
-            stop_loss_0 = wave_0
-            current_price = df['close'].iloc[-1]
-
-            distance_ratio = abs(current_price - entry_2) / current_price
-            ai_score = max(65, min(98, int(98 - (distance_ratio * 150))))
-            decimals = 2 if current_price > 10 else 4
-
-            results.append({
-                "coin": sym.replace("/USDT", ""),
-                "price": round(current_price, decimals),
-                "entry": round(entry_2, decimals),
-                "target": round(target_5, decimals),
-                "sl": round(stop_loss_0, decimals),
+            future_signals.append({
+                "coin": coin_name,
+                "price": round(curr, dec),
+                "entry": round(e2, dec),
+                "target": round(t5, dec),
+                "sl": round(w0, dec),
                 "ai": ai_score
             })
         except Exception:
             continue
-    return pd.DataFrame(results)
 
-with st.spinner(f"جاري تحليل بيانات الإطار {selected_tf_label}..."):
-    df_signals = analyze_elliott_waves(SYMBOLS, selected_tf)
+    return pd.DataFrame(closed_trades), pd.DataFrame(future_signals)
 
-if selected_coin != "الكل" and not df_signals.empty:
-    display_df = df_signals[df_signals["coin"] == selected_coin]
+with st.spinner("جاري احتساب صافي الأرباح الفعلية لآخر 30 يوماً..."):
+    df_trades, df_signals = backtest_last_month(SYMBOLS, trade_amount_usd)
+
+# تصفية النتائج حسب العملة المختارة
+if selected_coin != "الكل":
+    filtered_trades = df_trades[df_trades["coin"] == selected_coin] if not df_trades.empty else pd.DataFrame()
+    filtered_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else pd.DataFrame()
 else:
-    display_df = df_signals
+    filtered_trades = df_trades
+    filtered_signals = df_signals
 
-st.markdown(f"### 📊 سجل الأداء والنتائج السابقة ({selected_tf_label})")
+# حساب الإحصائيات الفعلية للشهر السابق بالدولار الأمريكي
+if not filtered_trades.empty:
+    total_trades = len(filtered_trades)
+    wins = filtered_trades[filtered_trades["pnl"] > 0]
+    losses = filtered_trades[filtered_trades["pnl"] <= 0]
+    
+    win_trades = len(wins)
+    loss_trades = len(losses)
+    win_rate = round((win_trades / total_trades) * 100, 2) if total_trades > 0 else 0.0
+    total_profit_usd = round(wins["pnl"].sum(), 2)
+    total_loss_usd = round(abs(losses["pnl"].sum()), 2)
+    net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
+else:
+    total_trades, win_trades, loss_trades, win_rate = 0, 0, 0, 0.0
+    total_profit_usd, total_loss_usd, net_profit_usd = 0.0, 0.0, 0.0
 
-stats_by_tf = {
-    "يومي":   {"total": 19,  "win": 15,  "loss": 2,  "profit_usd": 3653,  "loss_usd": 353},
-    "أسبوعي": {"total": 68,  "win": 55,  "loss": 9,  "profit_usd": 14280, "loss_usd": 1420},
-    "شهري":   {"total": 240, "win": 198, "loss": 31, "profit_usd": 52400, "loss_usd": 4950}
-}
+st.markdown("### 📊 سجل الأداء وصافي الأرباح (آخر 30 يوم سابق)")
 
-current_stats = stats_by_tf[selected_tf_label]
-multiplier = 1.0 if selected_coin == "الكل" else 0.15
-
-total_trades = max(1, int(current_stats["total"] * multiplier))
-win_trades = max(1, int(current_stats["win"] * multiplier))
-loss_trades = max(0, int(current_stats["loss"] * multiplier))
-win_rate = round((win_trades / total_trades) * 100, 2)
-total_profit_usd = round(current_stats["profit_usd"] * multiplier, 2)
-total_loss_usd = round(current_stats["loss_usd"] * multiplier, 2)
-net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
+# بطاقة صافي الأرباح الرئيسية في الأعلى للتركيز عليها
+net_color = "green-text" if net_profit_usd >= 0 else "red-text"
+net_sign = "+" if net_profit_usd >= 0 else ""
+st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صافي الأرباح الفعلية (آخر شهر)</div><div class='card-value {net_color}'>${net_profit_usd:,.2f}{net_sign} <span style='font-size:16px; color:#fff;'>USD</span></div></div>", unsafe_allow_html=True)
 
 col1, col2 = st.columns(2)
 with col1:
-    st.markdown(f"<div class='metric-card card-blue'><div class='card-title'>🤝 عدد الصفقات</div><div class='card-value white-text'>{total_trades}</div><div style='font-size:12px; color:#a0aec0;'>صفقات</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-blue'><div class='card-title'>🤝 عدد الصفقات المغلقة</div><div class='card-value white-text'>{total_trades}</div><div style='font-size:12px; color:#a0aec0;'>خلال 30 يوم</div></div>", unsafe_allow_html=True)
 with col2:
     st.markdown(f"<div class='metric-card card-purple'><div class='card-title'>🎯 نسبة النجاح</div><div class='card-value white-text'>{win_rate}%</div><div style='font-size:12px; color:#805ad5;'>معدل الأداء</div></div>", unsafe_allow_html=True)
 
 col3, col4 = st.columns(2)
 with col3:
-    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>📈 الصفقات الرابحة</div><div class='card-value white-text'>{win_trades}</div><div style='font-size:12px; color:#a0aec0;'>صفقات</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>📈 الصفقات الرابحة</div><div class='card-value white-text'>{win_trades}</div></div>", unsafe_allow_html=True)
 with col4:
-    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>📉 الصفقات الخاسرة</div><div class='card-value white-text'>{loss_trades}</div><div style='font-size:12px; color:#a0aec0;'>صفقات</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>📉 الصفقات الخاسرة</div><div class='card-value white-text'>{loss_trades}</div></div>", unsafe_allow_html=True)
 
 col5, col6 = st.columns(2)
 with col5:
-    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>💲 إجمالي الأرباح</div><div class='card-value white-text'>${total_profit_usd:,.2f}+</div><div style='font-size:12px; color:#a0aec0;'>USD</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>💲 إجمالي الأرباح</div><div class='card-value white-text'>${total_profit_usd:,.2f}+</div></div>", unsafe_allow_html=True)
 with col6:
-    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>💲 إجمالي الخسائر</div><div class='card-value white-text'>${total_loss_usd:,.2f}-</div><div style='font-size:12px; color:#a0aec0;'>USD</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>💲 إجمالي الخسائر</div><div class='card-value white-text'>${total_loss_usd:,.2f}-</div></div>", unsafe_allow_html=True)
 
-st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صافي الأرباح ({selected_tf_label})</div><div class='card-value green-text'>${net_profit_usd:,.2f}+ <span style='font-size:16px; color:#fff;'>USD</span></div></div>", unsafe_allow_html=True)
+st.markdown("### 🤖 التوصيات المستقبلية الأكثر تقييماً (فريم 1 يوم)")
 
-st.markdown(f"### 🤖 التوصيات المستقبلية الأكثر تقييماً — إطار ({selected_tf_label})")
-
-if not display_df.empty:
-    sorted_df = display_df.sort_values(by="ai", ascending=False)
+if not filtered_signals.empty:
+    sorted_df = filtered_signals.sort_values(by="ai", ascending=False)
     for _, row in sorted_df.iterrows():
         card_html = (
             f"<div class='signal-box'>"
@@ -151,5 +187,3 @@ if not display_df.empty:
             f"</div></div>"
         )
         st.markdown(card_html, unsafe_allow_html=True)
-else:
-    st.warning("تعذر جلب البيانات حالياً من المنصة، يرجى تحديث الصفحة بعد لحظات.")
