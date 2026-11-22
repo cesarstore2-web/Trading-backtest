@@ -57,7 +57,6 @@ with st.expander("⚙️ إعدادات العملة وإدارة المخاطر
         tf_label = st.selectbox("نافذة الفريمات:", tuple(timeframes.keys()))
         tf_code = timeframes[tf_label]
 
-        # فلتر اتجاه 4 ساعات الاختياري
         use_4h_filter = st.checkbox("تفعيل فلتر الاتجاه العام (4 ساعات)", value=True)
 
     with col2:
@@ -72,6 +71,15 @@ with btn_col1:
 
 with btn_col2:
     full_scan = st.button("🌐 فحص شامل لجميع العملات (10)")
+
+# --- دالة التلوين التلقائي لصفوف الجدول ---
+def highlight_signals(row):
+    signal = str(row['التوصية'])
+    if 'شراء' in signal:
+        return ['background-color: rgba(0, 230, 118, 0.22); color: #00e676; font-weight: bold;'] * len(row)
+    elif 'بيع' in signal:
+        return ['background-color: rgba(255, 23, 68, 0.22); color: #ff1744; font-weight: bold;'] * len(row)
+    return ['background-color: #16161d; color: #d0d0d0;'] * len(row)
 
 # --- تنفيذ الفحص الفردي ---
 if single_scan:
@@ -126,6 +134,7 @@ if full_scan:
         df_scan = scan_all_coins(coins, tf_code, atr_sl_mult, rr_ratio, use_4h_filter)
         if not df_scan.empty:
             st.markdown("<h4 style='text-align: right; color: #b388ff; direction: rtl;'>🌐 نتائج الفحص الشامل للعملات</h4>", unsafe_allow_html=True)
-            st.dataframe(df_scan, use_container_width=True, hide_index=True)
+            styled_df = df_scan.style.apply(highlight_signals, axis=1)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
         else:
             st.error("تعذر إتمام الفحص الشامل حالياً.")
