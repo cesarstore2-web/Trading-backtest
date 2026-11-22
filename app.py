@@ -31,7 +31,6 @@ SYMBOLS = [
     "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
 ]
 
-# اختيار الفريم: 1 ساعة أو 4 ساعات فقط
 timeframe_map = {"فريم 1 ساعة (1H)": "1h", "فريم 4 ساعات (4H)": "4h"}
 selected_tf_label = st.radio(
     "الإطار الزمني:",
@@ -53,8 +52,6 @@ def get_elliott_data(symbols_list, tf, capital_usd):
     exchange = ccxt.kucoin({'enableRateLimit': True})
     future_results = []
     past_trades = []
-    
-    # جلب بيانات تغطي 30 يوماً سابقة: (720 شمعة لـ 1h) أو (180 شمعة لـ 4h)
     limit_bars = 720 if tf == "1h" else 180
 
     for sym in symbols_list:
@@ -66,7 +63,6 @@ def get_elliott_data(symbols_list, tf, capital_usd):
                 continue
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-            # 1. حساب الصفقات الفعلية المغلقة خلال الشهر السابق (30 يوماً)
             step = 24 if tf == "1h" else 6
             window = 48 if tf == "1h" else 18
             for i in range(0, len(df) - window, step):
@@ -92,7 +88,6 @@ def get_elliott_data(symbols_list, tf, capital_usd):
                                 past_trades.append({"coin": coin_name, "pnl": pnl})
                                 break
 
-            # 2. حساب التوصية المستقبلية الحالية
             recent = df.iloc[-30:]
             wave_0 = recent['low'].iloc[:15].min()
             wave_1 = recent['high'].iloc[15:].max()
@@ -126,7 +121,6 @@ def get_elliott_data(symbols_list, tf, capital_usd):
 with st.spinner(f"جاري تحليل بيانات {selected_tf_label} وآخر 30 يوماً..."):
     df_history, df_signals = get_elliott_data(SYMBOLS, selected_tf, trade_size_usd)
 
-# تصفية البيانات حسب العملة المختارة
 if selected_coin != "الكل":
     hist_df = df_history[df_history["coin"] == selected_coin] if not df_history.empty else pd.DataFrame()
     sig_df = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else pd.DataFrame()
@@ -174,8 +168,10 @@ st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صا
 
 st.markdown(f"### 🤖 أعلى 5 توصيات مستقبلية تقييماً — ({selected_tf_label})")
 
+if sig_df.empty:
+    st.warning("تعذر جلب البيانات حالياً من المنصة، يرجى تحديث الصفحة بعد لحظات.")
+
 if not sig_df.empty:
-    # ترتيب التوصيات من الأعلى تقييماً وأخذ أفضل 5 توصيات فقط
     top_5_df = sig_df.sort_values(by="ai", ascending=False).head(5)
     for _, row in top_5_df.iterrows():
         card_html = (
@@ -192,4 +188,3 @@ if not sig_df.empty:
             f"</div></div>"
         )
         st.markdown(card_html, unsafe_allow_html=True)
-else:
