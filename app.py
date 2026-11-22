@@ -42,14 +42,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# إعدادات افتراضية في الخفاء
+capital = 100.0
+fib_entry = 0.618
+
 # 1. شريط اختيار الفترة (مطابق لأعلى الصورة)
 timeframe_choice = st.radio("", ["24 ساعة", "أسبوع", "شهر"], index=2, horizontal=True)
 period_map = {"24 ساعة": "2d", "أسبوع": "7d", "شهر": "1mo"}
 selected_period = period_map[timeframe_choice]
 
-# 2. المدخلات (مع الحفاظ على منطق موجات إليوت)
-capital = st.number_input("رأس المال لكل صفقة ($):", min_value=10.0, value=100.0, step=10.0)
-fib_entry = st.number_input("نسبة تصحيح الدخول (فيبوناتشي):", min_value=0.1, max_value=0.9, value=0.618, step=0.01, format="%.3f")
+# 2. المدخلات الظاهرة (مطابقة للصورة تماماً)
+atr_sl_mult = st.number_input("ATR SL:", min_value=0.1, value=4.00, step=0.10, format="%.2f")
+rr_ratio = st.number_input("R : R:", min_value=0.5, value=3.70, step=0.10, format="%.2f")
 
 symbols_dict = {
     "الكل": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"],
@@ -66,13 +70,20 @@ def get_crypto_data(ticker, per):
     df = yf.download(ticker, period=per, interval="1h", progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    if not df.empty:
+        # حساب مؤشر ATR (14 شمعة)
+        high_low = df['High'] - df['Low']
+        high_close = (df['High'] - df['Close'].shift()).abs()
+        low_close = (df['Low'] - df['Close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(14).mean().bfill()
     return df
-total_trades, winning_trades, losing_trades = 0, 0, 0
+winning_trades, losing_trades = 0, 0
 total_profit, total_loss = 0.0, 0.0
 recommendations = []
 trades_log = []
 
-window_size = 24  # 24 شمعة (ساعة) لتحديد القاع wave_0 والقمة wave_1
+window_size = 24  # 24 شمعة لتحديد القاع wave_0 والقمة wave_1
 
 for sym in symbols_dict[selected_coin]:
     df = get_crypto_data(sym, selected_period)
@@ -89,8 +100,17 @@ for sym in symbols_dict[selected_coin]:
         if wave_1 > wave_0:
             diff = wave_1 - wave_0
             entry_2 = wave_1 - (diff * fib_entry)
-            target_5 = wave_0 + (diff * 1.618)
-            stop_loss_0 = wave_0
+            atr_val = float(sub_df['ATR'].iloc[-1])
+            
+            # وقف الخسارة باستخدام ATR SL مع احترام قاع إليوت
+            sl_atr = entry_2 - (atr_val * atr_sl_mult)
+            stop_loss_0 = max(wave_0, sl_atr) if sl_atr < entry_2 else wave_0
+            
+            # الهدف باستخدام نسبة R : R (مع مراعاة امتداد 1.618)
+            risk = entry_2 - stop_loss_0
+            if risk <= 0:
+                continue
+            target_5 = entry_2 + (risk * rr_ratio)
 
             future_df = df.iloc[i + window_size : i + (window_size * 2)]
             entered = False
@@ -101,7 +121,7 @@ for sym in symbols_dict[selected_coin]:
                     continue
                 if entered:
                     if low_p <= stop_loss_0:
-                        loss_usd = capital * ((entry_2 - stop_loss_0) / entry_2)
+                        loss_usd = capital * (risk / entry_2)
                         losing_trades += 1
                         total_loss += loss_usd
                         trades_log.append({"العملة": sym, "الحالة": "خاسرة ❌", "الدخول": round(entry_2, 2), "الإغلاق": round(stop_loss_0, 2), "النتيجة": f"-${loss_usd:.2f}"})
@@ -119,13 +139,17 @@ for sym in symbols_dict[selected_coin]:
     w0_c = float(rec_df.iloc[:mid_r]['Low'].min())
     w1_c = float(rec_df.iloc[mid_r:]['High'].max())
     curr_p = float(df['Close'].iloc[-1])
+    curr_atr = float(df['ATR'].iloc[-1])
 
     if w1_c > w0_c:
         diff_c = w1_c - w0_c
         ent_c = w1_c - (diff_c * fib_entry)
-        tgt_c = w0_c + (diff_c * 1.618)
-        if curr_p > w0_c:
-            recommendations.append((sym, curr_p, ent_c, tgt_c, w0_c))
+        sl_c_raw = ent_c - (curr_atr * atr_sl_mult)
+        sl_c = max(w0_c, sl_c_raw) if sl_c_raw < ent_c else w0_c
+        risk_c = ent_c - sl_c
+        if risk_c > 0 and curr_p > sl_c:
+            tgt_c = ent_c + (risk_c * rr_ratio)
+            recommendations.append((sym, curr_p, ent_c, tgt_c, sl_c))
 
 total_trades = winning_trades + losing_trades
 win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
@@ -133,20 +157,15 @@ win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
 # 3. العنوان والبطاقات (مطابقة تماماً لترتيب وألوان الصورة)
 st.markdown(f"<h3 style='text-align: right; margin-top: 15px;'>📊 نتائج {timeframe_choice} (1h)</h3>", unsafe_allow_html=True)
 
-# بطاقة الصفقات (أزرق)
 st.markdown(f"<div class='metric-card card-blue'><div class='title-white'>🤝 الصفقات</div><div class='card-val'>{total_trades}</div></div>", unsafe_allow_html=True)
-
-# بطاقة النجاح (بنفسجي)
 st.markdown(f"<div class='metric-card card-purple'><div class='title-purple'>🎯 النجاح</div><div class='card-val'>{win_rate:.1f}%</div></div>", unsafe_allow_html=True)
 
-# صف الصفقات الرابحة والخاسرة
 c1, c2 = st.columns(2)
 with c1:
     st.markdown(f"<div class='metric-card card-green'><div class='title-green'>📈 الصفقات الرابحة</div><div class='card-val'>{winning_trades}</div><div class='card-sub'>صفقات</div></div>", unsafe_allow_html=True)
 with c2:
     st.markdown(f"<div class='metric-card card-red'><div class='title-red'>📉 الصفقات الخاسرة</div><div class='card-val'>{losing_trades}</div><div class='card-sub'>صفقات</div></div>", unsafe_allow_html=True)
 
-# صف إجمالي الأرباح والخسائر
 c3, c4 = st.columns(2)
 with c3:
     st.markdown(f"<div class='metric-card card-green'><div class='title-green'>💲 إجمالي الأرباح</div><div class='card-val'>+${total_profit:.2f}</div><div class='card-sub'>USD</div></div>", unsafe_allow_html=True)
