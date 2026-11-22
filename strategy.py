@@ -36,7 +36,6 @@ def calculate_indicators(df, atr_len=14):
     return df
 
 def get_4h_trend_series(symbol_usdt):
-    # جلب 45 يوماً من فريم الساعة لضمان استقرار EMA 50 على فريم 4 ساعات طوال الشهر السابق
     df_1h = fetch_data(symbol_usdt, "1h", period="45d")
     if df_1h.empty:
         return pd.Series(dtype=str)
@@ -47,9 +46,9 @@ def get_4h_trend_series(symbol_usdt):
     df_4h['Trend'] = np.where(df_4h['Close'] > df_4h['EMA_50'], "صاعد 🟢", "هابط 🔴")
     return df_4h['Trend']
 
-def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter):
+def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd):
     wins, losses = 0, 0
-    total_profit_pct, total_loss_pct = 0.0, 0.0
+    net_profit_usd = 0.0
     in_trade = False
     trade_type = ""
     entry, sl, tp = 0.0, 0.0, 0.0
@@ -62,13 +61,16 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter):
         else:
             current_trend = "ALL"
 
+        open_p = df['Open'].iloc[i]
         close_p = df['Close'].iloc[i]
         high_p = df['High'].iloc[i]
         low_p = df['Low'].iloc[i]
+        
+        prev_high = df['High'].iloc[i-1]
+        prev_low = df['Low'].iloc[i-1]
         atr_val = df['ATR'].iloc[i]
 
         e5_curr, e13_curr, e34_curr = df['EMA_5'].iloc[i], df['EMA_13'].iloc[i], df['EMA_34'].iloc[i]
-        e5_prev, e13_prev, e34_prev = df['EMA_5'].iloc[i-1], df['EMA_13'].iloc[i-1], df['EMA_34'].iloc[i-1]
 
         if pd.isna(atr_val) or atr_val == 0:
             continue
@@ -77,36 +79,42 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter):
             if trade_type == "BUY":
                 if low_p <= sl:
                     losses += 1
-                    total_loss_pct += abs((sl - entry) / entry) * 100
+                    loss_pct = abs((sl - entry) / entry)
+                    net_profit_usd -= (trade_size_usd * loss_pct)
                     in_trade = False
                 elif high_p >= tp:
                     wins += 1
-                    total_profit_pct += abs((tp - entry) / entry) * 100
+                    win_pct = abs((tp - entry) / entry)
+                    net_profit_usd += (trade_size_usd * win_pct)
                     in_trade = False
             elif trade_type == "SELL":
                 if high_p >= sl:
                     losses += 1
-                    total_loss_pct += abs((sl - entry) / entry) * 100
+                    loss_pct = abs((sl - entry) / entry)
+                    net_profit_usd -= (trade_size_usd * loss_pct)
                     in_trade = False
                 elif low_p <= tp:
                     wins += 1
-                    total_profit_pct += abs((tp - entry) / entry) * 100
+                    win_pct = abs((tp - entry) / entry)
+                    net_profit_usd += (trade_size_usd * win_pct)
                     in_trade = False
         else:
-            bullish_cross = (e5_curr > e13_curr > e34_curr) and not (e5_prev > e13_prev > e34_prev)
-            bearish_cross = (e5_curr < e13_curr < e34_curr) and not (e5_prev < e13_prev < e34_prev)
+            # شرط اختراق شمعة مع ترتيب المتوسطات (5 > 13 > 34)
+            bullish_breakout = (e5_curr > e13_curr > e34_curr) and (close_p > open_p) and (close_p > prev_high) and (df['Close'].iloc[i-1] <= df['High'].iloc[i-2])
+            # شرط كسر شمعة مع ترتيب المتوسطات (5 < 13 < 34)
+            bearish_breakout = (e5_curr < e13_curr < e34_curr) and (close_p < open_p) and (close_p < prev_low) and (df['Close'].iloc[i-1] >= df['Low'].iloc[i-2])
 
             allow_buy = (not use_4h_filter) or ("صاعد" in current_trend)
             allow_sell = (not use_4h_filter) or ("هابط" in current_trend)
 
-            if allow_buy and bullish_cross:
+            if allow_buy and bullish_breakout:
                 in_trade = True
                 trade_type = "BUY"
                 entry = close_p
                 sl = entry - (atr_val * atr_sl_mult)
                 tp = entry + ((entry - sl) * rr_ratio)
 
-            elif allow_sell and bearish_cross:
+            elif allow_sell and bearish_breakout:
                 in_trade = True
                 trade_type = "SELL"
                 entry = close_p
@@ -115,91 +123,92 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter):
 
     total_trades = wins + losses
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
-    net_profit = total_profit_pct - total_loss_pct
 
     return {
         "total_trades": total_trades,
         "wins": wins,
         "losses": losses,
         "win_rate": win_rate,
-        "gross_profit": total_profit_pct,
-        "gross_loss": total_loss_pct,
-        "net_profit": net_profit
+        "net_profit_usd": net_profit_usd
     }
 
-def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True):
-    # جلب بيانات شهر كامل (30 يوماً) لتقييم الاستراتيجية
+def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True, trade_size_usd=100.0):
     df = fetch_data(symbol_usdt, tf_code, period="30d")
-    if df.empty:
+    if df.empty or len(df) < 40:
         return None
         
     df = calculate_indicators(df)
     trend_series = get_4h_trend_series(symbol_usdt) if use_4h_filter else pd.Series(dtype=str)
     trend_4h = trend_series.iloc[-1] if (use_4h_filter and not trend_series.empty) else "معطّل ⚪"
     
-    stats = run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter)
+    stats = run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd)
     
     atr_val = df['ATR'].iloc[-1]
     e5, e13, e34 = df['EMA_5'].iloc[-1], df['EMA_13'].iloc[-1], df['EMA_34'].iloc[-1]
-    e5_prev, e13_prev, e34_prev = df['EMA_5'].iloc[-2], df['EMA_13'].iloc[-2], df['EMA_34'].iloc[-2]
+    
+    current_open = df['Open'].iloc[-1]
     current_price = df['Close'].iloc[-1]
+    prev_high = df['High'].iloc[-2]
+    prev_low = df['Low'].iloc[-2]
     
     signal = "انتظار ⏳"
     entry, sl, tp = 0.0, 0.0, 0.0
-    reason = "لا يوجد تقاطع جديد حالياً."
+    reason = "بانتظار إغلاق شمعة اختراق مؤكدة مع ترتيب المتوسطات (5, 13, 34)."
 
-    bullish_cross = (e5 > e13 > e34) and not (e5_prev > e13_prev > e34_prev)
-    bearish_cross = (e5 < e13 < e34) and not (e5_prev < e13_prev < e34_prev)
+    # شرط اختراق الشمعة الحالية لقمة/قاع الشمعة السابقة
+    bullish_breakout = (e5 > e13 > e34) and (current_price > current_open) and (current_price > prev_high)
+    bearish_breakout = (e5 < e13 < e34) and (current_price < current_open) and (current_price < prev_low)
 
     allow_buy = (not use_4h_filter) or ("صاعد" in trend_4h)
     allow_sell = (not use_4h_filter) or ("هابط" in trend_4h)
 
-    if allow_buy and bullish_cross:
+    if allow_buy and bullish_breakout:
         signal = "شراء (BUY) 🚀"
         entry = current_price
         sl = entry - (atr_val * atr_sl_mult)
         tp = entry + ((entry - sl) * rr_ratio)
-        reason = "تحقق تقاطع صاعد للمتوسطات (EMA 5 > 13 > 34)."
+        reason = f"تم اختراق قمة الشمعة السابقة ({prev_high:.4f}) بشمعة صاعدة مع توافق EMA 5 > 13 > 34."
 
-    elif allow_sell and bearish_cross:
+    elif allow_sell and bearish_breakout:
         signal = "بيع (SELL) 📉"
         entry = current_price
         sl = entry + (atr_val * atr_sl_mult)
         tp = entry - ((sl - entry) * rr_ratio)
-        reason = "تحقق تقاطع هابط للمتوسطات (EMA 5 < 13 < 34)."
-    elif bullish_cross and not allow_buy:
-        reason = "يوجد تقاطع صاعد لكن فلتر 4 ساعات هابط (تم حجب الصفقة)."
-    elif bearish_cross and not allow_sell:
-        reason = "يوجد تقاطع هابط لكن فلتر 4 ساعات صاعد (تم حجب الصفقة)."
-    elif e5 > e13 > e34:
-        reason = "المتوسطات مرتبة صعودياً (5 > 13 > 34) حالياً."
-    elif e5 < e13 < e34:
-        reason = "المتوسطات مرتبة هبوطياً (5 < 13 < 34) حالياً."
+        reason = f"تم كسر قاع الشمعة السابقة ({prev_low:.4f}) بشمعة هابطة مع توافق EMA 5 < 13 < 34."
+
+    # حساب درجة التقييم لاختيار أفضل 3 توصيات
+    score = (stats['net_profit_usd'] * 0.6) + (stats['win_rate'] * 0.4)
+    if "شراء" in signal or "بيع" in signal:
+        score += 50  # أولوية للعملات التي أعطت إشارة اختراق حالية
 
     return {
         "coin": symbol_usdt,
         "signal": signal, "entry": entry, "sl": sl, "tp": tp,
         "ema_5": e5, "ema_13": e13, "ema_34": e34,
         "trend_4h": trend_4h, "current_price": current_price,
-        "reason": reason, "stats": stats
+        "reason": reason, "stats": stats, "score": score
     }
 
-def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter):
-    results = []
+def scan_all_coins(coins_list, tf_code, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd):
+    all_data = []
+    table_rows = []
+    
     for coin in coins_list:
-        res = run_analysis(coin, tf_code, atr_sl_mult, rr_ratio, use_4h_filter)
+        res = run_analysis(coin, tf_code, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd)
         if res:
-            results.append({
+            all_data.append(res)
+            table_rows.append({
                 "العملة": coin,
                 "السعر": f"{res['current_price']:.4f}",
                 "التوصية": res['signal'],
-                "اتجاه 4H": res['trend_4h'],
                 "الدخول": f"{res['entry']:.4f}" if res['entry'] > 0 else "-",
                 "الهدف (TP)": f"{res['tp']:.4f}" if res['tp'] > 0 else "-",
                 "الوقف (SL)": f"{res['sl']:.4f}" if res['sl'] > 0 else "-",
                 "الناجحة": res['stats']['wins'],
                 "الخاسرة": res['stats']['losses'],
-                "نسبة النجاح": f"{res['stats']['win_rate']:.1f}%",
-                "صافي الربح (شهر)": f"{res['stats']['net_profit']:+.2f}%"
+                "الربح الصافي ($)": f"{res['stats']['net_profit_usd']:+.2f}$"
             })
-    return pd.DataFrame(results)
+            
+    # ترتيب العملات لاستخراج أفضل 3 توصيات دقة وتقييماً
+    top_3 = sorted(all_data, key=lambda x: x['score'], reverse=True)[:3]
+    return pd.DataFrame(table_rows), top_3
