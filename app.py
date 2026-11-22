@@ -202,7 +202,7 @@ def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
                         active_until = j
                         break
 
-        # تقييم التوصيات المستقبلية المدعوم بالذكاء الاصطناعي (70% فأعلى)
+        # استخراج أحدث إشارة مؤكدة لكل عملة بدون أي فلتر تقييم
         if confirmed_signals:
             last_idx, last_side = confirmed_signals[-1]
             entry_p = closes[last_idx]
@@ -218,30 +218,22 @@ def run_tricks_helal_ai(data_dict, atr_mult, rr_ratio, period_hours):
 
             curr_p = closes[-1]
             bars_ago = (len(df) - 1) - last_idx
+            dec = 2 if curr_p > 10 else 4
 
-            # حساب درجة ثقة AI بناءً على قرب السعر من نقطة الدخول، حداثة الإشارة، وقوة التذبذب
-            price_dev_atr = abs(curr_p - entry_p) / (atr_sig if atr_sig > 0 else 1)
-            raw_ai = 98 - (price_dev_atr * 6.5) - (bars_ago * 0.4)
-            ai_score = int(max(70, min(98, round(raw_ai))))
-
-            # استبعاد أي فرصة لم تصل إلى الهدف أو الوقف بعد أو تقييمها أقل من 70%
-            is_still_valid = (sl_p < curr_p < tp_p) if last_side == "BUY" else (tp_p < curr_p < sl_p)
-            if is_still_valid and ai_score >= 70:
-                dec = 2 if curr_p > 10 else 4
-                signals_results.append({
-                    "coin": coin_name,
-                    "side": "شراء (Buy)" if last_side == "BUY" else "بيع (Sell)",
-                    "is_buy": last_side == "BUY",
-                    "price": round(curr_p, dec),
-                    "entry": round(entry_p, dec),
-                    "target": round(tp_p, dec),
-                    "sl": round(sl_p, dec),
-                    "ai": ai_score
-                })
+            signals_results.append({
+                "coin": coin_name,
+                "side": "شراء (Buy)" if last_side == "BUY" else "بيع (Sell)",
+                "is_buy": last_side == "BUY",
+                "price": round(curr_p, dec),
+                "entry": round(entry_p, dec),
+                "target": round(tp_p, dec),
+                "sl": round(sl_p, dec),
+                "bars_ago": bars_ago
+            })
 
     return pd.DataFrame(signals_results), pd.DataFrame(backtest_trades)
 
-with st.spinner(f"جاري تحليل البيانات الحقيقية وتقييم الفرص بالذكاء الاصطناعي ({selected_period})..."):
+with st.spinner(f"جاري فحص الصفقات الحقيقية من yfinance ({selected_period})..."):
     market_data, fetch_errors = fetch_all_candles(SYMBOLS, selected_tf)
     if not market_data:
         st.error(f"تعذر جلب البيانات من yfinance. التفاصيل: {fetch_errors[:2]}")
@@ -291,13 +283,13 @@ net_color = "green-text" if net_profit_usd >= 0 else "red-text"
 net_sign = "+" if net_profit_usd >= 0 else ""
 st.markdown(f"<div class='metric-card card-net'><div class='card-title'>✨ صافي الأرباح الفعلية ({selected_period})</div><div class='card-value {net_color}'>${net_profit_usd:,.2f}{net_sign} <span style='font-size:16px; color:#fff;'>USD</span></div></div>", unsafe_allow_html=True)
 
-st.markdown(f"### 🤖 التوصيات المستقبلية (تقييم AI ≥ 70%) — إطار ({selected_tf})")
+st.markdown(f"### 🤖 أحدث الإشارات المؤكدة — إطار ({selected_tf})")
 
 if not display_signals.empty:
-    for _, row in display_signals.sort_values(by="ai", ascending=False).iterrows():
+    for _, row in display_signals.sort_values(by="bars_ago", ascending=True).iterrows():
         box_cls = "signal-box-buy" if row["is_buy"] else "signal-box-sell"
         badge_bg = "#38a169" if row["is_buy"] else "#e53e3e"
-        st.markdown(f"<div class='{box_cls}'><div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span><div><span style='background-color:{badge_bg}; padding:3px 8px; border-radius:10px; font-size:12px; margin-left:6px;'>{row['side']}</span><span style='background-color:#805ad5; padding:3px 10px; border-radius:10px; font-size:12px;'>AI: {row['ai']}%</span></div></div><hr style='border-color:#2d3748; margin:10px 0;'><div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'><span>🔵 <b>الدخول:</b> ${row['entry']}</span><span class='green-text'>🟢 <b>الهدف:</b> ${row['target']}</span><span class='red-text'>🔴 <b>ستوب لوس:</b> ${row['sl']}</span></div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='{box_cls}'><div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span><span style='background-color:{badge_bg}; padding:3px 10px; border-radius:10px; font-size:12px;'>{row['side']} | منذ {row['bars_ago']} شمعة</span></div><hr style='border-color:#2d3748; margin:10px 0;'><div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'><span>🔵 <b>الدخول:</b> ${row['entry']}</span><span class='green-text'>🟢 <b>الهدف:</b> ${row['target']}</span><span class='red-text'>🔴 <b>ستوب لوس:</b> ${row['sl']}</span></div></div>", unsafe_allow_html=True)
 else:
-    st.warning("لا توجد توصيات نشطة بتقييم 70% فأعلى حالياً.")
+    st.warning("لا توجد إشارات مؤكدة حالياً.")
 # END
