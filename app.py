@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import time
 
 st.set_page_config(page_title="Tricks HeLaL — Backtest", layout="centered")
 
@@ -38,7 +37,7 @@ def load_yf(syms, interval, period):
                     df.columns = df.columns.get_level_values(0)
                 df = df.reset_index()
                 t_col = 'Datetime' if 'Datetime' in df.columns else 'Date'
-                df['ts'] = pd.to_datetime(df[t_col]).astype('int64') // 10**6
+                df['dt'] = pd.to_datetime(df[t_col], utc=True)
                 for col in ['Open', 'High', 'Low', 'Close']:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                 out[c] = df.dropna(subset=['Open', 'High', 'Low', 'Close']).reset_index(drop=True)
@@ -49,14 +48,14 @@ def load_yf(syms, interval, period):
 def analyze(data, atr_mult, rr, hours):
     sigs, trades = [], []
     depth, backstep, dev, min_bars = 30, 30, 5, 8
-    cutoff = (time.time() - hours * 3600) * 1000
+    cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=hours)
 
     for coin, df in data.items():
         if len(df) < depth + backstep + 15: continue
         pc = df['Close'].shift(1)
         tr = pd.concat([df['High']-df['Low'], (df['High']-pc).abs(), (df['Low']-pc).abs()], axis=1).max(axis=1)
         atrs = tr.rolling(14).mean().bfill().values
-        H, L, C, T = df['High'].values, df['Low'].values, df['Close'].values, df['ts'].values
+        H, L, C, T = df['High'].values, df['Low'].values, df['Close'].values, df['dt']
         tick = 0.01 if C[-1] >= 100 else (0.0001 if C[-1] >= 1 else 0.00001)
 
         last_p, last_d, last_b, conf = None, 0, None, []
@@ -81,7 +80,7 @@ def analyze(data, atr_mult, rr, hours):
                 hit_sl = L[j] <= sl if side == "BUY" else H[j] >= sl
                 hit_tp = H[j] >= tp if side == "BUY" else L[j] <= tp
                 if hit_sl or hit_tp:
-                    if T[j] >= cutoff:
+                    if T.iloc[j] >= cutoff:
                         pnl = 1000.0 * (((sl - ep) if hit_sl else (tp - ep)) / ep) * (1 if side == "BUY" else -1)
                         trades.append({"coin": coin, "win": not hit_sl, "pnl": pnl})
                     busy = j
