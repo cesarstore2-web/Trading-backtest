@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-st.set_page_config(page_title="نظام موجات إليوت - Spot", layout="centered")
+st.set_page_config(page_title="نظام موجات إليوت + EMA 100", layout="centered")
 
 # تنسيق CSS لمطابقة التصميم وتصغير البطاقات
 st.markdown("""
@@ -50,26 +50,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# إعدادات افتراضية في الخفاء
+# رأس المال افتراضي في الخفاء
 capital = 100.0
 
-# 1. شريط اختيار الفترة وتحديد الفريم المناسب لكل فترة
+# 1. شريط اختيار الفترة والفريم
 timeframe_choice = st.radio("", ["24 ساعة", "أسبوع", "شهر"], index=2, horizontal=True)
 tf_config = {
-    "24 ساعة": {"period": "1d",  "interval": "5m",  "window": 36, "step": 18},
-    "أسبوع":   {"period": "7d",  "interval": "15m", "window": 32, "step": 16},
-    "شهر":     {"period": "1mo", "interval": "30m", "window": 30, "step": 15}
+    "24 ساعة": {"period": "5d",  "interval": "5m",  "window": 36, "step": 18, "display_bars": 288},
+    "أسبوع":   {"period": "1mo", "interval": "15m", "window": 32, "step": 16, "display_bars": 672},
+    "شهر":     {"period": "2mo", "interval": "30m", "window": 30, "step": 15, "display_bars": 1440}
 }
 selected_period = tf_config[timeframe_choice]["period"]
 selected_interval = tf_config[timeframe_choice]["interval"]
 window_size = tf_config[timeframe_choice]["window"]
 step_size = tf_config[timeframe_choice]["step"]
+display_bars = tf_config[timeframe_choice]["display_bars"]
 
-# 2. نافذتي ATR SL و R : R كما في الصورة
-atr_sl_mult = st.number_input("ATR SL:", min_value=0.1, value=4.00, step=0.10, format="%.2f")
-rr_ratio = st.number_input("R : R:", min_value=0.5, value=3.70, step=0.10, format="%.2f")
+# 2. نافذة الفيبوناتشي واختيار العملة
+fib_entry = st.number_input("نسبة الفيبوناتشي (الدخول):", min_value=0.100, max_value=0.900, value=0.618, step=0.010, format="%.3f")
 
-# اختيار العملة
 symbols_dict = {
     "الكل": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"],
     "BTC-USD": ["BTC-USD"],
@@ -86,21 +85,21 @@ def get_crypto_data(ticker, per, interv):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     if not df.empty:
-        high_low = df['High'] - df['Low']
-        high_close = (df['High'] - df['Close'].shift()).abs()
-        low_close = (df['Low'] - df['Close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['ATR'] = tr.rolling(14).mean().bfill()
+        # حساب المتوسط المتحرك الأسي EMA 100
+        df['EMA100'] = df['Close'].ewm(span=100, adjust=False).mean()
     return df
 winning_trades, losing_trades = 0, 0
 total_profit, total_loss = 0.0, 0.0
 trades_log = []
 
-# 3. حساب النتائج التاريخية حسب قاعدة موجات إليوت (Spot شراء فقط)
+# 3. حساب النتائج التاريخية (Spot شراء فقط + فلتر EMA 100)
 for sym in symbols_dict[selected_coin]:
-    df = get_crypto_data(sym, selected_period, selected_interval)
-    if df.empty or len(df) < window_size:
+    full_df = get_crypto_data(sym, selected_period, selected_interval)
+    if full_df.empty or len(full_df) < 120:
         continue
+    
+    # أخذ الشموع الخاصة بالفترة المختارة بعد استقرار EMA 100
+    df = full_df.tail(display_bars)
 
     for i in range(0, len(df) - window_size, step_size):
         sub_df = df.iloc[i : i + window_size]
@@ -108,50 +107,59 @@ for sym in symbols_dict[selected_coin]:
         
         wave_0 = float(sub_df.iloc[:mid]['Low'].min())
         wave_1 = float(sub_df.iloc[mid:]['High'].max())
-        atr_val = float(sub_df['ATR'].iloc[-1])
+        ema_val = float(sub_df['EMA100'].iloc[-1])
 
-        if wave_1 > wave_0:
+        # شرط الصعود وشرط وجود السعر فوق EMA 100
+        if wave_1 > wave_0 and wave_1 > ema_val:
             diff = wave_1 - wave_0
-            entry_2 = wave_1 - (diff * 0.618)
+            entry_2 = wave_1 - (diff * fib_entry)
             target_5 = wave_0 + (diff * 1.618)
             stop_loss_0 = wave_0
 
-            risk = entry_2 - stop_loss_0
-            reward = target_5 - entry_2
-            actual_rr = (reward / risk) if risk > 0 else 0
+            # التأكد أن نقطة الدخول أعلى أو قريبة من EMA 100
+            if entry_2 < ema_val:
+                continue
 
-            # التحقق من توافق الموجة مع ATR SL ونسبة R : R
-            if risk <= (atr_val * atr_sl_mult) and actual_rr >= rr_ratio:
-                future_df = df.iloc[i + window_size : i + (window_size * 2)]
-                entered = False
-                for date, row in future_df.iterrows():
-                    low_p, high_p = float(row['Low']), float(row['High'])
-                    
-                    if not entered and low_p <= entry_2:
+            future_df = df.iloc[i + window_size : i + (window_size * 2)]
+            touched_fib = False
+            entered = False
+
+            for date, row in future_df.iterrows():
+                low_p, high_p = float(row['Low']), float(row['High'])
+                open_p, close_p = float(row['Open']), float(row['Close'])
+                row_ema = float(row['EMA100'])
+
+                if not entered:
+                    if low_p <= stop_loss_0:
+                        break
+                    if low_p <= entry_2:
+                        touched_fib = True
+                    # الدخول بعد ملامسة الفيبوناتشي وإغلاق شمعة صاعدة فوق EMA 100
+                    if touched_fib and close_p > open_p and close_p >= entry_2 and close_p > row_ema:
                         entered = True
+                        actual_entry = close_p
                         continue
-                    
-                    if entered:
-                        if low_p <= stop_loss_0:
-                            loss_usd = capital * (risk / entry_2)
-                            losing_trades += 1
-                            total_loss += loss_usd
-                            trades_log.append({
-                                "العملة": sym, "الفريم": selected_interval, "الحالة": "خاسرة ❌",
-                                "الدخول": round(entry_2, 2), "الإغلاق": round(stop_loss_0, 2),
-                                "النتيجة": f"-${loss_usd:.2f}"
-                            })
-                            break
-                        elif high_p >= target_5:
-                            profit_usd = capital * (reward / entry_2)
-                            winning_trades += 1
-                            total_profit += profit_usd
-                            trades_log.append({
-                                "العملة": sym, "الفريم": selected_interval, "الحالة": "رابحة ✅",
-                                "الدخول": round(entry_2, 2), "الإغلاق": round(target_5, 2),
-                                "النتيجة": f"+${profit_usd:.2f}"
-                            })
-                            break
+                else:
+                    if low_p <= stop_loss_0:
+                        loss_usd = capital * ((actual_entry - stop_loss_0) / actual_entry)
+                        losing_trades += 1
+                        total_loss += loss_usd
+                        trades_log.append({
+                            "العملة": sym, "الفريم": selected_interval, "الحالة": "خاسرة ❌",
+                            "الدخول": round(actual_entry, 2), "الإغلاق": round(stop_loss_0, 2),
+                            "النتيجة": f"-${loss_usd:.2f}"
+                        })
+                        break
+                    elif high_p >= target_5:
+                        profit_usd = capital * ((target_5 - actual_entry) / actual_entry)
+                        winning_trades += 1
+                        total_profit += profit_usd
+                        trades_log.append({
+                            "العملة": sym, "الفريم": selected_interval, "الحالة": "رابحة ✅",
+                            "الدخول": round(actual_entry, 2), "الإغلاق": round(target_5, 2),
+                            "النتيجة": f"+${profit_usd:.2f}"
+                        })
+                        break
 
 total_trades = winning_trades + losing_trades
 win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
@@ -174,15 +182,15 @@ with c3:
 with c4:
     st.markdown(f"<div class='metric-card card-red'><div class='title-red'>💸 إجمالي الخسائر</div><div class='card-val'>-${total_loss:.2f}</div><div class='card-sub'>USD</div></div>", unsafe_allow_html=True)
 
-# 4. قسم التوصيات الحالية فقط على فريمات (5m, 15m, 30m)
+# 4. قسم التوصيات الحالية فقط على فريمات (5m, 15m, 30m) بشرط EMA 100
 st.markdown("### 🎯 التوصيات الحالية (5m | 15m | 30m)")
-rec_timeframes = [("5m", "2d", 36), ("15m", "5d", 32), ("30m", "1mo", 30)]
+rec_timeframes = [("5m", "5d", 36), ("15m", "1mo", 32), ("30m", "2mo", 30)]
 recommendations = []
 
 for sym in symbols_dict[selected_coin]:
     for tf_name, tf_per, tf_win in rec_timeframes:
         df_rec = get_crypto_data(sym, tf_per, tf_name)
-        if df_rec.empty or len(df_rec) < tf_win:
+        if df_rec.empty or len(df_rec) < 110:
             continue
         
         rec_slice = df_rec.tail(tf_win)
@@ -190,24 +198,20 @@ for sym in symbols_dict[selected_coin]:
         w0_c = float(rec_slice.iloc[:mid_r]['Low'].min())
         w1_c = float(rec_slice.iloc[mid_r:]['High'].max())
         curr_p = float(df_rec['Close'].iloc[-1])
-        curr_atr = float(df_rec['ATR'].iloc[-1])
+        curr_ema = float(df_rec['EMA100'].iloc[-1])
 
-        if w1_c > w0_c:
+        if w1_c > w0_c and curr_p > curr_ema:
             diff_c = w1_c - w0_c
-            ent_c = w1_c - (diff_c * 0.618)
+            ent_c = w1_c - (diff_c * fib_entry)
             tgt_c = w0_c + (diff_c * 1.618)
             sl_c = w0_c
             
-            risk_c = ent_c - sl_c
-            reward_c = tgt_c - ent_c
-            act_rr_c = (reward_c / risk_c) if risk_c > 0 else 0
-            
-            if curr_p > sl_c and risk_c <= (curr_atr * atr_sl_mult) and act_rr_c >= rr_ratio:
+            if curr_p > sl_c and ent_c >= curr_ema:
                 recommendations.append((sym, tf_name, curr_p, ent_c, tgt_c, sl_c))
 
 if recommendations:
     for sym, tf_n, cp, ent, tgt, sl in recommendations:
-        status = "✅ منطقة شراء" if cp <= ent else "⏳ انتظار التصحيح"
+        status = "✅ منطقة شراء (فوق EMA100)" if cp <= ent else "⏳ انتظار التصحيح (فوق EMA100)"
         st.markdown(f"""
         <div class="rec-box">
             <b>{sym}</b> <span class="tf-badge">{tf_n}</span> | السعر: <code>{cp:.2f}</code> ({status})<br>
@@ -217,7 +221,7 @@ if recommendations:
         </div>
         """, unsafe_allow_html=True)
 else:
-    st.info("لا توجد فرص شراء تطابق شروط الموجة و ATR SL و R:R حالياً.")
+    st.info("لا توجد فرص شراء فوق EMA 100 حالياً.")
 
 if trades_log:
     with st.expander("📋 سجل الصفقات"):
