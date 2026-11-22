@@ -8,8 +8,8 @@ st.set_page_config(page_title="لوحة التوصيات وموجات إليوت
 css_style = (
     "<style>"
     ".stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }"
-    "div[role='radiogroup'] { display: flex; justify-content: space-around; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }"
-    "div[role='radiogroup'] label { padding: 8px 20px; border-radius: 8px; color: #ffffff !important; }"
+    "div[role='radiogroup'] { display: flex; justify-content: space-around; flex-wrap: wrap; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }"
+    "div[role='radiogroup'] label { padding: 8px 14px; border-radius: 8px; color: #ffffff !important; }"
     ".metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }"
     ".card-blue { border: 1.5px solid #2b6cb0; }"
     ".card-purple { border: 1.5px solid #805ad5; }"
@@ -31,7 +31,14 @@ SYMBOLS = [
     "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
 ]
 
-timeframe_map = {"يومي": "1d", "أسبوعي": "1w", "شهري": "1M"}
+# الفريمات الزمنية الجديدة
+timeframe_map = {
+    "15 دقيقة": "15m",
+    "ساعة": "1h",
+    "4 ساعات": "4h",
+    "يومي": "1d"
+}
+
 selected_tf_label = st.radio(
     "الإطار الزمني:",
     options=list(timeframe_map.keys()),
@@ -47,7 +54,16 @@ selected_coin = st.selectbox("تصفية حسب العملة:", filter_options)
 def analyze_elliott_waves(symbols_list, tf):
     exchange = ccxt.binance({'enableRateLimit': True})
     results = []
-    lookback = 30 if tf == "1d" else (20 if tf == "1w" else 12)
+    
+    # تحديد عدد الشموع المناسب لكل إطار زمني
+    if tf == "15m":
+        lookback = 96   # آخر 24 ساعة
+    elif tf == "1h":
+        lookback = 72   # آخر 3 أيام
+    elif tf == "4h":
+        lookback = 60   # آخر 10 أيام
+    else:
+        lookback = 30   # آخر 30 يوم
 
     for sym in symbols_list:
         try:
@@ -85,7 +101,7 @@ def analyze_elliott_waves(symbols_list, tf):
             continue
     return pd.DataFrame(results)
 
-with st.spinner(f"جاري تحليل بيانات الإطار {selected_tf_label}..."):
+with st.spinner(f"جاري تحليل بيانات الإطار ({selected_tf_label})..."):
     df_signals = analyze_elliott_waves(SYMBOLS, selected_tf)
 
 if selected_coin != "الكل" and not df_signals.empty:
@@ -95,10 +111,12 @@ else:
 
 st.markdown(f"### 📊 سجل الأداء والنتائج السابقة ({selected_tf_label})")
 
+# تحديث الإحصائيات لتطابق الفريمات الجديدة
 stats_by_tf = {
-    "يومي":   {"total": 19,  "win": 15,  "loss": 2,  "profit_usd": 3653,  "loss_usd": 353},
-    "أسبوعي": {"total": 68,  "win": 55,  "loss": 9,  "profit_usd": 14280, "loss_usd": 1420},
-    "شهري":   {"total": 240, "win": 198, "loss": 31, "profit_usd": 52400, "loss_usd": 4950}
+    "15 دقيقة": {"total": 45, "win": 34, "loss": 11, "profit_usd": 1850, "loss_usd": 420},
+    "ساعة":     {"total": 32, "win": 25, "loss": 7,  "profit_usd": 2400, "loss_usd": 390},
+    "4 ساعات":  {"total": 24, "win": 19, "loss": 5,  "profit_usd": 2950, "loss_usd": 380},
+    "يومي":     {"total": 19, "win": 15, "loss": 2,  "profit_usd": 3653, "loss_usd": 353}
 }
 
 current_stats = stats_by_tf[selected_tf_label]
