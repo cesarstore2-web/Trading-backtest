@@ -43,7 +43,7 @@ def get_4h_trend_series(symbol_usdt):
         'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
     }).dropna()
     df_4h['EMA_50'] = df_4h['Close'].ewm(span=50, adjust=False).mean()
-    df_4h['Trend'] = np.where(df_4h['Close'] > df_4h['EMA_50'], "صاعد 🟢", "هابط 🔴")
+    df_4h['Trend'] = np.where(df_4h['Close'] > df_4h['EMA_50'], "صاعد", "هابط")
     return df_4h['Trend']
 
 def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd):
@@ -57,22 +57,24 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_s
         current_time = df.index[i]
         if use_4h_filter and not trend_series.empty:
             past_trends = trend_series[trend_series.index <= current_time]
-            current_trend = past_trends.iloc[-1] if not past_trends.empty else "صاعد 🟢"
+            current_trend = past_trends.iloc[-1] if not past_trends.empty else "صاعد"
         else:
             current_trend = "ALL"
 
-        open_p = df['Open'].iloc[i]
-        close_p = df['Close'].iloc[i]
-        high_p = df['High'].iloc[i]
-        low_p = df['Low'].iloc[i]
+        open_p = float(df['Open'].iloc[i])
+        close_p = float(df['Close'].iloc[i])
+        high_p = float(df['High'].iloc[i])
+        low_p = float(df['Low'].iloc[i])
         
-        prev_high = df['High'].iloc[i-1]
-        prev_low = df['Low'].iloc[i-1]
-        atr_val = df['ATR'].iloc[i]
+        prev_high = float(df['High'].iloc[i-1])
+        prev_low = float(df['Low'].iloc[i-1])
+        atr_val = float(df['ATR'].iloc[i])
 
-        e5_curr, e13_curr, e34_curr = df['EMA_5'].iloc[i], df['EMA_13'].iloc[i], df['EMA_34'].iloc[i]
+        e5 = float(df['EMA_5'].iloc[i])
+        e13 = float(df['EMA_13'].iloc[i])
+        e34 = float(df['EMA_34'].iloc[i])
 
-        if pd.isna(atr_val) or atr_val == 0:
+        if np.isnan(atr_val) or atr_val == 0:
             continue
 
         if in_trade:
@@ -95,8 +97,8 @@ def run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_s
                     net_profit_usd += trade_size_usd * abs((tp - entry) / entry)
                     in_trade = False
         else:
-            bullish_breakout = (e5_curr > e13_curr > e34_curr) and (close_p > open_p) and (close_p > prev_high) and (df['Close'].iloc[i-1] <= df['High'].iloc[i-2])
-            bearish_breakout = (e5_curr < e13_curr < e34_curr) and (close_p < open_p) and (close_p < prev_low) and (df['Close'].iloc[i-1] >= df['Low'].iloc[i-2])
+            bullish_breakout = (e5 > e13 > e34) and (close_p > open_p) and (close_p > prev_high) and (float(df['Close'].iloc[i-1]) <= float(df['High'].iloc[i-2]))
+            bearish_breakout = (e5 < e13 < e34) and (close_p < open_p) and (close_p < prev_low) and (float(df['Close'].iloc[i-1]) >= float(df['Low'].iloc[i-2]))
 
             allow_buy = (not use_4h_filter) or ("صاعد" in current_trend)
             allow_sell = (not use_4h_filter) or ("هابط" in current_trend)
@@ -133,21 +135,23 @@ def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True
         
     df = calculate_indicators(df)
     trend_series = get_4h_trend_series(symbol_usdt) if use_4h_filter else pd.Series(dtype=str)
-    trend_4h = trend_series.iloc[-1] if (use_4h_filter and not trend_series.empty) else "معطّل ⚪"
+    trend_4h = trend_series.iloc[-1] if (use_4h_filter and not trend_series.empty) else "معطّل"
     
     stats = run_backtest(df, trend_series, atr_sl_mult, rr_ratio, use_4h_filter, trade_size_usd)
     
-    atr_val = df['ATR'].iloc[-1]
-    e5, e13, e34 = df['EMA_5'].iloc[-1], df['EMA_13'].iloc[-1], df['EMA_34'].iloc[-1]
+    atr_val = float(df['ATR'].iloc[-1])
+    e5 = float(df['EMA_5'].iloc[-1])
+    e13 = float(df['EMA_13'].iloc[-1])
+    e34 = float(df['EMA_34'].iloc[-1])
     
-    current_open = df['Open'].iloc[-1]
-    current_price = df['Close'].iloc[-1]
-    current_high = df['High'].iloc[-1]
-    current_low = df['Low'].iloc[-1]
-    prev_high = df['High'].iloc[-2]
-    prev_low = df['Low'].iloc[-2]
+    current_open = float(df['Open'].iloc[-1])
+    current_price = float(df['Close'].iloc[-1])
+    current_high = float(df['High'].iloc[-1])
+    current_low = float(df['Low'].iloc[-1])
+    prev_high = float(df['High'].iloc[-2])
+    prev_low = float(df['Low'].iloc[-2])
     
-    signal = "انتظار الاختراق ⏳"
+    signal = "انتظار الاختراق"
     entry, sl, tp = 0.0, 0.0, 0.0
 
     bullish_breakout = (e5 > e13 > e34) and (current_price > current_open) and (current_price > prev_high)
@@ -157,25 +161,24 @@ def run_analysis(symbol_usdt, tf_code, atr_sl_mult, rr_ratio, use_4h_filter=True
     allow_sell = (not use_4h_filter) or ("هابط" in trend_4h)
 
     if allow_buy and bullish_breakout:
-        signal = "شراء فوري (BUY) 🚀"
+        signal = "شراء فوري (BUY)"
         entry = current_price
         sl = entry - (atr_val * atr_sl_mult)
         tp = entry + ((entry - sl) * rr_ratio)
 
     elif allow_sell and bearish_breakout:
-        signal = "بيع فوري (SELL) 📉"
+        signal = "بيع فوري (SELL)"
         entry = current_price
         sl = entry + (atr_val * atr_sl_mult)
         tp = entry - ((sl - entry) * rr_ratio)
 
-    # --- حساب التوصية المستقبلية القادمة (نقطة الاختراق المنتظرة) ---
     if (e5 >= e13 or allow_buy) and not ("هابط" in trend_4h and use_4h_filter):
-        future_dir = "شراء مستقبلي عند اختراق القمة 🟢"
+        future_dir = "شراء مستقبلي عند اختراق القمة"
         fut_entry = max(current_high, prev_high)
         fut_sl = fut_entry - (atr_val * atr_sl_mult)
         fut_tp = fut_entry + ((fut_entry - fut_sl) * rr_ratio)
     else:
-        future_dir = "بيع مستقبلي عند كسر القاع 🔴"
+        future_dir = "بيع مستقبلي عند كسر القاع"
         fut_entry = min(current_low, prev_low)
         fut_sl = fut_entry + (atr_val * atr_sl_mult)
         fut_tp = fut_entry - ((fut_sl - fut_entry) * rr_ratio)
