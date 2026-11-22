@@ -5,25 +5,25 @@ import ccxt
 
 st.set_page_config(page_title="لوحة التوصيات وموجات إليوت", layout="centered")
 
-css_style = (
-    "<style>"
-    ".stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }"
-    "div[role='radiogroup'] { display: flex; justify-content: space-around; flex-wrap: wrap; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }"
-    "div[role='radiogroup'] label { padding: 8px 16px; border-radius: 8px; color: #ffffff !important; }"
-    ".metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }"
-    ".card-blue { border: 1.5px solid #2b6cb0; }"
-    ".card-purple { border: 1.5px solid #805ad5; }"
-    ".card-green { border: 1.5px solid #38a169; }"
-    ".card-red { border: 1.5px solid #e53e3e; }"
-    ".card-net { border: 1.5px solid #805ad5; background: linear-gradient(90deg, #16161e 0%, #231934 100%); }"
-    ".card-title { font-size: 15px; color: #a0aec0; margin-bottom: 6px; }"
-    ".card-value { font-size: 28px; font-weight: bold; }"
-    ".green-text { color: #48bb78; }"
-    ".red-text { color: #f56565; }"
-    ".white-text { color: #ffffff; }"
-    ".signal-box { background-color: #1a1a24; border-right: 4px solid #805ad5; padding: 15px; border-radius: 10px; margin-bottom: 12px; }"
-    "</style>"
-)
+css_style = """
+<style>
+.stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }
+div[role='radiogroup'] { display: flex; justify-content: space-around; flex-wrap: wrap; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }
+div[role='radiogroup'] label { padding: 8px 16px; border-radius: 8px; color: #ffffff !important; }
+.metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }
+.card-blue { border: 1.5px solid #2b6cb0; }
+.card-purple { border: 1.5px solid #805ad5; }
+.card-green { border: 1.5px solid #38a169; }
+.card-red { border: 1.5px solid #e53e3e; }
+.card-net { border: 1.5px solid #805ad5; background: linear-gradient(90deg, #16161e 0%, #231934 100%); }
+.card-title { font-size: 15px; color: #a0aec0; margin-bottom: 6px; }
+.card-value { font-size: 28px; font-weight: bold; }
+.green-text { color: #48bb78; }
+.red-text { color: #f56565; }
+.white-text { color: #ffffff; }
+.signal-box { background-color: #1a1a24; border-right: 4px solid #805ad5; padding: 15px; border-radius: 10px; margin-bottom: 12px; }
+</style>
+"""
 st.markdown(css_style, unsafe_allow_html=True)
 
 SYMBOLS = [
@@ -31,11 +31,10 @@ SYMBOLS = [
     "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
 ]
 
-# ربط المدة الزمنية بالإطار الزمني وعدد الشموع الحقيقي
 period_config = {
-    "24 ساعة": {"tf": "15m", "limit": 96,  "window": 24},  # 96 شمعة × 15 دقيقة = 24 ساعة
-    "أسبوع":   {"tf": "1h",  "limit": 168, "window": 36},  # 168 شمعة × 1 ساعة = 7 أيام
-    "شهر":     {"tf": "4h",  "limit": 180, "window": 40}   # 180 شمعة × 4 ساعات = 30 يوم
+    "24 ساعة": {"tf": "15m", "limit": 96,  "window": 24},
+    "أسبوع":   {"tf": "1h",  "limit": 168, "window": 36},
+    "شهر":     {"tf": "4h",  "limit": 180, "window": 40}
 }
 
 selected_period = st.radio(
@@ -56,7 +55,7 @@ def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
     exchange = ccxt.binance({'enableRateLimit': True})
     signals_results = []
     backtest_trades = []
-    trade_size_usd = 1000.0  # حجم الصفقة الافتراضي لحساب الأرباح بالدولار
+    trade_size_usd = 1000.0
 
     for sym in symbols_list:
         try:
@@ -65,7 +64,6 @@ def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             coin_name = sym.replace("/USDT", "")
 
-            # --- 1. الاختبار الرجعي الحقيقي (Backtest) على الفترة المحددة ---
             i = window
             while i < len(df) - 1:
                 sub_df = df.iloc[i - window : i]
@@ -79,7 +77,6 @@ def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
                     target = w0 + (diff * 1.618)
                     sl = w0
 
-                    # تتبع الشموع التالية لمعرفة هل تفعلت الصفقة ونتيجتها
                     triggered = False
                     for j in range(i, len(df)):
                         low_p = df['low'].iloc[j]
@@ -107,7 +104,6 @@ def run_real_analysis_and_backtest(symbols_list, tf, limit, window):
                                 break
                 i += max(1, window // 3)
 
-            # --- 2. التوصيات المستقبلية الحالية بناءً على آخر شموع ---
             recent_df = df.iloc[-window:]
             mid_point = len(recent_df) // 2
             wave_0 = recent_df['low'].iloc[:mid_point].min()
@@ -145,7 +141,6 @@ with st.spinner(f"جاري فحص بيانات السوق الحقيقية لآ�
         SYMBOLS, selected_tf, config["limit"], config["window"]
     )
 
-# تصفية النتائج حسب العملة المختارة
 if selected_coin != "الكل":
     display_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else df_signals
     display_trades = df_trades[df_trades["coin"] == selected_coin] if not df_trades.empty else df_trades
@@ -156,7 +151,6 @@ else:
 st.markdown(f"### 📊 النتائج الفعلية من السوق — آخر ({selected_period})")
 st.caption(f"الإطار الزمني للتحليل: {selected_tf} | رأس مال الصفقة الافتراضي: $1,000")
 
-# حساب الإحصائيات الحقيقية من الصفقات المكتملة
 if not display_trades.empty:
     total_trades = len(display_trades)
     win_trades = len(display_trades[display_trades["status"] == "win"])
@@ -196,6 +190,13 @@ st.markdown(f"### 🤖 التوصيات المستقبلية الحالية — 
 if not display_signals.empty:
     sorted_df = display_signals.sort_values(by="ai", ascending=False)
     for _, row in sorted_df.iterrows():
-        card_html = (
-            f"<div class='signal-box'>"
-            f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
+        card_html = f"""
+        <div class='signal-box'>
+            <div style='display:flex; justify-content:space-between; align-items:center;'>
+                <span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span>
+                <span style='background-color:#805ad5; padding:3px 10px; border-radius:12px; font-size:13px;'>تقييم AI: {row['ai']}%</span>
+            </div>
+            <hr style='border-color:#2d3748; margin:10px 0;'>
+            <div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'>
+                <span>🔵 <b>الدخول (2):</b> ${row['entry']}</span>
+                <span class='green-text'>🟢 <b>الهدف (5):</b> ${row['target']}</span>
