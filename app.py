@@ -1,131 +1,145 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import yfinance as yf
+import pandas as pd
 
-st.set_page_config(page_title="Tricks HeLaL — Backtest", layout="centered")
+st.set_page_config(page_title="محلل موجات إليوت - Spot", layout="centered")
 
-st.markdown("""<style>
-.stApp { background-color: #0d0d12; color: #fff; direction: rtl; font-family: Tahoma; }
-div[role='radiogroup'] { display: flex; justify-content: space-around; background: #1c1c24; padding: 6px; border-radius: 12px; }
-div[role='radiogroup'] label { color: #fff !important; }
-.card { border-radius: 14px; padding: 15px; text-align: center; background: #16161e; margin-bottom: 12px; border: 1.5px solid #2b6cb0; }
-.c-purp { border-color: #805ad5; } .c-grn { border-color: #38a169; } .c-red { border-color: #e53e3e; }
-.sig-b { background: #1a1a24; border-right: 4px solid #03ff85; padding: 12px; border-radius: 10px; margin-bottom: 10px; }
-.sig-s { background: #1a1a24; border-right: 4px solid #fc0808; padding: 12px; border-radius: 10px; margin-bottom: 10px; }
-</style>""", unsafe_allow_html=True)
+st.markdown("""
+<style>
+    .stApp { background-color: #131316; color: #ffffff; direction: rtl; }
+    .metric-card {
+        background-color: #1c1c21;
+        border-radius: 10px;
+        padding: 12px 15px;
+        margin-bottom: 10px;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    }
+    .card-purple { border: 1.5px solid #7c4dff; }
+    .card-green  { border: 1.5px solid #2e7d32; }
+    .card-red    { border: 1.5px solid #c62828; }
+    .card-title-purple { color: #9e7bff; font-size: 13px; margin-bottom: 4px; }
+    .card-title-green  { color: #4caf50; font-size: 13px; margin-bottom: 4px; }
+    .card-title-red    { color: #ef5350; font-size: 13px; margin-bottom: 4px; }
+    .card-value { color: #ffffff; font-size: 22px; font-weight: bold; margin: 2px 0; }
+    .card-sub   { color: #8e8e93; font-size: 11px; }
+    .rec-box {
+        background-color: #1c1c21;
+        border: 1px solid #33333d;
+        border-radius: 10px;
+        padding: 15px;
+        margin-top: 15px;
+        text-align: right;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
-PERIODS = {"24 ساعة": ("5m", "5d", 24), "أسبوع": ("15m", "1mo", 168), "شهر": ("1h", "3mo", 720)}
+st.markdown("<h3 style='text-align: center; color: #fff;'>📊 نظام موجات إليوت (Spot - شراء فقط)</h3>", unsafe_allow_html=True)
 
-sel_p = st.radio("المدة:", list(PERIODS.keys()), horizontal=True, label_visibility="collapsed")
-tf, yf_p, hrs = PERIODS[sel_p]
+col_in1, col_in2, col_in3 = st.columns(3)
+with col_in1:
+    symbol = st.text_input("الرمز (Symbol)", value="BTC-USD")
+with col_in2:
+    period = st.selectbox("الفترة التاريخية", ["1mo", "3mo", "6mo", "1y"], index=1)
+with col_in3:
+    capital = st.number_input("رأس المال للصفقة ($)", min_value=10.0, value=100.0, step=10.0)
 
-c1, c2, c3 = st.columns(3)
-atr_m = c1.number_input("ATR SL:", 0.1, 10.0, 1.5, 0.1)
-rr_val = c2.number_input("R : R :", 0.5, 15.0, 2.0, 0.1)
-sel_coin = c3.selectbox("العملة:", ["الكل"] + SYMBOLS)
+@st.cache_data(ttl=300)
+def load_data(ticker, per):
+    df = yf.download(ticker, period=per, interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
-@st.cache_data(ttl=180)
-def load_yf(syms, interval, period):
-    out = {}
-    for c in syms:
-        try:
-            df = yf.download(f"{c}-USD", period=period, interval=interval, progress=False, auto_adjust=False)
-            if df is not None and not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df = df.reset_index()
-                t_col = 'Datetime' if 'Datetime' in df.columns else 'Date'
-                df['dt'] = pd.to_datetime(df[t_col], utc=True)
-                for col in ['Open', 'High', 'Low', 'Close']:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                out[c] = df.dropna(subset=['Open', 'High', 'Low', 'Close']).reset_index(drop=True)
-        except Exception:
-            pass
-    return out
+df = load_data(symbol, period)
 
-def analyze(data, atr_mult, rr, hours):
-    sigs, trades = [], []
-    depth, backstep, dev, min_bars = 30, 30, 5, 8
-    cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=hours)
+if df.empty or len(df) < 20:
+    st.error("تعذر جلب بيانات كافية لهذا الرمز.")
+    st.stop()
+window_size = 30
+winning_trades, losing_trades = 0, 0
+total_profit, total_loss = 0.0, 0.0
+trades_log = []
 
-    for coin, df in data.items():
-        if len(df) < depth + backstep + 15: continue
-        pc = df['Close'].shift(1)
-        tr = pd.concat([df['High']-df['Low'], (df['High']-pc).abs(), (df['Low']-pc).abs()], axis=1).max(axis=1)
-        atrs = tr.rolling(14).mean().bfill().values
-        H, L, C, T = df['High'].values, df['Low'].values, df['Close'].values, df['dt']
-        tick = 0.01 if C[-1] >= 100 else (0.0001 if C[-1] >= 1 else 0.00001)
-
-        last_p, last_d, last_b, conf = None, 0, None, []
-        for i in range(depth + backstep, len(df)):
-            p = i - backstep
-            is_ph = H[p] >= np.max(H[p-depth:p]) and H[p] > np.max(H[p+1:p+backstep+1])
-            is_pl = L[p] <= np.min(L[p-depth:p]) and L[p] < np.min(L[p+1:p+backstep+1])
-            if is_ph or is_pl:
-                sell = is_ph and (not is_pl or H[p] >= L[p])
-                px = H[p] if sell else L[p]
-                if (last_p is None or abs(px - last_p) >= dev * tick) and (last_b is None or i - last_b >= min_bars):
-                    if (sell and last_d != 1) or (not sell and last_d != -1):
-                        last_d, last_p, last_b = (1 if sell else -1), px, i
-                        conf.append((i, "SELL" if sell else "BUY"))
-
-        busy = -1
-        for idx, side in conf:
-            if idx <= busy: continue
-            ep, sd = C[idx], atrs[idx] * atr_mult
-            sl, tp = (ep - sd, ep + sd * rr) if side == "BUY" else (ep + sd, ep - sd * rr)
-            for j in range(idx + 1, len(df)):
-                hit_sl = L[j] <= sl if side == "BUY" else H[j] >= sl
-                hit_tp = H[j] >= tp if side == "BUY" else L[j] <= tp
-                if hit_sl or hit_tp:
-                    if T.iloc[j] >= cutoff:
-                        pnl = 1000.0 * (((sl - ep) if hit_sl else (tp - ep)) / ep) * (1 if side == "BUY" else -1)
-                        trades.append({"coin": coin, "win": not hit_sl, "pnl": pnl})
-                    busy = j
+for i in range(0, len(df) - window_size, window_size):
+    sub_df = df.iloc[i : i + window_size]
+    mid = len(sub_df) // 2
+    wave_0 = float(sub_df.iloc[:mid]['Low'].min())
+    wave_1 = float(sub_df.iloc[mid:]['High'].max())
+    
+    if wave_1 > wave_0:
+        diff = wave_1 - wave_0
+        entry_2 = wave_1 - (diff * 0.618)
+        target_5 = wave_0 + (diff * 1.618)
+        stop_loss_0 = wave_0
+        
+        future_df = df.iloc[i + window_size : i + (window_size * 2)]
+        entered = False
+        for date, row in future_df.iterrows():
+            low_p, high_p = float(row['Low']), float(row['High'])
+            if not entered and low_p <= entry_2:
+                entered = True
+                continue
+            if entered:
+                if low_p <= stop_loss_0:
+                    loss_usd = capital * ((entry_2 - stop_loss_0) / entry_2)
+                    losing_trades += 1
+                    total_loss += loss_usd
+                    trades_log.append({"التاريخ": date.strftime('%Y-%m-%d'), "الحالة": "خاسرة ❌", "الدخول": round(entry_2, 2), "الإغلاق": round(stop_loss_0, 2), "النتيجة ($)": f"-${loss_usd:.2f}"})
+                    break
+                elif high_p >= target_5:
+                    profit_usd = capital * ((target_5 - entry_2) / entry_2)
+                    winning_trades += 1
+                    total_profit += profit_usd
+                    trades_log.append({"التاريخ": date.strftime('%Y-%m-%d'), "الحالة": "رابحة ✅", "الدخول": round(entry_2, 2), "الإغلاق": round(target_5, 2), "النتيجة ($)": f"+${profit_usd:.2f}"})
                     break
 
-        if conf:
-            idx, side = conf[-1]
-            ep, sd = C[idx], atrs[idx] * atr_mult
-            sl, tp = (ep - sd, ep + sd * rr) if side == "BUY" else (ep + sd, ep - sd * rr)
-            dec = 2 if C[-1] > 10 else 4
-            sigs.append({"coin": coin, "buy": side == "BUY", "p": round(C[-1], dec), "e": round(ep, dec), "tp": round(tp, dec), "sl": round(sl, dec), "ago": len(df)-1-idx})
+total_trades = winning_trades + losing_trades
+win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
 
-    return pd.DataFrame(sigs), pd.DataFrame(trades)
+st.markdown(f"<div class='metric-card card-purple'><div class='card-value'>{win_rate:.1f}%</div><div class='card-title-purple'>معدل الأداء</div></div>", unsafe_allow_html=True)
 
-with st.spinner("جاري التحليل..."):
-    raw_data = load_yf(SYMBOLS, tf, yf_p)
-    df_s, df_t = analyze(raw_data, atr_m, rr_val, hrs)
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown(f"<div class='metric-card card-green'><div class='card-title-green'>📈 الصفقات الرابحة</div><div class='card-value'>{winning_trades}</div><div class='card-sub'>صفقات</div></div>", unsafe_allow_html=True)
+with col2:
+    st.markdown(f"<div class='metric-card card-red'><div class='card-title-red'>📉 الصفقات الخاسرة</div><div class='card-value'>{losing_trades}</div><div class='card-sub'>صفقات</div></div>", unsafe_allow_html=True)
 
-if sel_coin != "الكل":
-    df_s = df_s[df_s["coin"] == sel_coin] if not df_s.empty else df_s
-    df_t = df_t[df_t["coin"] == sel_coin] if not df_t.empty else df_t
+col3, col4 = st.columns(2)
+with col3:
+    st.markdown(f"<div class='metric-card card-green'><div class='card-title-green'>💲 إجمالي الأرباح</div><div class='card-value'>+${total_profit:.2f}</div><div class='card-sub'>USD</div></div>", unsafe_allow_html=True)
+with col4:
+    st.markdown(f"<div class='metric-card card-red'><div class='card-title-red'>💸 إجمالي الخسائر</div><div class='card-value'>-${total_loss:.2f}</div><div class='card-sub'>USD</div></div>", unsafe_allow_html=True)
 
-tot = len(df_t)
-wins = int(df_t["win"].sum()) if tot else 0
-loss = tot - wins
-rate = round(wins / tot * 100, 1) if tot else 0.0
-prof = round(df_t[df_t["pnl"] > 0]["pnl"].sum(), 2) if tot else 0.0
-los_usd = round(abs(df_t[df_t["pnl"] < 0]["pnl"].sum()), 2) if tot else 0.0
-net = round(prof - los_usd, 2)
+recent_df = df.tail(window_size)
+mid_r = len(recent_df) // 2
+w0_curr = float(recent_df.iloc[:mid_r]['Low'].min())
+w1_curr = float(recent_df.iloc[mid_r:]['High'].max())
+current_price = float(df['Close'].iloc[-1])
 
-st.markdown(f"### 📊 نتائج {sel_p} ({tf})")
-a1, a2 = st.columns(2)
-a1.markdown(f"<div class='card'><div>🤝 الصفقات</div><h2>{tot}</h2></div>", unsafe_allow_html=True)
-a2.markdown(f"<div class='card c-purp'><div>🎯 النجاح</div><h2>{rate}%</h2></div>", unsafe_allow_html=True)
-a3, a4 = st.columns(2)
-a3.markdown(f"<div class='card c-grn'><div>📈 رابحة</div><h2>{wins}</h2></div>", unsafe_allow_html=True)
-a4.markdown(f"<div class='card c-red'><div>📉 خاسرة</div><h2>{loss}</h2></div>", unsafe_allow_html=True)
-a5, a6 = st.columns(2)
-a5.markdown(f"<div class='card c-grn'><div>💲 الأرباح</div><h2>+${prof:,.2f}</h2></div>", unsafe_allow_html=True)
-a6.markdown(f"<div class='card c-red'><div>💲 الخسائر</div><h2>-${los_usd:,.2f}</h2></div>", unsafe_allow_html=True)
-st.markdown(f"<div class='card c-purp'><div>✨ صافي الربح</div><h2 style='color:{'#48bb78' if net>=0 else '#f56565'}'>${net:,.2f}</h2></div>", unsafe_allow_html=True)
+st.markdown("### 🎯 التوصية الحالية (Spot - شراء)")
+if w1_curr > w0_curr:
+    diff_c = w1_curr - w0_curr
+    entry_c = w1_curr - (diff_c * 0.618)
+    target_c = w0_curr + (diff_c * 1.618)
+    sl_c = w0_curr
+    status_msg = "⏳ بانتظار هبوط السعر لمنطقة الدخول" if current_price > entry_c else "✅ السعر في منطقة الشراء!"
+    if current_price <= sl_c:
+        status_msg = "⚠️ تم كسر القاع، النموذج ملغي"
 
-st.markdown("### 🤖 أحدث الإشارات")
-for _, r in (df_s.sort_values("ago") if not df_s.empty else df_s).iterrows():
-    cls = "sig-b" if r["buy"] else "sig-s"
-    tag = "شراء" if r["buy"] else "بيع"
-    st.markdown(f"<div class='{cls}'><b>🪙 {r['coin']} (${r['p']}) — {tag} (منذ {r['ago']} شمعة)</b><br>🔵 دخول: ${r['e']} | 🟢 هدف: ${r['tp']} | 🔴 وقف: ${r['sl']}</div>", unsafe_allow_html=True)
-# END
+    st.markdown(f"""
+    <div class="rec-box">
+        <p><b>الحالة:</b> {status_msg} (السعر الحالي: <code>{current_price:.2f}</code>)</p>
+        <ul>
+            <li>🟢 <b>الدخول (0.618):</b> <code>{entry_c:.2f}</code></li>
+            <li>🎯 <b>الهدف (1.618):</b> <code>{target_c:.2f}</code></li>
+            <li>🛑 <b>وقف الخسارة (wave_0):</b> <code>{sl_c:.2f}</code></li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.warning("الاتجاه الحالي هابط، لا توجد توصية شراء حالياً.")
+
+if trades_log:
+    with st.expander("📋 سجل الصفقات التاريخية"):
+        st.dataframe(pd.DataFrame(trades_log), use_container_width=True)
