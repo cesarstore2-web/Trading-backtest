@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import ccxt
+import requests
+import time
 
-st.set_page_config(page_title="Tricks HeLaL V 0.01 — Backtest", layout="centered")
+st.set_page_config(page_title="Tricks HeLaL V 0.01 — Gate.io", layout="centered")
 
 css_style = """
 <style>
@@ -27,15 +28,16 @@ div[role='radiogroup'] label { padding: 8px 16px; border-radius: 8px; color: #ff
 """
 st.markdown(css_style, unsafe_allow_html=True)
 
+# أزواج العملات بصيغة Gate.io
 SYMBOLS = [
-    "XLM/USDT", "ZEC/USDT", "XRP/USDT", "HBAR/USDT", "ADA/USDT",
-    "LTC/USDT", "BTC/USDT", "ETH/USDT", "PAXG/USDT", "XAU/USDT"
+    "XLM_USDT", "ZEC_USDT", "XRP_USDT", "HBAR_USDT", "ADA_USDT",
+    "LTC_USDT", "BTC_USDT", "ETH_USDT", "PAXG_USDT"
 ]
 
 period_config = {
-    "24 ساعة": {"tf": "5m",  "limit": 288},
-    "أسبوع":   {"tf": "15m", "limit": 672},
-    "شهر":     {"tf": "15m", "limit": 1000}
+    "24 ساعة": {"tf": "5m",  "hours": 24},
+    "أسبوع":   {"tf": "15m", "hours": 168},
+    "شهر":     {"tf": "1h",  "hours": 720}
 }
 
 selected_period = st.radio(
@@ -48,58 +50,58 @@ selected_period = st.radio(
 config = period_config[selected_period]
 selected_tf = config["tf"]
 
-# نافذتان لتعديل ATR SL و R:R + تصفية العملة
-c_set1, c_set2, c_set3 = st.columns(3)
-with c_set1:
+# نوافذ التحكم: ATR SL و R:R والعملة
+c1, c2, c3 = st.columns(3)
+with c1:
     atr_mult = st.number_input("مضاعف ATR SL:", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
-with c_set2:
+with c2:
     rr_ratio = st.number_input("نسبة R : R :", min_value=0.5, max_value=15.0, value=2.0, step=0.1)
-with c_set3:
-    filter_options = ["الكل"] + [s.replace("/USDT", "") for s in SYMBOLS]
+with c3:
+    filter_options = ["الكل"] + [s.replace("_USDT", "") for s in SYMBOLS]
     selected_coin = st.selectbox("العملة:", filter_options)
 
-@st.cache_data(ttl=300)
-def fetch_market_data(symbols_list, tf, limit):
-    exchange = ccxt.binance({'enableRateLimit': True})
-    try:
-        markets = exchange.load_markets()
-    except Exception:
-        markets = {}
+# إعدادات المؤشر
+c4, c5, c6 = st.columns(3)
+with c4:
+    depth_val = st.number_input("DEPTH:", min_value=2, max_value=100, value=30, step=1)
+with c5:
+    backstep_val = st.number_input("BACKSTEP:", min_value=1, max_value=100, value=30, step=1)
+with c6:
+    dev_val = st.number_input("DEVIATION:", min_value=0, max_value=100, value=5, step=1)
 
+@st.cache_data(ttl=300)
+def fetch_gateio_data(symbols_list, tf):
+    base_url = "https://gateio.ws"
     data_dict = {}
     for sym in symbols_list:
         try:
-            fetch_sym = "PAXG/USDT" if sym == "XAU/USDT" else sym
-            bars = exchange.fetch_ohlcv(fetch_sym, timeframe=tf, limit=limit)
-            df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-
-            # استخراج mintick الحقيقي للعملة مثل TradingView
-            tick_size = 0.0001
-            if fetch_sym in markets:
-                prec = markets[fetch_sym].get('precision', {}).get('price')
-                if isinstance(prec, float) and prec > 0:
-                    tick_size = prec
-                elif isinstance(prec, int) and prec >= 0:
-                    tick_size = 10 ** (-prec)
-
-            data_dict[sym.replace("/USDT", "")] = {"df": df, "tick": tick_size}
+            resp = requests.get(base_url, params={"currency_pair": sym, "interval": tf, "limit": 1000}, timeout=10)
+            if resp.status_code == 200:
+                raw = resp.json()
+                # صيغة Gate.io: [timestamp_sec, quote_vol, close, high, low, open, base_vol, is_closed]
+                df = pd.DataFrame(raw, columns=[
+                    'timestamp', 'quote_vol', 'close', 'high', 'low', 'open', 'volume', 'is_closed'
+                ])
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col].astype(float)
+                df['timestamp'] = pd.to_numeric(df['timestamp']) * 1000
+                df = df.sort_values('timestamp').reset_index(drop=True)
+                data_dict[sym.replace("_USDT", "")] = df
         except Exception:
             continue
     return data_dict
 
-def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth=30, backstep=30, deviation=5, min_bars=8):
+def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth, backstep, deviation, period_hours, min_bars=8):
     signals_results = []
     backtest_trades = []
     trade_size_usd = 1000.0
+    cutoff_ms = (time.time() - (period_hours * 3600)) * 1000
 
-    for coin_name, item in data_dict.items():
-        df = item["df"].copy()
-        tick_size = item["tick"]
-
-        if len(df) < depth + backstep + 5:
+    for coin_name, df in data_dict.items():
+        if len(df) < depth + backstep + 15:
             continue
 
-        # حساب ATR 14
+        df = df.copy()
         prev_close = df['close'].shift(1)
         tr = pd.concat([
             df['high'] - df['low'],
@@ -112,31 +114,31 @@ def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth=30, backstep=
         lows = df['low'].values
         closes = df['close'].values
         atrs = df['atr'].values
+        times = df['timestamp'].values
 
+        sample_price = closes[-1]
+        tick_size = 0.01 if sample_price >= 100 else (0.0001 if sample_price >= 1 else 0.00001)
         min_dist = deviation * tick_size
+
         last_pivot_price = None
         last_dir = 0
         last_signal_bar = None
         confirmed_signals = []
 
-        # مطابقة منطق ta.pivothigh / ta.pivotlow في Pine Script حرفياً
         for bar_index in range(depth + backstep, len(df)):
             piv_idx = bar_index - backstep
             cand_h = highs[piv_idx]
             cand_l = lows[piv_idx]
 
-            # فحص Pivot High (left=depth, right=backstep)
             left_h = highs[piv_idx - depth : piv_idx]
             right_h = highs[piv_idx + 1 : piv_idx + backstep + 1]
             is_ph = (cand_h >= np.max(left_h)) and (cand_h > np.max(right_h))
 
-            # فحص Pivot Low (left=depth, right=backstep)
             left_l = lows[piv_idx - depth : piv_idx]
             right_l = lows[piv_idx + 1 : piv_idx + backstep + 1]
             is_pl = (cand_l <= np.min(left_l)) and (cand_l < np.min(right_l))
 
             if is_ph or is_pl:
-                # منطق Pine Script: isSell = newSell and (not newBuy or na(pl) or ph >= pl)
                 is_sell = is_ph and (not is_pl or cand_h >= cand_l)
                 price_at_sig = cand_h if is_sell else cand_l
 
@@ -148,7 +150,7 @@ def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth=30, backstep=
                     last_pivot_price = price_at_sig
                     last_signal_bar = bar_index
                     confirmed_signals.append((bar_index, "SELL" if is_sell else "BUY"))
-        # فحص الصفقات الحقيقية عند إغلاق الشمعة التي تأكدت فيها الإشارة (bar_index)
+        # فحص الصفقات الحقيقية عند إغلاق شمعة الإشارة
         active_until = -1
         for sig_idx, side in confirmed_signals:
             if sig_idx <= active_until:
@@ -168,24 +170,28 @@ def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth=30, backstep=
             for j in range(sig_idx + 1, len(df)):
                 if side == "BUY":
                     if lows[j] <= sl_price:
-                        pnl = trade_size_usd * ((sl_price - entry_price) / entry_price)
-                        backtest_trades.append({"coin": coin_name, "side": "BUY", "status": "loss", "pnl": pnl})
+                        if times[j] >= cutoff_ms:
+                            pnl = trade_size_usd * ((sl_price - entry_price) / entry_price)
+                            backtest_trades.append({"coin": coin_name, "side": "BUY", "status": "loss", "pnl": pnl})
                         active_until = j
                         break
                     elif highs[j] >= tp_price:
-                        pnl = trade_size_usd * ((tp_price - entry_price) / entry_price)
-                        backtest_trades.append({"coin": coin_name, "side": "BUY", "status": "win", "pnl": pnl})
+                        if times[j] >= cutoff_ms:
+                            pnl = trade_size_usd * ((tp_price - entry_price) / entry_price)
+                            backtest_trades.append({"coin": coin_name, "side": "BUY", "status": "win", "pnl": pnl})
                         active_until = j
                         break
                 else:
                     if highs[j] >= sl_price:
-                        pnl = trade_size_usd * ((entry_price - sl_price) / entry_price)
-                        backtest_trades.append({"coin": coin_name, "side": "SELL", "status": "loss", "pnl": pnl})
+                        if times[j] >= cutoff_ms:
+                            pnl = trade_size_usd * ((entry_price - sl_price) / entry_price)
+                            backtest_trades.append({"coin": coin_name, "side": "SELL", "status": "loss", "pnl": pnl})
                         active_until = j
                         break
                     elif lows[j] <= tp_price:
-                        pnl = trade_size_usd * ((entry_price - tp_price) / entry_price)
-                        backtest_trades.append({"coin": coin_name, "side": "SELL", "status": "win", "pnl": pnl})
+                        if times[j] >= cutoff_ms:
+                            pnl = trade_size_usd * ((entry_price - tp_price) / entry_price)
+                            backtest_trades.append({"coin": coin_name, "side": "SELL", "status": "win", "pnl": pnl})
                         active_until = j
                         break
 
@@ -203,7 +209,6 @@ def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth=30, backstep=
 
             curr_p = closes[-1]
             bars_ago = (len(df) - 1) - last_idx
-            ai_score = max(65, min(98, int(98 - (bars_ago * 1.2))))
             dec = 2 if curr_p > 10 else 4
 
             signals_results.append({
@@ -214,16 +219,17 @@ def run_tricks_helal_strategy(data_dict, atr_mult, rr_ratio, depth=30, backstep=
                 "entry": round(entry_p, dec),
                 "target": round(tp_p, dec),
                 "sl": round(sl_p, dec),
-                "bars_ago": bars_ago,
-                "ai": ai_score
+                "bars_ago": bars_ago
             })
 
     return pd.DataFrame(signals_results), pd.DataFrame(backtest_trades)
 
-with st.spinner(f"جاري فحص إشارات Tricks HeLaL لآخر ({selected_period})..."):
-    market_data = fetch_market_data(SYMBOLS, selected_tf, config["limit"])
+with st.spinner(f"جاري جلب بيانات Gate.io وفحص إشارات Tricks HeLaL لآخر ({selected_period})..."):
+    market_data = fetch_gateio_data(SYMBOLS, selected_tf)
+    if not market_data:
+        st.error("تعذر الاتصال بخادم بيانات Gate.io، يرجى المحاولة بعد قليل.")
     df_signals, df_trades = run_tricks_helal_strategy(
-        market_data, atr_mult, rr_ratio, depth=30, backstep=30, deviation=5, min_bars=8
+        market_data, atr_mult, rr_ratio, int(depth_val), int(backstep_val), int(dev_val), config["hours"]
     )
 
 if selected_coin != "الكل":
@@ -233,8 +239,8 @@ else:
     display_signals = df_signals
     display_trades = df_trades
 
-st.markdown(f"### 📊 نتائج Tricks HeLaL الفعلية — آخر ({selected_period})")
-st.caption(f"الفريم: {selected_tf} | Depth: 30 | Backstep: 30 | Dev: 5 | ATR SL: {atr_mult}x | R:R: 1:{rr_ratio}")
+st.markdown(f"### 📊 نتائج Tricks HeLaL الفعلية (Gate.io) — آخر ({selected_period})")
+st.caption(f"الفريم: {selected_tf} | Depth: {int(depth_val)} | Backstep: {int(backstep_val)} | ATR SL: {atr_mult}x | R:R: 1:{rr_ratio}")
 
 if not display_trades.empty:
     total_trades = len(display_trades)
@@ -278,4 +284,5 @@ if not display_signals.empty:
         badge_bg = "#38a169" if row["is_buy"] else "#e53e3e"
         st.markdown(f"<div class='{box_cls}'><div style='display:flex; justify-content:space-between; align-items:center;'><span style='font-size:18px; font-weight:bold; color:#fff;'>🪙 {row['coin']}/USD <span style='font-size:13px; color:#a0aec0;'>(الحالي: ${row['price']})</span></span><span style='background-color:{badge_bg}; padding:3px 10px; border-radius:12px; font-size:13px;'>{row['side']} | منذ {row['bars_ago']} شمعة</span></div><hr style='border-color:#2d3748; margin:10px 0;'><div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; font-size:14px;'><span>🔵 <b>الدخول (إغلاق):</b> ${row['entry']}</span><span class='green-text'>🟢 <b>الهدف (TP):</b> ${row['target']}</span><span class='red-text'>🔴 <b>ستوب لوس (SL):</b> ${row['sl']}</span></div></div>", unsafe_allow_html=True)
 else:
-    st.warning("لا توجد إشارات مؤكدة حالياً ضمن هذه النافذة.")
+    st.warning("لا توجد إشارات مؤكدة حالياً.")
+# END
