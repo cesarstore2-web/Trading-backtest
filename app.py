@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="لوحة التوصيات وموجات إليوت (5m)", layout="centered")
+st.set_page_config(page_title="لوحة التوصيات — تقاطع المتوسطات (5m)", layout="centered")
 
 css_style = """
 <style>
@@ -57,7 +57,6 @@ selected_period = period_map[selected_period_label]
 
 atr_mult = st.number_input("ATR SL:", min_value=0.5, max_value=15.0, value=4.0, step=0.1, format="%.2f", key="atr_input")
 rr_ratio = st.number_input("R:R:", min_value=0.5, max_value=15.0, value=3.70, step=0.1, format="%.2f", key="rr_input")
-trade_capital = st.number_input("رأس مال الصفقة ($):", min_value=10.0, max_value=100000.0, value=100.0, step=10.0, format="%.2f", key="cap_input")
 
 filter_options = ["الكل"] + list(SYMBOLS_MAP.keys())
 selected_coin = st.selectbox("العملة:", filter_options, key="coin_select")
@@ -68,6 +67,10 @@ trade_mode = st.radio(
     horizontal=True,
     key="trade_mode_radio"
 )
+
+def calc_wma(series, period=20):
+    weights = np.arange(1, period + 1)
+    return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
 @st.cache_data(ttl=300)
 def fetch_market_data(symbols_dict, period_str):
@@ -85,113 +88,115 @@ def fetch_market_data(symbols_dict, period_str):
             low_close = np.abs(df['Low'] - df['Close'].shift())
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df['ATR'] = tr.rolling(14).mean()
+
+            # حساب المتوسطات: EMA 2 و WMA 20
+            df['EMA2'] = df['Close'].ewm(span=2, adjust=False).mean()
+            df['WMA20'] = calc_wma(df['Close'], period=20)
+
             data_store[coin_name] = df
         except Exception:
             continue
     return data_store
-def analyze_trades_and_signals(data_store, atr_m, rr_m, capital_usd, allow_short):
+def analyze_ma_crossover(data_store, atr_m, rr_m, allow_short):
     all_trades = []
     latest_signals = []
+    capital_usd = 100.0  # رأس مال ثابت 100 دولار لكل صفقة في الخلفية
 
     for coin_name, df in data_store.items():
         in_trade = False
         trade_type = None
         entry_p = sl_p = tp_p = 0.0
 
-        for i in range(20, len(df)):
-            row = df.iloc[i]
-            atr_val = float(row['ATR'])
-            if pd.isna(atr_val) or atr_val == 0:
+        last_signal = None
+
+        for i in range(21, len(df)):
+            prev = df.iloc[i - 1]
+            curr = df.iloc[i]
+
+            atr_val = float(curr['ATR'])
+            if pd.isna(atr_val) or atr_val == 0 or pd.isna(curr['WMA20']) or pd.isna(prev['WMA20']):
                 continue
 
+            cross_up = (float(prev['EMA2']) <= float(prev['WMA20'])) and (float(curr['EMA2']) > float(curr['WMA20']))
+            cross_down = (float(prev['EMA2']) >= float(prev['WMA20'])) and (float(curr['EMA2']) < float(curr['WMA20']))
+
+            # تسجيل آخر تقاطع حدث للعرض في بطاقة أحدث الإشارات
+            if cross_up:
+                last_signal = {
+                    "type": "شراء",
+                    "entry": float(curr['Close']),
+                    "sl": float(curr['Close']) - (atr_val * atr_m),
+                    "tp": float(curr['Close']) + (atr_val * atr_m * rr_m),
+                    "bar_idx": i
+                }
+            elif cross_down and allow_short:
+                last_signal = {
+                    "type": "بيع",
+                    "entry": float(curr['Close']),
+                    "sl": float(curr['Close']) + (atr_val * atr_m),
+                    "tp": float(curr['Close']) - (atr_val * atr_m * rr_m),
+                    "bar_idx": i
+                }
+
+            # محاكاة الصفقات التاريخية (Backtest)
             if not in_trade:
-                window = df.iloc[i-20:i]
-                w0 = float(window['Low'].min())
-                w1 = float(window['High'].max())
-                diff = w1 - w0
-                if diff <= 0:
-                    continue
-
-                fib_buy = w1 - (diff * 0.618)
-                fib_sell = w0 + (diff * 0.618)
-
-                if float(row['Low']) <= fib_buy <= float(row['High']) and float(row['Close']) > fib_buy:
+                if cross_up:
                     in_trade = True
                     trade_type = "شراء"
-                    entry_p = float(row['Close'])
+                    entry_p = float(curr['Close'])
                     sl_p = entry_p - (atr_val * atr_m)
                     tp_p = entry_p + (atr_val * atr_m * rr_m)
 
-                elif allow_short and float(row['Low']) <= fib_sell <= float(row['High']) and float(row['Close']) < fib_sell:
+                elif allow_short and cross_down:
                     in_trade = True
                     trade_type = "بيع"
-                    entry_p = float(row['Close'])
+                    entry_p = float(curr['Close'])
                     sl_p = entry_p + (atr_val * atr_m)
                     tp_p = entry_p - (atr_val * atr_m * rr_m)
             else:
                 if trade_type == "شراء":
-                    if float(row['Low']) <= sl_p:
+                    if float(curr['Low']) <= sl_p:
                         loss_pct = (entry_p - sl_p) / entry_p
-                        all_trades.append({"coin": coin_name, "side": "شراء", "result": "loss", "pnl": -(capital_usd * loss_pct)})
+                        all_trades.append({"coin": coin_name, "result": "loss", "pnl": -(capital_usd * loss_pct)})
                         in_trade = False
-                    elif float(row['High']) >= tp_p:
+                    elif float(curr['High']) >= tp_p:
                         profit_pct = (tp_p - entry_p) / entry_p
-                        all_trades.append({"coin": coin_name, "side": "شراء", "result": "win", "pnl": (capital_usd * profit_pct)})
+                        all_trades.append({"coin": coin_name, "result": "win", "pnl": (capital_usd * profit_pct)})
                         in_trade = False
                 elif trade_type == "بيع":
-                    if float(row['High']) >= sl_p:
+                    if float(curr['High']) >= sl_p:
                         loss_pct = (sl_p - entry_p) / entry_p
-                        all_trades.append({"coin": coin_name, "side": "بيع", "result": "loss", "pnl": -(capital_usd * loss_pct)})
+                        all_trades.append({"coin": coin_name, "result": "loss", "pnl": -(capital_usd * loss_pct)})
                         in_trade = False
-                    elif float(row['Low']) <= tp_p:
+                    elif float(curr['Low']) <= tp_p:
                         profit_pct = (entry_p - tp_p) / entry_p
-                        all_trades.append({"coin": coin_name, "side": "بيع", "result": "win", "pnl": (capital_usd * profit_pct)})
+                        all_trades.append({"coin": coin_name, "result": "win", "pnl": (capital_usd * profit_pct)})
                         in_trade = False
 
-        recent_df = df.tail(30).reset_index(drop=True)
-        low_idx = int(recent_df['Low'].idxmin())
-        high_idx = int(recent_df['High'].idxmax())
-        w0 = float(recent_df['Low'].iloc[low_idx])
-        w1 = float(recent_df['High'].iloc[high_idx])
-        diff = abs(w1 - w0)
-        curr_price = float(recent_df['Close'].iloc[-1])
-        curr_atr = float(recent_df['ATR'].iloc[-1]) if not pd.isna(recent_df['ATR'].iloc[-1]) else (curr_price * 0.01)
+        if last_signal is not None:
+            curr_price = float(df['Close'].iloc[-1])
+            candles_ago = (len(df) - 1) - last_signal["bar_idx"]
+            decimals = 2 if curr_price >= 10 else 4
 
-        if allow_short and high_idx < low_idx:
-            sig_type = "بيع"
-            entry_sig = w0 + (diff * 0.618)
-            sl_sig = entry_sig + (curr_atr * atr_m)
-            tp_sig = entry_sig - (curr_atr * atr_m * rr_m)
-            pivot_idx = high_idx
-        else:
-            sig_type = "شراء"
-            entry_sig = w1 - (diff * 0.618)
-            sl_sig = entry_sig - (curr_atr * atr_m)
-            tp_sig = entry_sig + (curr_atr * atr_m * rr_m)
-            pivot_idx = low_idx
-
-        candles_ago = (len(recent_df) - 1) - pivot_idx
-        decimals = 2 if curr_price >= 10 else 4
-
-        latest_signals.append({
-            "coin": coin_name,
-            "type": sig_type,
-            "price": round(curr_price, decimals),
-            "entry": round(entry_sig, decimals),
-            "target": round(tp_sig, decimals),
-            "sl": round(sl_sig, decimals),
-            "candles_ago": candles_ago
-        })
+            latest_signals.append({
+                "coin": coin_name,
+                "type": last_signal["type"],
+                "price": round(curr_price, decimals),
+                "entry": round(last_signal["entry"], decimals),
+                "target": round(last_signal["tp"], decimals),
+                "sl": round(last_signal["sl"], decimals),
+                "candles_ago": candles_ago
+            })
 
     return pd.DataFrame(all_trades), pd.DataFrame(latest_signals)
 
 allow_short_flag = (trade_mode == "شراء و بيع (Futures)")
 
-with st.spinner(f"جاري تحميل بيانات Yahoo Finance ({selected_period_label} - 5m)..."):
+with st.spinner(f"جاري تحليل تقاطع EMA2 × WMA20 ({selected_period_label} - 5m)..."):
     market_data = fetch_market_data(SYMBOLS_MAP, selected_period)
 
-df_trades, df_signals = analyze_trades_and_signals(
-    market_data, atr_mult, rr_ratio, trade_capital, allow_short_flag
+df_trades, df_signals = analyze_ma_crossover(
+    market_data, atr_mult, rr_ratio, allow_short_flag
 )
 
 if selected_coin != "الكل":
@@ -212,7 +217,7 @@ net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
 net_color_class = "green-text" if net_profit_usd >= 0 else "red-text"
 st.markdown(
     f"<div class='metric-card card-net'>"
-    f"<div class='card-title'>✨ صافي الربح — {trade_mode} (رأس مال ${trade_capital:,.0f})</div>"
+    f"<div class='card-title'>✨ صافي الربح ({trade_mode})</div>"
     f"<div class='net-value {net_color_class}'>${net_profit_usd:,.2f}</div>"
     f"</div>",
     unsafe_allow_html=True
@@ -238,10 +243,11 @@ with col5:
 with col6:
     st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>💲 إجمالي الخسائر</div><div class='card-value white-text'>${total_loss_usd:,.2f}-</div></div>", unsafe_allow_html=True)
 
-st.markdown("### 🧭 أحدث الإشارات")
+st.markdown("### 🧭 أحدث الإشارات (EMA2 × WMA20)")
 
 if not filtered_signals.empty:
-    for _, row in filtered_signals.iterrows():
+    sorted_signals = filtered_signals.sort_values(by="candles_ago", ascending=True)
+    for _, row in sorted_signals.iterrows():
         is_buy = (row["type"] == "شراء")
         box_class = "signal-box" if is_buy else "signal-box signal-box-short"
         type_color = "green-text" if is_buy else "red-text"
@@ -261,4 +267,4 @@ if not filtered_signals.empty:
         )
         st.markdown(card_html, unsafe_allow_html=True)
 else:
-    st.warning("لا توجد بيانات متاحة حالياً من Yahoo Finance، يرجى المحاولة بعد لحظات.")
+    st.warning("لا توجد تقاطعات مسجلة حالياً في الفترة المحددة.")
