@@ -9,7 +9,6 @@ st.markdown("""<style>
 .stApp { background-color: #0d0d12; color: #fff; direction: rtl; font-family: Tahoma, sans-serif; }
 div[role='radiogroup'] { display: flex; justify-content: space-around; background: #1c1c24; padding: 10px; border-radius: 12px; border: 1px solid #2d2d3a; margin-bottom: 10px; }
 div[role='radiogroup'] label { color: #fff !important; font-weight: bold; }
-.stCheckbox label { color: #fff !important; font-weight: bold; }
 .card { border-radius: 14px; padding: 18px; text-align: center; background: #13131a; margin-bottom: 14px; border: 1.5px solid #2b6cb0; }
 .c-purp { border-color: #805ad5; }
 .c-grn { border-color: #38a169; }
@@ -21,21 +20,20 @@ div[role='radiogroup'] label { color: #fff !important; font-weight: bold; }
 </style>""", unsafe_allow_html=True)
 
 SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
-PERIODS = {
-    "24 ساعة": ("5m", "5d", 24),
-    "أسبوع": ("5m", "1mo", 168),
-    "شهر": ("5m", "60d", 720)
-}
 
-sel_p = st.radio("المدة:", list(PERIODS.keys()), horizontal=True, label_visibility="collapsed")
-tf, yf_p, hrs = PERIODS[sel_p]
+# اعتماد 1 يوم (24 ساعة) على فريم 5 دقائق في الخفاء
+tf, yf_p, hrs = "5m", "5d", 24
 
-atr_m = st.number_input("ATR SL:", min_value=0.1, max_value=20.0, value=1.50, step=0.1, format="%.2f")
-rr_val = st.number_input("R:R:", min_value=0.5, max_value=20.0, value=2.00, step=0.1, format="%.2f")
+c1, c2 = st.columns(2)
+atr_m = c1.number_input("ATR SL:", min_value=0.1, max_value=20.0, value=4.70, step=0.1, format="%.2f")
+rr_val = c2.number_input("R:R:", min_value=0.5, max_value=20.0, value=4.70, step=0.1, format="%.2f")
+
+e1, e2 = st.columns(2)
+ema_fast_len = int(e1.number_input("EMA السريع:", min_value=2, max_value=200, value=9, step=1))
+ema_slow_len = int(e2.number_input("EMA البطيء:", min_value=5, max_value=500, value=21, step=1))
+
 sel_coin = st.selectbox("العملة:", ["الكل"] + SYMBOLS)
-
 trade_mode = st.radio("نوع الصفقات:", ["شراء فقط (Spot)", "شراء و بيع (Futures)"])
-use_ema = st.checkbox("فلتر الترند (EMA 200)", value=True)
 
 @st.cache_data(ttl=180)
 def load_yf(syms, interval, period):
@@ -55,12 +53,13 @@ def load_yf(syms, interval, period):
         except Exception:
             pass
     return out
-def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
+def analyze(data, atr_mult, rr, hours, spot_only, fast_p, slow_p):
     sigs, trades = [], []
     cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=hours)
+    start_idx = max(fast_p, slow_p) + 5
 
     for coin, df in data.items():
-        if len(df) < 210:
+        if len(df) <= start_idx:
             continue
         
         close = df['Close']
@@ -68,9 +67,8 @@ def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
         tr = pd.concat([df['High'] - df['Low'], (df['High'] - pc).abs(), (df['Low'] - pc).abs()], axis=1).max(axis=1)
         atrs = tr.rolling(14).mean().bfill().values
         
-        ema9 = close.ewm(span=9, adjust=False).mean().values
-        ema21 = close.ewm(span=21, adjust=False).mean().values
-        ema200 = close.ewm(span=200, adjust=False).mean().values
+        ema_f = close.ewm(span=fast_p, adjust=False).mean().values
+        ema_s = close.ewm(span=slow_p, adjust=False).mean().values
         
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
@@ -81,15 +79,14 @@ def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
         H, L, C, T = df['High'].values, df['Low'].values, close.values, df['dt']
         conf = []
 
-        for i in range(200, len(df)):
-            cross_up = (ema9[i - 1] <= ema21[i - 1]) and (ema9[i] > ema21[i])
-            cross_dn = (ema9[i - 1] >= ema21[i - 1]) and (ema9[i] < ema21[i])
+        for i in range(start_idx, len(df)):
+            cross_up = (ema_f[i - 1] <= ema_s[i - 1]) and (ema_f[i] > ema_s[i])
+            cross_dn = (ema_f[i - 1] >= ema_s[i - 1]) and (ema_f[i] < ema_s[i])
 
             if cross_up and (50 < rsi[i] < 70):
-                if not filter_ema or C[i] > ema200[i]:
-                    conf.append((i, "BUY"))
+                conf.append((i, "BUY"))
             elif cross_dn and (30 < rsi[i] < 50):
-                if not spot_only and (not filter_ema or C[i] < ema200[i]):
+                if not spot_only:
                     conf.append((i, "SELL"))
 
         busy = -1
@@ -113,7 +110,6 @@ def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
             ep, sd = C[idx], atrs[idx] * atr_mult
             sl, tp = (ep - sd, ep + sd * rr) if side == "BUY" else (ep + sd, ep - sd * rr)
             dec = 2 if C[-1] > 10 else 4
-            trend_up = C[-1] > ema200[-1]
             sigs.append({
                 "coin": coin,
                 "buy": side == "BUY",
@@ -122,7 +118,6 @@ def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
                 "tp": round(tp, dec),
                 "sl": round(sl, dec),
                 "ago": len(df) - 1 - idx,
-                "trend": "صاعد ↗" if trend_up else "هابط ↘",
                 "rsi": round(rsi[idx], 1)
             })
 
@@ -131,7 +126,7 @@ def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
 with st.spinner("جاري التحليل..."):
     raw_data = load_yf(SYMBOLS, tf, yf_p)
     spot_only_flag = (trade_mode == "شراء فقط (Spot)")
-    df_s, df_t = analyze(raw_data, atr_m, rr_val, hrs, spot_only_flag, use_ema)
+    df_s, df_t = analyze(raw_data, atr_m, rr_val, hrs, spot_only_flag, ema_fast_len, ema_slow_len)
 
 if sel_coin != "الكل":
     df_s = df_s[df_s["coin"] == sel_coin] if not df_s.empty else df_s
@@ -145,17 +140,16 @@ prof = round(df_t[df_t["pnl"] > 0]["pnl"].sum(), 2) if tot else 0.0
 los_usd = round(abs(df_t[df_t["pnl"] < 0]["pnl"].sum()), 2) if tot else 0.0
 net = round(prof - los_usd, 2)
 
-ema_txt = " | مع فلتر EMA 200" if use_ema else ""
 net_color = "#48bb78" if net >= 0 else "#f56565"
 net_sign = "$" if net >= 0 else "-$"
 st.markdown(f"""
 <div class='card c-purp' style='margin-top: 10px;'>
-    <div class='card-title'>✨ صافي الربح ({trade_mode}{ema_txt})</div>
+    <div class='card-title'>✨ صافي الربح ({trade_mode} | EMA {ema_fast_len}/{ema_slow_len})</div>
     <div class='card-val' style='color:{net_color};'>{net_sign}{abs(net):,.2f}</div>
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown(f"### 📊 نتائج {sel_p} ({tf})")
+st.markdown(f"### 📊 نتائج 24 ساعة ({tf})")
 st.markdown(f"<div class='card'><div class='card-title'>🤝 الصفقات</div><div class='card-val'>{tot}</div></div>", unsafe_allow_html=True)
 st.markdown(f"<div class='card c-purp'><div class='card-title'>🎯 النجاح</div><div class='card-val'>{rate}%</div></div>", unsafe_allow_html=True)
 st.markdown(f"<div class='card c-grn'><div class='card-title'>📈 الصفقات الرابحة</div><div class='card-val' style='color:#48bb78;'>{wins}</div></div>", unsafe_allow_html=True)
@@ -171,7 +165,7 @@ if not df_s.empty:
         tag_color = "#03ff85" if r["buy"] else "#fc0808"
         st.markdown(
             f"<div class='{cls}'>"
-            f"<b>🪙 {r['coin']} (${r['p']}) — <span style='color:{tag_color};'>{tag}</span> (منذ {r['ago']} شمعة | ترند 200: {r['trend']} | RSI: {r['rsi']})</b><br>"
+            f"<b>🪙 {r['coin']} (${r['p']}) — <span style='color:{tag_color};'>{tag}</span> (منذ {r['ago']} شمعة | RSI: {r['rsi']})</b><br>"
             f"🔵 دخول: <b>${r['e']}</b> &nbsp;|&nbsp; 🟢 هدف: <b>${r['tp']}</b> &nbsp;|&nbsp; 🔴 وقف: <b>${r['sl']}</b>"
             f"</div>",
             unsafe_allow_html=True
