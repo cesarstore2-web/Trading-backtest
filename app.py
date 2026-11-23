@@ -3,288 +3,178 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="لوحة التوصيات — تقاطع المتوسطات + ترند 100 (5m)", layout="centered")
+st.set_page_config(page_title="Tricks HeLaL — Backtest", layout="centered")
 
-css_style = """
-<style>
-.stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }
-div[role='radiogroup'] { display: flex; justify-content: space-around; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }
-div[role='radiogroup'] label { padding: 8px 18px; border-radius: 8px; color: #ffffff !important; cursor: pointer; }
-.metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }
-.card-blue { border: 1.5px solid #2b6cb0; }
-.card-purple { border: 1.5px solid #805ad5; }
-.card-green { border: 1.5px solid #38a169; }
-.card-red { border: 1.5px solid #e53e3e; }
-.card-net { border: 1.5px solid #805ad5; background: linear-gradient(180deg, #1a1625 0%, #16161e 100%); padding: 22px; }
-.card-title { font-size: 15px; color: #a0aec0; margin-bottom: 8px; }
-.card-value { font-size: 28px; font-weight: bold; }
-.net-value { font-size: 36px; font-weight: bold; color: #48bb78; margin-top: 5px; }
-.green-text { color: #48bb78; }
-.red-text { color: #f56565; }
-.white-text { color: #ffffff; }
-.signal-box { background-color: #16161e; border-right: 4px solid #38a169; padding: 15px; border-radius: 12px; margin-bottom: 12px; border-top: 1px solid #23232f; border-bottom: 1px solid #23232f; border-left: 1px solid #23232f; }
-.signal-box-short { border-right: 4px solid #e53e3e; }
-</style>
-"""
-st.markdown(css_style, unsafe_allow_html=True)
+st.markdown("""<style>
+.stApp { background-color: #0d0d12; color: #fff; direction: rtl; font-family: Tahoma, sans-serif; }
+div[role='radiogroup'] { display: flex; justify-content: space-around; background: #1c1c24; padding: 10px; border-radius: 12px; border: 1px solid #2d2d3a; }
+div[role='radiogroup'] label { color: #fff !important; font-weight: bold; }
+.stCheckbox label { color: #fff !important; font-weight: bold; }
+.card { border-radius: 14px; padding: 18px; text-align: center; background: #13131a; margin-bottom: 14px; border: 1.5px solid #2b6cb0; }
+.c-purp { border-color: #805ad5; }
+.c-grn { border-color: #38a169; }
+.c-red { border-color: #e53e3e; }
+.card-title { font-size: 15px; color: #cbd5e0; margin-bottom: 8px; }
+.card-val { font-size: 32px; font-weight: bold; margin: 0; }
+.sig-b { background: #13131a; border: 1px solid #252532; border-right: 4px solid #03ff85; padding: 14px; border-radius: 12px; margin-bottom: 12px; line-height: 1.8; }
+.sig-s { background: #13131a; border: 1px solid #252532; border-right: 4px solid #fc0808; padding: 14px; border-radius: 12px; margin-bottom: 12px; line-height: 1.8; }
+</style>""", unsafe_allow_html=True)
 
-SYMBOLS_MAP = {
-    "XLM": "XLM-USD",
-    "ZEC": "ZEC-USD",
-    "XRP": "XRP-USD",
-    "HBAR": "HBAR-USD",
-    "ADA": "ADA-USD",
-    "LTC": "LTC-USD",
-    "BTC": "BTC-USD",
-    "ETH": "ETH-USD",
-    "PAXG": "PAXG-USD",
-    "XAU": "GC=F"
+SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
+PERIODS = {
+    "24 ساعة": ("5m", "5d", 24),
+    "أسبوع": ("5m", "1mo", 168),
+    "شهر": ("5m", "60d", 720)
 }
 
-period_map = {
-    "24 ساعة": "1d",
-    "أسبوع": "7d",
-    "شهر": "30d"
-}
-selected_period_label = st.radio(
-    "الفترة:",
-    options=list(period_map.keys()),
-    horizontal=True,
-    label_visibility="collapsed",
-    key="period_radio"
-)
-selected_period = period_map[selected_period_label]
+sel_p = st.radio("المدة:", list(PERIODS.keys()), horizontal=True, label_visibility="collapsed")
+tf, yf_p, hrs = PERIODS[sel_p]
 
-atr_mult = st.number_input("ATR SL:", min_value=0.5, max_value=15.0, value=4.0, step=0.1, format="%.2f", key="atr_input")
-rr_ratio = st.number_input("R:R:", min_value=0.5, max_value=15.0, value=3.70, step=0.1, format="%.2f", key="rr_input")
+atr_m = st.number_input("ATR SL:", min_value=0.1, max_value=20.0, value=4.00, step=0.1, format="%.2f")
+rr_val = st.number_input("R:R:", min_value=0.5, max_value=20.0, value=3.70, step=0.1, format="%.2f")
+sel_coin = st.selectbox("العملة:", ["الكل"] + SYMBOLS)
 
-filter_options = ["الكل"] + list(SYMBOLS_MAP.keys())
-selected_coin = st.selectbox("العملة:", filter_options, key="coin_select")
+trade_mode = st.radio("نوع الصفقات:", ["شراء فقط (Spot)", "شراء و بيع (Futures)"])
+use_ema = st.checkbox("فلتر الترند (EMA 100)", value=True)
 
-col_opt1, col_opt2 = st.columns([2, 1])
-with col_opt1:
-    trade_mode = st.radio(
-        "نوع الصفقات:",
-        options=["شراء فقط (Spot)", "شراء و بيع (Futures)"],
-        horizontal=True,
-        key="trade_mode_radio"
-    )
-with col_opt2:
-    st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-    use_trend_filter = st.checkbox("فلتر الترند (EMA 100)", value=True, key="trend_checkbox")
-
-def calc_wma(series, period=20):
-    weights = np.arange(1, period + 1)
-    return series.rolling(period).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
-
-@st.cache_data(ttl=300)
-def fetch_market_data(symbols_dict, period_str):
-    data_store = {}
-    fetch_period = "5d" if period_str == "1d" else ("14d" if period_str == "7d" else "45d")
-    eval_bars = 288 if period_str == "1d" else (2016 if period_str == "7d" else 8640)
-
-    for coin_name, yf_ticker in symbols_dict.items():
+@st.cache_data(ttl=180)
+def load_yf(syms, interval, period):
+    out = {}
+    for c in syms:
         try:
-            df = yf.download(yf_ticker, period=fetch_period, interval="5m", progress=False)
-            if df.empty or len(df) < 110:
-                continue
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            high_low = df['High'] - df['Low']
-            high_close = np.abs(df['High'] - df['Close'].shift())
-            low_close = np.abs(df['Low'] - df['Close'].shift())
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df['ATR'] = tr.rolling(14).mean()
-
-            # حساب المتوسطات: EMA 2 و WMA 20 و EMA 100 للترند
-            df['EMA2'] = df['Close'].ewm(span=2, adjust=False).mean()
-            df['WMA20'] = calc_wma(df['Close'], period=20)
-            df['EMA100'] = df['Close'].ewm(span=100, adjust=False).mean()
-
-            df_eval = df.tail(eval_bars).copy()
-            data_store[coin_name] = df_eval
+            df = yf.download(f"{c}-USD", period=period, interval=interval, progress=False, auto_adjust=False)
+            if df is not None and not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df = df.reset_index()
+                t_col = 'Datetime' if 'Datetime' in df.columns else 'Date'
+                df['dt'] = pd.to_datetime(df[t_col], utc=True)
+                for col in ['Open', 'High', 'Low', 'Close']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                out[c] = df.dropna(subset=['Open', 'High', 'Low', 'Close']).reset_index(drop=True)
         except Exception:
+            pass
+    return out
+def analyze(data, atr_mult, rr, hours, spot_only, filter_ema):
+    sigs, trades = [], []
+    depth, backstep, dev, min_bars = 30, 30, 5, 8
+    cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=hours)
+
+    for coin, df in data.items():
+        if len(df) < 120:
             continue
-    return data_store
-def analyze_ma_crossover(data_store, atr_m, rr_m, allow_short, trend_active):
-    all_trades = []
-    latest_signals = []
-    capital_usd = 100.0  # رأس مال ثابت 100 دولار لكل صفقة في الخلفية
+        pc = df['Close'].shift(1)
+        tr = pd.concat([df['High'] - df['Low'], (df['High'] - pc).abs(), (df['Low'] - pc).abs()], axis=1).max(axis=1)
+        atrs = tr.rolling(14).mean().bfill().values
+        ema100 = df['Close'].ewm(span=100, adjust=False).mean().values
 
-    for coin_name, df in data_store.items():
-        in_trade = False
-        trade_type = None
-        entry_p = sl_p = tp_p = 0.0
-        last_signal = None
+        H, L, C, T = df['High'].values, df['Low'].values, df['Close'].values, df['dt']
+        tick = 0.01 if C[-1] >= 100 else (0.0001 if C[-1] >= 1 else 0.00001)
 
-        for i in range(1, len(df)):
-            prev = df.iloc[i - 1]
-            curr = df.iloc[i]
+        last_p, last_d, last_b, conf = None, 0, None, []
+        for i in range(depth + backstep, len(df)):
+            p = i - backstep
+            is_ph = H[p] >= np.max(H[p - depth:p]) and H[p] > np.max(H[p + 1:p + backstep + 1])
+            is_pl = L[p] <= np.min(L[p - depth:p]) and L[p] < np.min(L[p + 1:p + backstep + 1])
+            if is_ph or is_pl:
+                sell = is_ph and (not is_pl or H[p] >= L[p])
+                px = H[p] if sell else L[p]
+                if (last_p is None or abs(px - last_p) >= dev * tick) and (last_b is None or i - last_b >= min_bars):
+                    if (sell and last_d != 1) or (not sell and last_d != -1):
+                        last_d, last_p, last_b = (1 if sell else -1), px, i
+                        side = "SELL" if sell else "BUY"
+                        
+                        if spot_only and side == "SELL":
+                            continue
+                        if filter_ema:
+                            if side == "BUY" and C[i] <= ema100[i]:
+                                continue
+                            if side == "SELL" and C[i] >= ema100[i]:
+                                continue
+                        conf.append((i, side))
 
-            atr_val = float(curr['ATR'])
-            if pd.isna(atr_val) or atr_val == 0 or pd.isna(curr['WMA20']) or pd.isna(prev['WMA20']) or pd.isna(curr['EMA100']):
+        busy = -1
+        for idx, side in conf:
+            if idx <= busy:
                 continue
+            ep, sd = C[idx], atrs[idx] * atr_mult
+            sl, tp = (ep - sd, ep + sd * rr) if side == "BUY" else (ep + sd, ep - sd * rr)
+            for j in range(idx + 1, len(df)):
+                hit_sl = L[j] <= sl if side == "BUY" else H[j] >= sl
+                hit_tp = H[j] >= tp if side == "BUY" else L[j] <= tp
+                if hit_sl or hit_tp:
+                    if T.iloc[j] >= cutoff:
+                        pnl = 100.0 * (((sl - ep) if hit_sl else (tp - ep)) / ep) * (1 if side == "BUY" else -1)
+                        trades.append({"coin": coin, "win": not hit_sl, "pnl": pnl})
+                    busy = j
+                    break
 
-            close_p = float(curr['Close'])
-            ema100_p = float(curr['EMA100'])
-
-            # شروط الترند (EMA 100)
-            trend_up = (close_p > ema100_p) if trend_active else True
-            trend_down = (close_p < ema100_p) if trend_active else True
-
-            cross_up = (float(prev['EMA2']) <= float(prev['WMA20'])) and (float(curr['EMA2']) > float(curr['WMA20'])) and trend_up
-            cross_down = (float(prev['EMA2']) >= float(prev['WMA20'])) and (float(curr['EMA2']) < float(curr['WMA20'])) and trend_down
-
-            # تسجيل آخر تقاطع متوافق مع الفلتر
-            if cross_up:
-                last_signal = {
-                    "type": "شراء",
-                    "entry": close_p,
-                    "sl": close_p - (atr_val * atr_m),
-                    "tp": close_p + (atr_val * atr_m * rr_m),
-                    "bar_idx": i,
-                    "trend_dir": "صاعد ↗" if close_p > ema100_p else "هابط ↘"
-                }
-            elif cross_down and allow_short:
-                last_signal = {
-                    "type": "بيع",
-                    "entry": close_p,
-                    "sl": close_p + (atr_val * atr_m),
-                    "tp": close_p - (atr_val * atr_m * rr_m),
-                    "bar_idx": i,
-                    "trend_dir": "هابط ↘" if close_p < ema100_p else "صاعد ↗"
-                }
-
-            # محاكاة الصفقات التاريخية (Backtest)
-            if not in_trade:
-                if cross_up:
-                    in_trade = True
-                    trade_type = "شراء"
-                    entry_p = close_p
-                    sl_p = entry_p - (atr_val * atr_m)
-                    tp_p = entry_p + (atr_val * atr_m * rr_m)
-
-                elif allow_short and cross_down:
-                    in_trade = True
-                    trade_type = "بيع"
-                    entry_p = close_p
-                    sl_p = entry_p + (atr_val * atr_m)
-                    tp_p = entry_p - (atr_val * atr_m * rr_m)
-            else:
-                if trade_type == "شراء":
-                    if float(curr['Low']) <= sl_p:
-                        loss_pct = (entry_p - sl_p) / entry_p
-                        all_trades.append({"coin": coin_name, "result": "loss", "pnl": -(capital_usd * loss_pct)})
-                        in_trade = False
-                    elif float(curr['High']) >= tp_p:
-                        profit_pct = (tp_p - entry_p) / entry_p
-                        all_trades.append({"coin": coin_name, "result": "win", "pnl": (capital_usd * profit_pct)})
-                        in_trade = False
-                elif trade_type == "بيع":
-                    if float(curr['High']) >= sl_p:
-                        loss_pct = (sl_p - entry_p) / entry_p
-                        all_trades.append({"coin": coin_name, "result": "loss", "pnl": -(capital_usd * loss_pct)})
-                        in_trade = False
-                    elif float(curr['Low']) <= tp_p:
-                        profit_pct = (entry_p - tp_p) / entry_p
-                        all_trades.append({"coin": coin_name, "result": "win", "pnl": (capital_usd * profit_pct)})
-                        in_trade = False
-
-        if last_signal is not None:
-            curr_price = float(df['Close'].iloc[-1])
-            candles_ago = (len(df) - 1) - last_signal["bar_idx"]
-            decimals = 2 if curr_price >= 10 else 4
-
-            latest_signals.append({
-                "coin": coin_name,
-                "type": last_signal["type"],
-                "price": round(curr_price, decimals),
-                "entry": round(last_signal["entry"], decimals),
-                "target": round(last_signal["tp"], decimals),
-                "sl": round(last_signal["sl"], decimals),
-                "candles_ago": candles_ago,
-                "trend_dir": last_signal["trend_dir"]
+        if conf:
+            idx, side = conf[-1]
+            ep, sd = C[idx], atrs[idx] * atr_mult
+            sl, tp = (ep - sd, ep + sd * rr) if side == "BUY" else (ep + sd, ep - sd * rr)
+            dec = 2 if C[-1] > 10 else 4
+            trend_up = C[-1] > ema100[-1]
+            sigs.append({
+                "coin": coin,
+                "buy": side == "BUY",
+                "p": round(C[-1], dec),
+                "e": round(ep, dec),
+                "tp": round(tp, dec),
+                "sl": round(sl, dec),
+                "ago": len(df) - 1 - idx,
+                "trend": "صاعد ↗" if trend_up else "هابط ↘"
             })
 
-    return pd.DataFrame(all_trades), pd.DataFrame(latest_signals)
+    return pd.DataFrame(sigs), pd.DataFrame(trades)
 
-allow_short_flag = (trade_mode == "شراء و بيع (Futures)")
+with st.spinner("جاري التحليل..."):
+    raw_data = load_yf(SYMBOLS, tf, yf_p)
+    spot_only_flag = (trade_mode == "شراء فقط (Spot)")
+    df_s, df_t = analyze(raw_data, atr_m, rr_val, hrs, spot_only_flag, use_ema)
 
-with st.spinner(f"جاري تحليل تقاطع EMA2 × WMA20 ({selected_period_label} - 5m)..."):
-    market_data = fetch_market_data(SYMBOLS_MAP, selected_period)
+if sel_coin != "الكل":
+    df_s = df_s[df_s["coin"] == sel_coin] if not df_s.empty else df_s
+    df_t = df_t[df_t["coin"] == sel_coin] if not df_t.empty else df_t
 
-df_trades, df_signals = analyze_ma_crossover(
-    market_data, atr_mult, rr_ratio, allow_short_flag, use_trend_filter
-)
+tot = len(df_t)
+wins = int(df_t["win"].sum()) if tot else 0
+loss = tot - wins
+rate = round(wins / tot * 100, 2) if tot else 0.0
+prof = round(df_t[df_t["pnl"] > 0]["pnl"].sum(), 2) if tot else 0.0
+los_usd = round(abs(df_t[df_t["pnl"] < 0]["pnl"].sum()), 2) if tot else 0.0
+net = round(prof - los_usd, 2)
 
-if selected_coin != "الكل":
-    filtered_trades = df_trades[df_trades["coin"] == selected_coin] if not df_trades.empty else pd.DataFrame()
-    filtered_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else pd.DataFrame()
-else:
-    filtered_trades = df_trades
-    filtered_signals = df_signals
+ema_txt = " | مع فلتر EMA 100" if use_ema else ""
+net_color = "#48bb78" if net >= 0 else "#f56565"
+net_sign = "$" if net >= 0 else "-$"
+st.markdown(f"""
+<div class='card c-purp' style='margin-top: 10px;'>
+    <div class='card-title'>✨ صافي الربح ({trade_mode}{ema_txt})</div>
+    <div class='card-val' style='color:{net_color};'>{net_sign}{abs(net):,.2f}</div>
+</div>
+""", unsafe_allow_html=True)
 
-total_trades = len(filtered_trades)
-win_trades = len(filtered_trades[filtered_trades["result"] == "win"]) if total_trades > 0 else 0
-loss_trades = len(filtered_trades[filtered_trades["result"] == "loss"]) if total_trades > 0 else 0
-win_rate = round((win_trades / total_trades) * 100, 2) if total_trades > 0 else 0.0
-total_profit_usd = round(filtered_trades[filtered_trades["pnl"] > 0]["pnl"].sum(), 2) if total_trades > 0 else 0.0
-total_loss_usd = round(abs(filtered_trades[filtered_trades["pnl"] < 0]["pnl"].sum()), 2) if total_trades > 0 else 0.0
-net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
+st.markdown(f"### 📊 نتائج {sel_p} ({tf})")
+st.markdown(f"<div class='card'><div class='card-title'>🤝 الصفقات</div><div class='card-val'>{tot}</div></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='card c-purp'><div class='card-title'>🎯 النجاح</div><div class='card-val'>{rate}%</div></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='card c-grn'><div class='card-title'>📈 الصفقات الرابحة</div><div class='card-val' style='color:#48bb78;'>{wins}</div></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='card c-red'><div class='card-title'>📉 الصفقات الخاسرة</div><div class='card-val' style='color:#f56565;'>{loss}</div></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='card c-grn'><div class='card-title'>💲 إجمالي الأرباح</div><div class='card-val' style='color:#48bb78;'>+${prof:,.2f}</div></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='card c-red'><div class='card-title'>💲 إجمالي الخسائر</div><div class='card-val' style='color:#f56565;'>-${los_usd:,.2f}</div></div>", unsafe_allow_html=True)
 
-trend_badge = "مع فلتر EMA 100" if use_trend_filter else "بدون فلتر ترند"
-net_color_class = "green-text" if net_profit_usd >= 0 else "red-text"
-st.markdown(
-    f"<div class='metric-card card-net'>"
-    f"<div class='card-title'>✨ صافي الربح ({trade_mode} | {trend_badge})</div>"
-    f"<div class='net-value {net_color_class}'>${net_profit_usd:,.2f}</div>"
-    f"</div>",
-    unsafe_allow_html=True
-)
-
-st.markdown(f"### 📊 نتائج {selected_period_label} (5m)")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown(f"<div class='metric-card card-blue'><div class='card-title'>🤝 الصفقات</div><div class='card-value white-text'>{total_trades}</div></div>", unsafe_allow_html=True)
-with col2:
-    st.markdown(f"<div class='metric-card card-purple'><div class='card-title'>🎯 النجاح</div><div class='card-value white-text'>{win_rate}%</div></div>", unsafe_allow_html=True)
-
-col3, col4 = st.columns(2)
-with col3:
-    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>📈 الصفقات الرابحة</div><div class='card-value white-text'>{win_trades}</div></div>", unsafe_allow_html=True)
-with col4:
-    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>📉 الصفقات الخاسرة</div><div class='card-value white-text'>{loss_trades}</div></div>", unsafe_allow_html=True)
-
-col5, col6 = st.columns(2)
-with col5:
-    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>💲 إجمالي الأرباح</div><div class='card-value white-text'>${total_profit_usd:,.2f}+</div></div>", unsafe_allow_html=True)
-with col6:
-    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>💲 إجمالي الخسائر</div><div class='card-value white-text'>${total_loss_usd:,.2f}-</div></div>", unsafe_allow_html=True)
-
-st.markdown("### 🧭 أحدث الإشارات (EMA2 × WMA20)")
-
-if not filtered_signals.empty:
-    sorted_signals = filtered_signals.sort_values(by="candles_ago", ascending=True)
-    for _, row in sorted_signals.iterrows():
-        is_buy = (row["type"] == "شراء")
-        box_class = "signal-box" if is_buy else "signal-box signal-box-short"
-        type_color = "green-text" if is_buy else "red-text"
-
-        card_html = (
-            f"<div class='{box_class}'>"
-            f"<div style='font-size:17px; font-weight:bold; color:#fff; margin-bottom:8px;'>"
-            f"🪙 {row['coin']} (${row['price']}) — <span class='{type_color}'>{row['type']}</span> "
-            f"<span style='font-size:13px; color:#a0aec0; font-weight:normal;'>(منذ {row['candles_ago']} شمعة | ترند 100: {row['trend_dir']})</span>"
-            f"</div>"
-            f"<div style='font-size:14px; color:#e2e8f0; line-height:1.8;'>"
-            f"🔵 دخول: <b>{row['entry']}$</b> &nbsp;|&nbsp; "
-            f"🟢 هدف: <b>{row['target']}$</b> &nbsp;|&nbsp; "
-            f"🔴 وقف: <b>{row['sl']}$</b>"
-            f"</div>"
-            f"</div>"
+st.markdown("### 🧭 أحدث الإشارات")
+if not df_s.empty:
+    for _, r in df_s.sort_values("ago").iterrows():
+        cls = "sig-b" if r["buy"] else "sig-s"
+        tag = "شراء" if r["buy"] else "بيع"
+        tag_color = "#03ff85" if r["buy"] else "#fc0808"
+        st.markdown(
+            f"<div class='{cls}'>"
+            f"<b>🪙 {r['coin']} (${r['p']}) — <span style='color:{tag_color};'>{tag}</span> (منذ {r['ago']} شمعة | ترند 100: {r['trend']})</b><br>"
+            f"🔵 دخول: <b>${r['e']}</b> &nbsp;|&nbsp; 🟢 هدف: <b>${r['tp']}</b> &nbsp;|&nbsp; 🔴 وقف: <b>${r['sl']}</b>"
+            f"</div>",
+            unsafe_allow_html=True
         )
-        st.markdown(card_html, unsafe_allow_html=True)
 else:
-    st.warning("لا توجد تقاطعات متوافقة مع الشروط الحالية.")
+    st.info("لا توجد إشارات مطابقة للشروط الحالية.")
