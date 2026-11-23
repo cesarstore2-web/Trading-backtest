@@ -28,7 +28,6 @@ div[role='radiogroup'] label { padding: 8px 18px; border-radius: 8px; color: #ff
 """
 st.markdown(css_style, unsafe_allow_html=True)
 
-# خريطة الرموز المتوافقة مع Yahoo Finance
 SYMBOLS_MAP = {
     "XLM": "XLM-USD",
     "ZEC": "ZEC-USD",
@@ -42,7 +41,6 @@ SYMBOLS_MAP = {
     "XAU": "GC=F"
 }
 
-# 1. شريط اختيار المدة الزمنية للاختبار على إطار 5 دقائق
 period_map = {
     "24 ساعة": "1d",
     "أسبوع": "7d",
@@ -56,27 +54,23 @@ selected_period_label = st.radio(
 )
 selected_period = period_map[selected_period_label]
 
-# 2. مدخلات إدارة المخاطر كما في الصورة
 atr_mult = st.number_input("ATR SL:", min_value=0.5, max_value=15.0, value=4.0, step=0.1, format="%.2f")
 rr_ratio = st.number_input("R:R:", min_value=0.5, max_value=15.0, value=3.70, step=0.1, format="%.2f")
 
 filter_options = ["الكل"] + list(SYMBOLS_MAP.keys())
 selected_coin = st.selectbox("العملة:", filter_options)
 
-# 3. مربعات تفعيل خيارات الربح الصافي (شراء أم شراء وبيع)
-col_opt1, col_opt2 = st.columns(2)
-with col_opt1:
-    trade_mode = st.radio(
-        "نوع الصفقات المحتسبة:",
-        options=["شراء فقط", "شراء و بيع"],
-        horizontal=True
-    )
+trade_mode = st.radio(
+    "نوع الصفقات المحتسبة:",
+    options=["شراء فقط", "شراء و بيع"],
+    horizontal=True
+)
 
 @st.cache_data(ttl=300)
 def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short):
     all_trades = []
     latest_signals = []
-    risk_per_trade_usd = 100.0  # حجم المخاطرة الثابت لكل صفقة لحساب الربح بالدولار
+    risk_per_trade_usd = 100.0
 
     for coin_name, yf_ticker in symbols_dict.items():
         try:
@@ -87,14 +81,12 @@ def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            # حساب مؤشر ATR (14)
             high_low = df['High'] - df['Low']
             high_close = np.abs(df['High'] - df['Close'].shift())
             low_close = np.abs(df['Low'] - df['Close'].shift())
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df['ATR'] = tr.rolling(14).mean()
 
-            # محاكاة الصفقات التاريخية (Backtest) على إطار 5 دقائق
             in_trade = False
             trade_type = None
             entry_p = sl_p = tp_p = 0.0
@@ -116,7 +108,6 @@ def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short)
                     fib_buy = w1 - (diff * 0.618)
                     fib_sell = w0 + (diff * 0.618)
 
-                    # شرط دخول شراء (ارتداد فيبوناتشي 0.618)
                     if row['Low'] <= fib_buy <= row['High'] and row['Close'] > fib_buy:
                         in_trade = True
                         trade_type = "شراء"
@@ -124,7 +115,6 @@ def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short)
                         sl_p = entry_p - (atr_val * atr_m)
                         tp_p = entry_p + (atr_val * atr_m * rr_m)
 
-                    # شرط دخول بيع (إذا تم تفعيل خيار شراء وبيع)
                     elif allow_short and row['Low'] <= fib_sell <= row['High'] and row['Close'] < fib_sell:
                         in_trade = True
                         trade_type = "بيع"
@@ -147,7 +137,6 @@ def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short)
                             all_trades.append({"coin": coin_name, "result": "win", "pnl": risk_per_trade_usd * rr_m})
                             in_trade = False
 
-            # استخراج أحدث إشارة نشطة لكل عملة
             recent_df = df.tail(30).reset_index(drop=True)
             mid = len(recent_df) // 2
             w0 = float(recent_df['Low'].iloc[:mid].min())
@@ -191,7 +180,6 @@ def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short)
             continue
 
     return pd.DataFrame(all_trades), pd.DataFrame(latest_signals)
-
 allow_short_flag = (trade_mode == "شراء و بيع")
 
 with st.spinner(f"جاري تحليل بيانات Yahoo Finance ({selected_period_label} - 5m)..."):
@@ -199,7 +187,6 @@ with st.spinner(f"جاري تحليل بيانات Yahoo Finance ({selected_peri
         SYMBOLS_MAP, selected_period, atr_mult, rr_ratio, allow_short_flag
     )
 
-# تصفية النتائج حسب العملة المختارة
 if selected_coin != "الكل":
     filtered_trades = df_trades[df_trades["coin"] == selected_coin] if not df_trades.empty else pd.DataFrame()
     filtered_signals = df_signals[df_signals["coin"] == selected_coin] if not df_signals.empty else pd.DataFrame()
@@ -207,7 +194,6 @@ else:
     filtered_trades = df_trades
     filtered_signals = df_signals
 
-# حساب الإحصائيات
 total_trades = len(filtered_trades)
 win_trades = len(filtered_trades[filtered_trades["result"] == "win"]) if total_trades > 0 else 0
 loss_trades = len(filtered_trades[filtered_trades["result"] == "loss"]) if total_trades > 0 else 0
@@ -216,7 +202,6 @@ total_profit_usd = round(filtered_trades[filtered_trades["pnl"] > 0]["pnl"].sum(
 total_loss_usd = round(abs(filtered_trades[filtered_trades["pnl"] < 0]["pnl"].sum()), 2) if total_trades > 0 else 0.0
 net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
 
-# 4. بطاقة صافي الربح في الأعلى كما طلبت
 net_color_class = "green-text" if net_profit_usd >= 0 else "red-text"
 st.markdown(
     f"<div class='metric-card card-net'>"
@@ -226,8 +211,47 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 5. قسم النتائج والإحصائيات
 st.markdown(f"### 📊 نتائج {selected_period_label} (5m)")
 
 col1, col2 = st.columns(2)
 with col1:
+    st.markdown(f"<div class='metric-card card-blue'><div class='card-title'>🤝 الصفقات</div><div class='card-value white-text'>{total_trades}</div></div>", unsafe_allow_html=True)
+with col2:
+    st.markdown(f"<div class='metric-card card-purple'><div class='card-title'>🎯 النجاح</div><div class='card-value white-text'>{win_rate}%</div></div>", unsafe_allow_html=True)
+
+col3, col4 = st.columns(2)
+with col3:
+    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>📈 الصفقات الرابحة</div><div class='card-value white-text'>{win_trades}</div></div>", unsafe_allow_html=True)
+with col4:
+    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>📉 الصفقات الخاسرة</div><div class='card-value white-text'>{loss_trades}</div></div>", unsafe_allow_html=True)
+
+col5, col6 = st.columns(2)
+with col5:
+    st.markdown(f"<div class='metric-card card-green'><div class='card-title green-text'>💲 إجمالي الأرباح</div><div class='card-value white-text'>${total_profit_usd:,.2f}+</div></div>", unsafe_allow_html=True)
+with col6:
+    st.markdown(f"<div class='metric-card card-red'><div class='card-title red-text'>💲 إجمالي الخسائر</div><div class='card-value white-text'>${total_loss_usd:,.2f}-</div></div>", unsafe_allow_html=True)
+
+st.markdown("### 🧭 أحدث الإشارات")
+
+if not filtered_signals.empty:
+    for _, row in filtered_signals.iterrows():
+        is_buy = (row["type"] == "شراء")
+        box_class = "signal-box" if is_buy else "signal-box signal-box-short"
+        type_color = "green-text" if is_buy else "red-text"
+
+        card_html = (
+            f"<div class='{box_class}'>"
+            f"<div style='font-size:17px; font-weight:bold; color:#fff; margin-bottom:8px;'>"
+            f"🪙 {row['coin']} (${row['price']}) — <span class='{type_color}'>{row['type']}</span> "
+            f"<span style='font-size:14px; color:#a0aec0; font-weight:normal;'>(منذ {row['candles_ago']} شمعة)</span>"
+            f"</div>"
+            f"<div style='font-size:14px; color:#e2e8f0; line-height:1.8;'>"
+            f"🔵 دخول: <b>{row['entry']}$</b> &nbsp;|&nbsp; "
+            f"🟢 هدف: <b>{row['target']}$</b> &nbsp;|&nbsp; "
+            f"🔴 وقف: <b>{row['sl']}$</b>"
+            f"</div>"
+            f"</div>"
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
+else:
+    st.warning("لا توجد بيانات متاحة حالياً من Yahoo Finance، يرجى المحاولة بعد لحظات.")
