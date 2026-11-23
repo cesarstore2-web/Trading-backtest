@@ -7,7 +7,7 @@ st.set_page_config(page_title="Tricks HeLaL — Backtest", layout="centered")
 
 st.markdown("""<style>
 .stApp { background-color: #0d0d12; color: #fff; direction: rtl; font-family: Tahoma, sans-serif; }
-div[role='radiogroup'] { display: flex; justify-content: space-around; background: #1c1c24; padding: 10px; border-radius: 12px; border: 1px solid #2d2d3a; }
+div[role='radiogroup'] { display: flex; justify-content: space-around; background: #1c1c24; padding: 10px; border-radius: 12px; border: 1px solid #2d2d3a; margin-bottom: 10px; }
 div[role='radiogroup'] label { color: #fff !important; font-weight: bold; }
 .stCheckbox label { color: #fff !important; font-weight: bold; }
 .card { border-radius: 14px; padding: 18px; text-align: center; background: #13131a; margin-bottom: 14px; border: 1.5px solid #2b6cb0; }
@@ -21,14 +21,15 @@ div[role='radiogroup'] label { color: #fff !important; font-weight: bold; }
 </style>""", unsafe_allow_html=True)
 
 SYMBOLS = ["XLM", "ZEC", "XRP", "HBAR", "ADA", "LTC", "BTC", "ETH", "PAXG"]
-PERIODS = {
-    "24 ساعة": ("5m", "5d", 24),
-    "أسبوع": ("5m", "1mo", 168),
-    "شهر": ("5m", "60d", 720)
-}
+PERIODS = {"24 ساعة": 24, "أسبوع": 168, "شهر": 720}
+TIMEFRAMES = {"15 دقيقة": "15m", "30 دقيقة": "30m", "1 ساعة": "1h"}
 
 sel_p = st.radio("المدة:", list(PERIODS.keys()), horizontal=True, label_visibility="collapsed")
-tf, yf_p, hrs = PERIODS[sel_p]
+hrs = PERIODS[sel_p]
+
+sel_tf = st.radio("الفريم:", list(TIMEFRAMES.keys()), horizontal=True, label_visibility="collapsed")
+tf = TIMEFRAMES[sel_tf]
+yf_p = "60d"
 
 atr_m = st.number_input("ATR SL:", min_value=0.1, max_value=20.0, value=4.00, step=0.1, format="%.2f")
 rr_val = st.number_input("R:R:", min_value=0.5, max_value=20.0, value=3.70, step=0.1, format="%.2f")
