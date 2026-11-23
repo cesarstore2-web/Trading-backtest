@@ -9,7 +9,7 @@ css_style = """
 <style>
 .stApp { background-color: #0d0d12; color: #ffffff; direction: rtl; font-family: Tahoma, sans-serif; }
 div[role='radiogroup'] { display: flex; justify-content: space-around; background-color: #1c1c24; padding: 6px; border-radius: 12px; margin-bottom: 15px; }
-div[role='radiogroup'] label { padding: 8px 18px; border-radius: 8px; color: #ffffff !important; }
+div[role='radiogroup'] label { padding: 8px 18px; border-radius: 8px; color: #ffffff !important; cursor: pointer; }
 .metric-card { border-radius: 15px; padding: 18px; text-align: center; background-color: #16161e; margin-bottom: 15px; }
 .card-blue { border: 1.5px solid #2b6cb0; }
 .card-purple { border: 1.5px solid #805ad5; }
@@ -50,34 +50,33 @@ selected_period_label = st.radio(
     "الفترة:",
     options=list(period_map.keys()),
     horizontal=True,
-    label_visibility="collapsed"
+    label_visibility="collapsed",
+    key="period_radio"
 )
 selected_period = period_map[selected_period_label]
 
-atr_mult = st.number_input("ATR SL:", min_value=0.5, max_value=15.0, value=4.0, step=0.1, format="%.2f")
-rr_ratio = st.number_input("R:R:", min_value=0.5, max_value=15.0, value=3.70, step=0.1, format="%.2f")
+atr_mult = st.number_input("ATR SL:", min_value=0.5, max_value=15.0, value=4.0, step=0.1, format="%.2f", key="atr_input")
+rr_ratio = st.number_input("R:R:", min_value=0.5, max_value=15.0, value=3.70, step=0.1, format="%.2f", key="rr_input")
+trade_capital = st.number_input("رأس مال الصفقة ($):", min_value=10.0, max_value=100000.0, value=100.0, step=10.0, format="%.2f", key="cap_input")
 
 filter_options = ["الكل"] + list(SYMBOLS_MAP.keys())
-selected_coin = st.selectbox("العملة:", filter_options)
+selected_coin = st.selectbox("العملة:", filter_options, key="coin_select")
 
 trade_mode = st.radio(
-    "نوع الصفقات المحتسبة:",
-    options=["شراء فقط", "شراء و بيع"],
-    horizontal=True
+    "نوع الصفقات:",
+    options=["شراء فقط (Spot)", "شراء و بيع (Futures)"],
+    horizontal=True,
+    key="trade_mode_radio"
 )
 
 @st.cache_data(ttl=300)
-def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short):
-    all_trades = []
-    latest_signals = []
-    risk_per_trade_usd = 100.0
-
+def fetch_market_data(symbols_dict, period_str):
+    data_store = {}
     for coin_name, yf_ticker in symbols_dict.items():
         try:
             df = yf.download(yf_ticker, period=period_str, interval="5m", progress=False)
             if df.empty or len(df) < 35:
                 continue
-
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
@@ -86,106 +85,114 @@ def run_backtest_and_signals(symbols_dict, period_str, atr_m, rr_m, allow_short)
             low_close = np.abs(df['Low'] - df['Close'].shift())
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df['ATR'] = tr.rolling(14).mean()
-
-            in_trade = False
-            trade_type = None
-            entry_p = sl_p = tp_p = 0.0
-
-            for i in range(20, len(df)):
-                row = df.iloc[i]
-                atr_val = row['ATR']
-                if pd.isna(atr_val) or atr_val == 0:
-                    continue
-
-                if not in_trade:
-                    window = df.iloc[i-20:i]
-                    w0 = window['Low'].min()
-                    w1 = window['High'].max()
-                    diff = w1 - w0
-                    if diff <= 0:
-                        continue
-
-                    fib_buy = w1 - (diff * 0.618)
-                    fib_sell = w0 + (diff * 0.618)
-
-                    if row['Low'] <= fib_buy <= row['High'] and row['Close'] > fib_buy:
-                        in_trade = True
-                        trade_type = "شراء"
-                        entry_p = float(row['Close'])
-                        sl_p = entry_p - (atr_val * atr_m)
-                        tp_p = entry_p + (atr_val * atr_m * rr_m)
-
-                    elif allow_short and row['Low'] <= fib_sell <= row['High'] and row['Close'] < fib_sell:
-                        in_trade = True
-                        trade_type = "بيع"
-                        entry_p = float(row['Close'])
-                        sl_p = entry_p + (atr_val * atr_m)
-                        tp_p = entry_p - (atr_val * atr_m * rr_m)
-                else:
-                    if trade_type == "شراء":
-                        if row['Low'] <= sl_p:
-                            all_trades.append({"coin": coin_name, "result": "loss", "pnl": -risk_per_trade_usd})
-                            in_trade = False
-                        elif row['High'] >= tp_p:
-                            all_trades.append({"coin": coin_name, "result": "win", "pnl": risk_per_trade_usd * rr_m})
-                            in_trade = False
-                    elif trade_type == "بيع":
-                        if row['High'] >= sl_p:
-                            all_trades.append({"coin": coin_name, "result": "loss", "pnl": -risk_per_trade_usd})
-                            in_trade = False
-                        elif row['Low'] <= tp_p:
-                            all_trades.append({"coin": coin_name, "result": "win", "pnl": risk_per_trade_usd * rr_m})
-                            in_trade = False
-
-            recent_df = df.tail(30).reset_index(drop=True)
-            mid = len(recent_df) // 2
-            w0 = float(recent_df['Low'].iloc[:mid].min())
-            w1 = float(recent_df['High'].iloc[mid:].max())
-            sig_type = "شراء"
-
-            if w1 <= w0 and allow_short:
-                w1 = float(recent_df['High'].iloc[:mid].max())
-                w0 = float(recent_df['Low'].iloc[mid:].min())
-                sig_type = "بيع"
-
-            diff = abs(w1 - w0)
-            curr_price = float(recent_df['Close'].iloc[-1])
-            curr_atr = float(recent_df['ATR'].iloc[-1]) if not pd.isna(recent_df['ATR'].iloc[-1]) else (curr_price * 0.01)
-
-            if sig_type == "شراء":
-                entry_sig = w1 - (diff * 0.618)
-                sl_sig = entry_sig - (curr_atr * atr_m)
-                tp_sig = entry_sig + (curr_atr * atr_m * rr_m)
-                pivot_idx = int(recent_df['Low'].iloc[:mid].idxmin())
-            else:
-                entry_sig = w0 + (diff * 0.618)
-                sl_sig = entry_sig + (curr_atr * atr_m)
-                tp_sig = entry_sig - (curr_atr * atr_m * rr_m)
-                pivot_idx = int(recent_df['High'].iloc[:mid].idxmax())
-
-            candles_ago = (len(recent_df) - 1) - pivot_idx
-            decimals = 2 if curr_price >= 10 else 4
-
-            latest_signals.append({
-                "coin": coin_name,
-                "type": sig_type,
-                "price": round(curr_price, decimals),
-                "entry": round(entry_sig, decimals),
-                "target": round(tp_sig, decimals),
-                "sl": round(sl_sig, decimals),
-                "candles_ago": candles_ago
-            })
-
+            data_store[coin_name] = df
         except Exception:
             continue
+    return data_store
+def analyze_trades_and_signals(data_store, atr_m, rr_m, capital_usd, allow_short):
+    all_trades = []
+    latest_signals = []
+
+    for coin_name, df in data_store.items():
+        in_trade = False
+        trade_type = None
+        entry_p = sl_p = tp_p = 0.0
+
+        for i in range(20, len(df)):
+            row = df.iloc[i]
+            atr_val = float(row['ATR'])
+            if pd.isna(atr_val) or atr_val == 0:
+                continue
+
+            if not in_trade:
+                window = df.iloc[i-20:i]
+                w0 = float(window['Low'].min())
+                w1 = float(window['High'].max())
+                diff = w1 - w0
+                if diff <= 0:
+                    continue
+
+                fib_buy = w1 - (diff * 0.618)
+                fib_sell = w0 + (diff * 0.618)
+
+                if float(row['Low']) <= fib_buy <= float(row['High']) and float(row['Close']) > fib_buy:
+                    in_trade = True
+                    trade_type = "شراء"
+                    entry_p = float(row['Close'])
+                    sl_p = entry_p - (atr_val * atr_m)
+                    tp_p = entry_p + (atr_val * atr_m * rr_m)
+
+                elif allow_short and float(row['Low']) <= fib_sell <= float(row['High']) and float(row['Close']) < fib_sell:
+                    in_trade = True
+                    trade_type = "بيع"
+                    entry_p = float(row['Close'])
+                    sl_p = entry_p + (atr_val * atr_m)
+                    tp_p = entry_p - (atr_val * atr_m * rr_m)
+            else:
+                if trade_type == "شراء":
+                    if float(row['Low']) <= sl_p:
+                        loss_pct = (entry_p - sl_p) / entry_p
+                        all_trades.append({"coin": coin_name, "side": "شراء", "result": "loss", "pnl": -(capital_usd * loss_pct)})
+                        in_trade = False
+                    elif float(row['High']) >= tp_p:
+                        profit_pct = (tp_p - entry_p) / entry_p
+                        all_trades.append({"coin": coin_name, "side": "شراء", "result": "win", "pnl": (capital_usd * profit_pct)})
+                        in_trade = False
+                elif trade_type == "بيع":
+                    if float(row['High']) >= sl_p:
+                        loss_pct = (sl_p - entry_p) / entry_p
+                        all_trades.append({"coin": coin_name, "side": "بيع", "result": "loss", "pnl": -(capital_usd * loss_pct)})
+                        in_trade = False
+                    elif float(row['Low']) <= tp_p:
+                        profit_pct = (entry_p - tp_p) / entry_p
+                        all_trades.append({"coin": coin_name, "side": "بيع", "result": "win", "pnl": (capital_usd * profit_pct)})
+                        in_trade = False
+
+        recent_df = df.tail(30).reset_index(drop=True)
+        low_idx = int(recent_df['Low'].idxmin())
+        high_idx = int(recent_df['High'].idxmax())
+        w0 = float(recent_df['Low'].iloc[low_idx])
+        w1 = float(recent_df['High'].iloc[high_idx])
+        diff = abs(w1 - w0)
+        curr_price = float(recent_df['Close'].iloc[-1])
+        curr_atr = float(recent_df['ATR'].iloc[-1]) if not pd.isna(recent_df['ATR'].iloc[-1]) else (curr_price * 0.01)
+
+        if allow_short and high_idx < low_idx:
+            sig_type = "بيع"
+            entry_sig = w0 + (diff * 0.618)
+            sl_sig = entry_sig + (curr_atr * atr_m)
+            tp_sig = entry_sig - (curr_atr * atr_m * rr_m)
+            pivot_idx = high_idx
+        else:
+            sig_type = "شراء"
+            entry_sig = w1 - (diff * 0.618)
+            sl_sig = entry_sig - (curr_atr * atr_m)
+            tp_sig = entry_sig + (curr_atr * atr_m * rr_m)
+            pivot_idx = low_idx
+
+        candles_ago = (len(recent_df) - 1) - pivot_idx
+        decimals = 2 if curr_price >= 10 else 4
+
+        latest_signals.append({
+            "coin": coin_name,
+            "type": sig_type,
+            "price": round(curr_price, decimals),
+            "entry": round(entry_sig, decimals),
+            "target": round(tp_sig, decimals),
+            "sl": round(sl_sig, decimals),
+            "candles_ago": candles_ago
+        })
 
     return pd.DataFrame(all_trades), pd.DataFrame(latest_signals)
-allow_short_flag = (trade_mode == "شراء و بيع")
 
-with st.spinner(f"جاري تحليل بيانات Yahoo Finance ({selected_period_label} - 5m)..."):
-    df_trades, df_signals = run_backtest_and_signals(
-        SYMBOLS_MAP, selected_period, atr_mult, rr_ratio, allow_short_flag
-    )
+allow_short_flag = (trade_mode == "شراء و بيع (Futures)")
+
+with st.spinner(f"جاري تحميل بيانات Yahoo Finance ({selected_period_label} - 5m)..."):
+    market_data = fetch_market_data(SYMBOLS_MAP, selected_period)
+
+df_trades, df_signals = analyze_trades_and_signals(
+    market_data, atr_mult, rr_ratio, trade_capital, allow_short_flag
+)
 
 if selected_coin != "الكل":
     filtered_trades = df_trades[df_trades["coin"] == selected_coin] if not df_trades.empty else pd.DataFrame()
@@ -205,7 +212,7 @@ net_profit_usd = round(total_profit_usd - total_loss_usd, 2)
 net_color_class = "green-text" if net_profit_usd >= 0 else "red-text"
 st.markdown(
     f"<div class='metric-card card-net'>"
-    f"<div class='card-title'>✨ صافي الربح ({trade_mode})</div>"
+    f"<div class='card-title'>✨ صافي الربح — {trade_mode} (رأس مال ${trade_capital:,.0f})</div>"
     f"<div class='net-value {net_color_class}'>${net_profit_usd:,.2f}</div>"
     f"</div>",
     unsafe_allow_html=True
