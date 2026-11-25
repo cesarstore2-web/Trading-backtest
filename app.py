@@ -1,465 +1,229 @@
-from datetime import datetime
-from io import StringIO
-from github import Github
-import numpy as np
-import pandas as pd
 import streamlit as st
-import yfinance as yf
+import ccxt
+import pandas as pd
+import numpy as np
+from datetime import datetime
 
-st.set_page_config(
-    page_title="AMD + FVG Pro Scanner", page_icon="🎯", layout="wide"
-)
+# إعدادات الصفحة لتطابق الوضع الليلي واللغة العربية
+st.set_page_config(page_title="ماسح النماذج الفنية", layout="centered")
 
+st.markdown("""
+    <style>
+    .stApp { direction: rtl; text-align: right; }
+    div[data-testid="stMetricValue"] { font-size: 2rem; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- 1. دوال الاتصال بـ GitHub ---
-def get_github_repo():
-    g = Github(st.secrets["GITHUB_TOKEN"])
-    return g.get_repo(st.secrets["REPO_NAME"])
+# 1. إعدادات واجهة المستخدم (مطابقة للصورة الثالثة)
+timeframe = st.selectbox("الإطار الزمني:", ["15m", "1h", "4h", "1d"], index=0)
+atr_mult = st.number_input("وقف الخسارة (ATR SL):", min_value=0.5, max_value=10.0, value=2.7, step=0.1)
+rr_ratio = st.number_input("نسبة العائد (R:R):", min_value=0.5, max_value=10.0, value=3.2, step=0.1)
 
+use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=False)
+use_breakeven = st.checkbox("تأمين الصفقة عند 1.5 R:R (Break-Even)", value=False)
 
-def load_trades():
-    repo = get_github_repo()
-    file_path = st.secrets["FILE_PATH"]
-    try:
-        file_content = repo.get_contents(file_path)
-        csv_data = file_content.decoded_content.decode("utf-8")
-        return pd.read_csv(StringIO(csv_data)), file_content.sha
-    except Exception:
-        columns = [
-            "Date",
-            "Coin",
-            "Timeframe",
-            "Type",
-            "Entry_Price",
-            "Stop_Loss",
-            "Take_Profit",
-            "Status",
-            "PnL",
-        ]
-        return pd.DataFrame(columns=columns), None
+# قائمة العملات الافتراضية للفحص
+SYMBOLS = ["BTC/USDT", "ETH/USDT", "XRP/USDT", "AVAX/USDT", "SOL/USDT", "BNB/USDT"]
 
-
-def save_trades(df, sha=None, msg="Update Pro AMD-FVG trades"):
-    repo = get_github_repo()
-    file_path = st.secrets["FILE_PATH"]
-    csv_buffer = StringIO()
-    df.to_csv(csv_buffer, index=False)
-    content = csv_buffer.getvalue()
-    if sha:
-        repo.update_file(file_path, msg, content, sha)
-    else:
-        repo.create_file(file_path, msg, content)
-
-
-# --- 2. جلب البيانات بسرعة فائقة دفعة واحدة ---
-@st.cache_data(ttl=120)
-def fetch_all_data(tickers_list, interval, period="10d"):
-    data = yf.download(
-        tickers=tickers_list,
-        period=period,
-        interval=interval,
-        group_by="ticker",
-        progress=False,
-    )
-    return data
-
-
-# --- 3. حساب المؤشرات ---
-def calculate_indicators(df, atr_period=14):
-    df = df.dropna().copy()
-    if len(df) < 205:
-        return pd.DataFrame()
-    high_low = df["High"] - df["Low"]
-    high_close = np.abs(df["High"] - df["Close"].shift())
-    low_close = np.abs(df["Low"] - df["Close"].shift())
+# 2. دوال المؤشرات الفنية واكتشاف النماذج الستة (مطابقة للصورة الأولى)
+def calculate_indicators(df):
+    # حساب ATR (14)
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(atr_period).mean()
-    df["EMA_200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    df['atr'] = tr.rolling(14).mean()
+    
+    # حساب EMA 200
+    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+    
+    # تحديد الاتجاه السابق (آخر 5 شموع) للتأكد من انعكاسية النموذج
+    df['downtrend'] = df['close'].shift(1) < df['close'].shift(5)
+    df['uptrend'] = df['close'].shift(1) > df['close'].shift(5)
     return df
 
+def detect_patterns(df):
+    signals = []
+    for i in range(200, len(df) - 1):
+        c0 = df.iloc[i]     # الشمعة الحالية (نقطة الدخول عند إغلاقها)
+        c1 = df.iloc[i - 1] # الشمعة السابقة
+        c2 = df.iloc[i - 2] # ما قبل السابقة
+        
+        body0 = abs(c0['close'] - c0['open'])
+        body1 = abs(c1['close'] - c1['open'])
+        body2 = abs(c2['close'] - c2['open'])
+        
+        upper_wick0 = c0['high'] - max(c0['open'], c0['close'])
+        lower_wick0 = min(c0['open'], c0['close']) - c0['low']
+        
+        is_bull0 = c0['close'] > c0['open']
+        is_bear0 = c0['close'] < c0['open']
+        is_bull1 = c1['close'] > c1['open']
+        is_bear1 = c1['close'] < c1['open']
+        is_bull2 = c2['close'] > c2['open']
+        is_bear2 = c2['close'] < c2['open']
 
-# --- 4. اختبار تاريخي محسن ---
-def run_pro_amd_backtest(
-    coins_map, all_data, atr_mult, rr_ratio, use_ema200=True, use_be=True
-):
-    trade_size = 100.0
-    total_pnl = 0.0
-    wins = 0
-    losses = 0
-    breakevens = 0
-    history_list = []
+        pattern_name = None
+        direction = None
 
-    for display_name, yf_ticker in coins_map.items():
-        if yf_ticker not in all_data.columns.get_level_values(0):
+        # --- النماذج الصاعدة (شراء) ---
+        if c0['downtrend']:
+            # 1. المطرقة المقلوبة (Inverted Hammer)
+            if upper_wick0 >= (2 * body0) and lower_wick0 <= (0.2 * body0) and body0 > 0:
+                pattern_name = "المطرقة المقلوبة"
+                direction = "شراء (Long)"
+            
+            # 2. خط الاختراق (Piercing Line)
+            elif is_bear1 and is_bull0 and c0['open'] < c1['low'] and c0['close'] > (c1['open'] + c1['close']) / 2 and c0['close'] < c1['open']:
+                pattern_name = "خط الاختراق"
+                direction = "شراء (Long)"
+                
+            # 3. الجنود الثلاثة البيض (Three White Soldiers)
+            elif is_bull2 and is_bull1 and is_bull0 and (c0['close'] > c1['close'] > c2['close']) and (c0['open'] > c1['open'] > c2['open']):
+                pattern_name = "الجنود الثلاثة البيض"
+                direction = "شراء (Long)"
+
+        # --- النماذج الهابطة (بيع) ---
+        if c0['uptrend'] and pattern_name is None:
+            # 4. الرجل المشنوق (Hanging Man)
+            if lower_wick0 >= (2 * body0) and upper_wick0 <= (0.2 * body0) and body0 > 0:
+                pattern_name = "الرجل المشنوق"
+                direction = "بيع (Short)"
+                
+            # 5. الغطاء السحابي الداكن (Dark Cloud Cover)
+            elif is_bull1 and is_bear0 and c0['open'] > c1['high'] and c0['close'] < (c1['open'] + c1['close']) / 2 and c0['close'] > c1['open']:
+                pattern_name = "الغطاء السحابي الداكن"
+                direction = "بيع (Short)"
+                
+            # 6. الغربان السوداء الثلاثة (Three Black Crows)
+            elif is_bear2 and is_bear1 and is_bear0 and (c0['close'] < c1['close'] < c2['close']) and (c0['open'] < c1['open'] < c2['open']):
+                pattern_name = "الغربان السوداء الثلاثة"
+                direction = "بيع (Short)"
+
+        # تطبيق فلتر EMA 200 إذا كان مفعلاً
+        if pattern_name:
+            if use_ema200:
+                if direction == "شراء (Long)" and c0['close'] < c0['ema200']:
+                    continue
+                if direction == "بيع (Short)" and c0['close'] > c0['ema200']:
+                    continue
+            
+            signals.append({
+                "index": i,
+                "timestamp": c0['timestamp'],
+                "pattern": pattern_name,
+                "direction": direction,
+                "entry": c0['close'],
+                "atr": c0['atr']
+            })
+    return signals
+
+# 3. محاكي الصفقات (Backtest) لحساب النتائج وإحصائيات لوحة القيادة
+def run_backtest(exchange, symbols, tf, atr_m, rr, be_active):
+    all_trades = []
+    # جلب بيانات كافية لتغطية 200 شمعة للـ EMA + آخر 5 أيام
+    limit = 680 if tf == "15m" else 300 
+    
+    for sym in symbols:
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym, timeframe=tf, limit=limit)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = calculate_indicators(df)
+            
+            signals = detect_patterns(df)
+            
+            for sig in signals:
+                idx = sig['index']
+                entry = sig['entry']
+                sl_dist = sig['atr'] * atr_m
+                tp_dist = sl_dist * rr
+                be_dist = sl_dist * 1.5
+                
+                is_long = "شراء" in sig['direction']
+                sl = entry - sl_dist if is_long else entry + sl_dist
+                tp = entry + tp_dist if is_long else entry - tp_dist
+                be_trigger = entry + be_dist if is_long else entry - be_dist
+                
+                be_triggered = False
+                outcome = None
+                pnl = 0.0
+                risk_usd = 10.0 # مخاطرة افتراضية 10 دولار لكل صفقة لحساب الربح الصافي
+                
+                # تتبع الشموع اللاحقة لمعرفة نتيجة الصفقة
+                for j in range(idx + 1, len(df)):
+                    future_c = df.iloc[j]
+                    
+                    if is_long:
+                        if be_active and not be_triggered and future_c['high'] >= be_trigger:
+                            be_triggered = True
+                            sl = entry # نقل وقف الخسارة لنقطة الدخول
+                        if future_c['low'] <= sl:
+                            outcome = "تعادل" if be_triggered else "خاسرة"
+                            pnl = 0.0 if be_triggered else -risk_usd
+                            break
+                        elif future_c['high'] >= tp:
+                            outcome = "ناجحة"
+                            pnl = risk_usd * rr
+                            break
+                    else:
+                        if be_active and not be_triggered and future_c['low'] <= be_trigger:
+                            be_triggered = True
+                            sl = entry
+                        if future_c['high'] >= sl:
+                            outcome = "تعادل" if be_triggered else "خاسرة"
+                            pnl = 0.0 if be_triggered else -risk_usd
+                            break
+                        elif future_c['low'] <= tp:
+                            outcome = "ناجحة"
+                            pnl = risk_usd * rr
+                            break
+                            
+                if outcome:
+                    all_trades.append({
+                        "الوقت": sig['timestamp'].strftime('%Y-%m-%d %H:%M'),
+                        "العملة": sym.replace('/USDT', ''),
+                        "النوع": sig['direction'],
+                        "النموذج": sig['pattern'],
+                        "الحالة": outcome,
+                        "الربح ($)": round(pnl, 2)
+                    })
+        except Exception as e:
             continue
-        df = calculate_indicators(all_data[yf_ticker])
-        if df.empty:
-            continue
+            
+    return pd.DataFrame(all_trades)
 
-        start_idx = max(200, len(df) - 480)
-        in_trade = False
-        trade_type = ""
-        entry_p = 0.0
-        sl_p = 0.0
-        tp_p = 0.0
-        be_target = 0.0
-        be_secured = False
-        entry_time = ""
+# 4. عرض الإحصائيات والجدول (مطابق للصورة الثانية والثالثة)
+exchange = ccxt.binance({'enableRateLimit': True})
 
-        fvg_active = False
-        fvg_dir = ""
-        fvg_top = 0.0
-        fvg_bottom = 0.0
-        fvg_age = 0
+with st.spinner('جاري تحليل السوق وحساب الصفقات...'):
+    trades_df = run_backtest(exchange, SYMBOLS, timeframe, atr_mult, rr_ratio, use_breakeven)
 
-        for i in range(start_idx, len(df)):
-            row = df.iloc[i]
-            curr_time = df.index[i]
-            atr = float(df["ATR"].iloc[i - 1])
-            ema200 = float(df["EMA_200"].iloc[i - 1])
-            if pd.isna(atr) or atr <= 0:
-                continue
+if not trades_df.empty:
+    trades_df = trades_df.sort_values(by="الوقت", ascending=False).reset_index(drop=True)
+    
+    total_trades = len(trades_df)
+    wins = len(trades_df[trades_df['الحالة'] == 'ناجحة'])
+    losses = len(trades_df[trades_df['الحالة'] == 'خاسرة'])
+    draws = len(trades_df[trades_df['الحالة'] == 'تعادل'])
+    
+    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0
+    net_profit = trades_df['الربح ($)'].sum()
 
-            if in_trade:
-                if trade_type == "BUY":
-                    if use_be and not be_secured and row["High"] >= be_target:
-                        sl_p = entry_p
-                        be_secured = True
-                    if row["High"] >= tp_p:
-                        pnl = trade_size * ((tp_p - entry_p) / entry_p)
-                        total_pnl += pnl
-                        wins += 1
-                        in_trade = False
-                        history_list.append({
-                            "الوقت": str(entry_time)[:16],
-                            "العملة": display_name,
-                            "النوع": "شراء (Pro AMD)",
-                            "الحالة": "ناجحة",
-                            "الربح/الخسارة ($)": round(pnl, 2),
-                        })
-                    elif row["Low"] <= sl_p:
-                        pnl = trade_size * ((sl_p - entry_p) / entry_p)
-                        total_pnl += pnl
-                        if be_secured:
-                            breakevens += 1
-                            status_lbl = "تعادل (مؤمّنة)"
-                        else:
-                            losses += 1
-                            status_lbl = "خاسرة"
-                        in_trade = False
-                        history_list.append({
-                            "الوقت": str(entry_time)[:16],
-                            "العملة": display_name,
-                            "النوع": "شراء (Pro AMD)",
-                            "الحالة": status_lbl,
-                            "الربح/الخسارة ($)": round(pnl, 2),
-                        })
-                elif trade_type == "SELL":
-                    if use_be and not be_secured and row["Low"] <= be_target:
-                        sl_p = entry_p
-                        be_secured = True
-                    if row["Low"] <= tp_p:
-                        pnl = trade_size * ((entry_p - tp_p) / entry_p)
-                        total_pnl += pnl
-                        wins += 1
-                        in_trade = False
-                        history_list.append({
-                            "الوقت": str(entry_time)[:16],
-                            "العملة": display_name,
-                            "النوع": "بيع (Pro AMD)",
-                            "الحالة": "ناجحة",
-                            "الربح/الخسارة ($)": round(pnl, 2),
-                        })
-                    elif row["High"] >= sl_p:
-                        pnl = trade_size * ((entry_p - sl_p) / entry_p)
-                        total_pnl += pnl
-                        if be_secured:
-                            breakevens += 1
-                            status_lbl = "تعادل (مؤمّنة)"
-                        else:
-                            losses += 1
-                            status_lbl = "خاسرة"
-                        in_trade = False
-                        history_list.append({
-                            "الوقت": str(entry_time)[:16],
-                            "العملة": display_name,
-                            "النوع": "بيع (Pro AMD)",
-                            "الحالة": status_lbl,
-                            "الربح/الخسارة ($)": round(pnl, 2),
-                        })
-            else:
-                if fvg_active:
-                    fvg_age += 1
-                    if fvg_age > 10:
-                        fvg_active = False
-                    elif (
-                        fvg_dir == "BUY"
-                        and row["Low"] <= fvg_top
-                        and row["Close"] > fvg_bottom
-                    ):
-                        if not use_ema200 or float(row["Close"]) > ema200:
-                            in_trade = True
-                            trade_type = "BUY"
-                            entry_p = float(row["Close"])
-                            sl_dist = atr_mult * atr
-                            sl_p = entry_p - sl_dist
-                            tp_p = entry_p + (sl_dist * rr_ratio)
-                            be_target = entry_p + (
-                                sl_dist * min(1.5, rr_ratio * 0.5)
-                            )
-                            be_secured = False
-                            entry_time = curr_time
-                        fvg_active = False
-                        continue
-                    elif (
-                        fvg_dir == "SELL"
-                        and row["High"] >= fvg_bottom
-                        and row["Close"] < fvg_top
-                    ):
-                        if not use_ema200 or float(row["Close"]) < ema200:
-                            in_trade = True
-                            trade_type = "SELL"
-                            entry_p = float(row["Close"])
-                            sl_dist = atr_mult * atr
-                            sl_p = entry_p + sl_dist
-                            tp_p = entry_p - (sl_dist * rr_ratio)
-                            be_target = entry_p - (
-                                sl_dist * min(1.5, rr_ratio * 0.5)
-                            )
-                            be_secured = False
-                            entry_time = curr_time
-                        fvg_active = False
-                        continue
+    st.markdown("---")
+    st.caption(f"الربح الصافي ({timeframe} - آخر 5 أيام)")
+    st.metric(label="", value=f"{net_profit:.2f} $")
 
-                acc_window = df.iloc[i - 16 : i - 4]
-                acc_high = float(acc_window["High"].max())
-                acc_low = float(acc_window["Low"].min())
-                c1 = df.iloc[i - 3]
-                c2 = df.iloc[i - 2]
-                c3 = df.iloc[i - 1]
+    st.caption("نسبة النجاح (Candlestick Patterns)")
+    st.metric(label="", value=f"{win_rate:.1f}%", delta=f"إجمالي الصفقات: {total_trades}")
 
-                manip_low = min(float(c1["Low"]), float(c2["Low"]))
-                gap_buy = float(c3["Low"]) - float(c1["High"])
-                if manip_low < acc_low and gap_buy > (0.25 * atr):
-                    fvg_active = True
-                    fvg_dir = "BUY"
-                    fvg_top = float(c3["Low"])
-                    fvg_bottom = float(c1["High"])
-                    fvg_age = 0
+    st.caption("توزيع الصفقات")
+    st.markdown(f"### {wins} ناجحة | {draws} تعادل")
+    st.markdown(f"<span style='color:#ff4b4b; background-color:rgba(255,75,75,0.1); padding:4px 8px; border-radius:4px;'>↓ -{losses} خاسرة</span>", unsafe_allow_html=True)
 
-                manip_high = max(float(c1["High"]), float(c2["High"]))
-                gap_sell = float(c1["Low"]) - float(c3["High"])
-                if manip_high > acc_high and gap_sell > (0.25 * atr):
-                    fvg_active = True
-                    fvg_dir = "SELL"
-                    fvg_top = float(c1["Low"])
-                    fvg_bottom = float(c3["High"])
-                    fvg_age = 0
+    st.markdown("---")
+    if st.button("🔄 فحص الفرص اللحظية الآن", use_container_width=True):
+        st.rerun()
 
-    return (
-        round(total_pnl, 2),
-        wins,
-        losses,
-        breakevens,
-        pd.DataFrame(history_list),
-    )
-# --- 5. فحص الإشارات اللحظية ---
-def scan_pro_amd_live(
-    yf_ticker, display_name, all_data, atr_mult, rr_ratio, use_ema200
-):
-    if yf_ticker not in all_data.columns.get_level_values(0):
-        return None
-    df = calculate_indicators(all_data[yf_ticker])
-    if df.empty:
-        return None
-
-    atr = float(df["ATR"].iloc[-2])
-    ema200 = float(df["EMA_200"].iloc[-2])
-    current_price = float(df["Close"].iloc[-1])
-    trend_lbl = "صاعد 🟢" if current_price > ema200 else "هابط 🔴"
-
-    acc_window = df.iloc[-17:-5]
-    acc_high = float(acc_window["High"].max())
-    acc_low = float(acc_window["Low"].min())
-    c1 = df.iloc[-4]
-    c2 = df.iloc[-3]
-    c3 = df.iloc[-2]
-    last_candle = df.iloc[-1]
-
-    signal = "مراقبة التجميع"
-    fvg_zone = "-"
-    sl_price = 0.0
-    tp_price = 0.0
-
-    manip_low = min(float(c1["Low"]), float(c2["Low"]))
-    gap_buy = float(c3["Low"]) - float(c1["High"])
-    if manip_low < acc_low and gap_buy > (0.25 * atr):
-        fvg_top = float(c3["Low"])
-        fvg_bottom = float(c1["High"])
-        fvg_zone = f"{round(fvg_bottom, 5)} - {round(fvg_top, 5)}"
-        if float(last_candle["Low"]) <= fvg_top and current_price > fvg_bottom:
-            if not use_ema200 or current_price > ema200:
-                signal = "شراء مؤكد (Pro AMD)"
-                sl_dist = atr_mult * atr
-                sl_price = current_price - sl_dist
-                tp_price = current_price + (sl_dist * rr_ratio)
-            else:
-                signal = "شراء مرفوض (عكس EMA 200)"
-        else:
-            signal = "تلاعب شراء + FVG قوي (انتظار)"
-
-    manip_high = max(float(c1["High"]), float(c2["High"]))
-    gap_sell = float(c1["Low"]) - float(c3["High"])
-    if manip_high > acc_high and gap_sell > (0.25 * atr):
-        fvg_top = float(c1["Low"])
-        fvg_bottom = float(c3["High"])
-        fvg_zone = f"{round(fvg_bottom, 5)} - {round(fvg_top, 5)}"
-        if float(last_candle["High"]) >= fvg_bottom and current_price < fvg_top:
-            if not use_ema200 or current_price < ema200:
-                signal = "بيع مؤكد (Pro AMD)"
-                sl_dist = atr_mult * atr
-                sl_price = current_price + sl_dist
-                tp_price = current_price - (sl_dist * rr_ratio)
-            else:
-                signal = "بيع مرفوض (عكس EMA 200)"
-        else:
-            signal = "تلاعب بيع + FVG قوي (انتظار)"
-
-    return {
-        "العملة": display_name,
-        "الاتجاه (EMA 200)": trend_lbl,
-        "السعر الحالي": round(current_price, 5),
-        "منطقة FVG": fvg_zone,
-        "الإشارة": signal,
-        f"الوقف ({atr_mult} ATR)": round(sl_price, 5) if sl_price > 0 else "-",
-        f"الهدف ({rr_ratio} R:R)": round(tp_price, 5) if tp_price > 0 else "-",
-    }
-
-
-# --- 6. واجهة التطبيق ---
-st.title("🎯 ماسح Smart Money المطور (AMD + FVG Pro)")
-
-COINS_MAP = {
-    "XLMUSDT": "XLM-USD",
-    "ZECUSDT": "ZEC-USD",
-    "XRPUSDT": "XRP-USD",
-    "HBARUSDT": "HBAR-USD",
-    "ADAUSDT": "ADA-USD",
-    "LTCUSDT": "LTC-USD",
-    "BTCUSDT": "BTC-USD",
-    "ETHUSDT": "ETH-USD",
-    "SOLUSDT": "SOL-USD",
-    "AVAXUSDT": "AVAX-USD",
-    "NEARUSDT": "NEAR-USD",
-    "LINKUSDT": "LINK-USD",
-}
-
-with st.expander("⚙️ ضبط الفريم ووقف الخسارة والعائد والفلاتر", expanded=True):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        selected_tf = st.selectbox(
-            "الإطار الزمني:", ["5m", "15m", "30m"], index=1
-        )
-    with col2:
-        atr_sl_input = st.number_input(
-            "وقف الخسارة (ATR SL):",
-            min_value=0.5,
-            max_value=5.0,
-            value=2.5,
-            step=0.1,
-            format="%.1f",
-        )
-    with col3:
-        rr_input = st.number_input(
-            "نسبة العائد (R:R):",
-            min_value=0.5,
-            max_value=5.0,
-            value=3.1,
-            step=0.1,
-            format="%.1f",
-        )
-
-    f_col1, f_col2 = st.columns(2)
-    with f_col1:
-        use_ema200_chk = st.checkbox(
-            "تفعيل فلتر الاتجاه العام (EMA 200)", value=True
-        )
-    with f_col2:
-        use_be_chk = st.checkbox(
-            "تأمين الصفقة عند 1.5 R:R (Break-Even)", value=True
-        )
-
-with st.spinner("جاري تحميل البيانات وحساب النتائج بسرعة..."):
-    all_market_data = fetch_all_data(
-        list(COINS_MAP.values()), selected_tf, period="10d"
-    )
-    net_pnl, w_count, l_count, be_count, bt_df = run_pro_amd_backtest(
-        COINS_MAP,
-        all_market_data,
-        atr_sl_input,
-        rr_input,
-        use_ema200_chk,
-        use_be_chk,
-    )
-    total_t = w_count + l_count + be_count
-    win_rate = round((w_count / total_t) * 100, 1) if total_t > 0 else 0.0
-
-c1, c2, c3 = st.columns(3)
-c1.metric(f"الربح الصافي (آخر 5 أيام - {selected_tf})", f"{net_pnl} $")
-c2.metric("نسبة النجاح (Pro AMD)", f"{win_rate}%", f"إجمالي الصفقات: {total_t}")
-c3.metric(
-    "توزيع الصفقات",
-    f"{w_count} ناجحة | {be_count} تعادل",
-    f"-{l_count} خاسرة",
-)
-
-st.divider()
-
-if st.button("فحص الفرص اللحظية الآن 🔄", use_container_width=True):
-    df_history, file_sha = load_trades()
-    scan_results = []
-    new_added = 0
-
-    for display_name, yf_ticker in COINS_MAP.items():
-        res = scan_pro_amd_live(
-            yf_ticker,
-            display_name,
-            all_market_data,
-            atr_sl_input,
-            rr_input,
-            use_ema200_chk,
-        )
-        if res:
-            scan_results.append(res)
-            if "مؤكد" in res["الإشارة"]:
-                new_row = pd.DataFrame([{
-                    "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Coin": display_name,
-                    "Timeframe": selected_tf,
-                    "Type": res["الإشارة"],
-                    "Entry_Price": res["السعر الحالي"],
-                    "Stop_Loss": res[f"الوقف ({atr_sl_input} ATR)"],
-                    "Take_Profit": res[f"الهدف ({rr_input} R:R)"],
-                    "Status": "مفتوحة",
-                    "PnL": 0.0,
-                }])
-                df_history = pd.concat(
-                    [df_history, new_row], ignore_index=True
-                )
-                new_added += 1
-
-    if new_added > 0:
-        save_trades(df_history, file_sha, f"Add {new_added} Pro-AMD signals")
-        st.success(f"تم رصد وحفظ {new_added} فرصة مؤكدة في GitHub!")
-
-    st.subheader("حالة العملات الـ 12 ومناطق FVG اللحظية:")
-    st.dataframe(pd.DataFrame(scan_results), use_container_width=True)
-
-if not bt_df.empty:
-    st.divider()
-    st.subheader(
-        f"📋 سجل الصفقات المحسوبة (SL: {atr_sl_input} ATR | R:R: 1:{rr_input})"
-    )
-    st.dataframe(
-        bt_df.sort_values(by="الوقت", ascending=False), use_container_width=True
-    )
+    st.markdown("---")
+    st.subheader(f"📋 سجل الصفقات المحسوبة (SL: {atr_mult} ATR | R:R: 1:{rr_ratio})")
