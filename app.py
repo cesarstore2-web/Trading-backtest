@@ -22,7 +22,6 @@ atr_mult = st.number_input("وقف الخسارة (ATR SL):", min_value=0.5, max
 rr_ratio = st.number_input("نسبة العائد (R:R):", min_value=0.5, max_value=10.0, value=def_rr, step=0.1, key=f"rr_{timeframe}")
 use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=def_ema, key=f"ema_{timeframe}")
 
-# رأس مال كل صفقة 100 دولار
 POSITION_SIZE_USD = 100.0
 
 HALAL_SYMBOLS = [
@@ -37,7 +36,6 @@ def calculate_indicators(df):
     low_close = np.abs(df['low'] - df['close'].shift())
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['atr'] = tr.rolling(14).mean()
-    
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
     df['downtrend'] = df['close'].shift(1) < df['close'].shift(3)
     df['uptrend'] = df['close'].shift(1) > df['close'].shift(3)
@@ -93,14 +91,13 @@ def check_candle_pattern(df, i, apply_ema):
 
     return pattern_name, direction
 
-# 4. جلب البيانات وتحليل السوق لمدة 1 يوم
+# 4. جلب البيانات وتحليل السوق
 def analyze_market(symbols, tf, atr_m, rr, apply_ema):
     exchange = ccxt.kraken({'enableRateLimit': True})
     all_trades = []
     live_recommendations = []
     errors = []
     
-    # تحديد بداية الـ 24 ساعة الماضية
     cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
     
     for sym in symbols:
@@ -114,7 +111,6 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df = calculate_indicators(df)
             
-            # أ) التوصيات المستقبلية (آخر شمعتين مغلقتين)
             for check_idx in [len(df) - 2, len(df) - 3]:
                 p_name, p_dir = check_candle_pattern(df, check_idx, apply_ema)
                 if p_name and not pd.isna(df.iloc[check_idx]['atr']):
@@ -135,7 +131,6 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
                     })
                     break
 
-            # ب) الصفقات التاريخية لآخر 24 ساعة برأس مال 100$ لكل صفقة
             start_idx = min(200, len(df) - 2)
             for i in range(start_idx, len(df) - 1):
                 c0 = df.iloc[i]
@@ -194,16 +189,14 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
             
     return pd.DataFrame(all_trades), live_recommendations, errors
 
-# 5. عرض الواجهة والنتائج دائماً
+# 5. عرض النتائج (بدون كتل with متداخلة لتفادي أخطاء النسخ)
 st.markdown("---")
-with st.spinner('جاري تحليل السوق لآخر 24 ساعة...'):
-    trades_df, live_recs, fetch_errors = analyze_market(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_ema200)
+trades_df, live_recs, fetch_errors = analyze_market(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_ema200)
 
 if fetch_errors and trades_df.empty:
     st.error("تنبيه من السيرفر أثناء جلب البيانات:")
     st.code("\n".join(fetch_errors[:3]))
 
-# حساب الإحصائيات دائماً (سواء وجدت صفقات أم كانت 0)
 if not trades_df.empty:
     trades_df = trades_df.sort_values(by="الوقت", ascending=False).reset_index(drop=True)
     closed_df = trades_df[trades_df['الحالة'] != 'مفتوحة ⏳']
@@ -221,13 +214,11 @@ else:
     win_rate = 0.0
     net_profit = 0.0
 
-# --- قسم الإحصائيات والربح الصافي (يظهر دائماً) ---
 st.subheader(f"💰 ملخص الأداء (1 يوم | رأس مال الصفقة: {int(POSITION_SIZE_USD)}$)")
 col1, col2 = st.columns(2)
-with col1:
-    st.metric(label=f"الربح الصافي ({timeframe} - 24 ساعة)", value=f"{net_profit:.2f} $")
-with col2:
-    st.metric(label="نسبة النجاح", value=f"{win_rate:.1f}%", delta=f"مغلقة: {total_closed} | مفتوحة: {open_trades}")
+col1.metric(label=f"الربح الصافي ({timeframe} - 24 ساعة)", value=f"{net_profit:.2f} $")
+col2.metric(label="نسبة النجاح", value=f"{win_rate:.1f}%", delta=f"مغلقة: {total_closed} | مفتوحة: {open_trades}")
 
 c_win, c_loss, c_open = st.columns(3)
-with c_win:
+c_win.markdown(f"<div style='background:rgba(0,200,83,0.15); border:1px solid #00c853; padding:12px; border-radius:8px; text-align:center;'><h3 style='color:#00e676; margin:0;'>✅ {wins} ناجحة</h3></div>", unsafe_allow_html=True)
+c_loss.markdown(f"<div style='background:rgba(255,75,75,0.15); border:1px solid #ff4b4b; padding:12px; border-radius:8px; text-align:center;'><h3 style='color:#ff5252; margin:0;'>❌ {losses} خاسرة</h3></div>", unsafe_allow_html=True)
