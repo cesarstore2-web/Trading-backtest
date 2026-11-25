@@ -9,7 +9,7 @@ st.set_page_config(page_title="مطابقة الأنماط + الدعوم وال
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
 tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=1)
-min_corr = st.slider("دقة تطابق النمط التاريخي (%):", 60, 95, 72) / 100.0
+min_corr = st.slider("دقة تطابق النمط التاريخي (%):", 55, 95, 70) / 100.0
 use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 100)", value=False)
 
 SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD", "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"]
@@ -21,7 +21,7 @@ def get_data(syms, timeframe):
     def fetch(s):
         try:
             d = ex.fetch_ohlcv(s, timeframe=timeframe, limit=450)
-            if d and len(d) > 150:
+            if d and len(d) > 120:
                 df = pd.DataFrame(d, columns=['t', 'o', 'h', 'l', 'c', 'v'])
                 df['t'] = pd.to_datetime(df['t'], unit='ms')
                 df['ema100'] = df['c'].ewm(span=100, adjust=False).mean()
@@ -35,60 +35,61 @@ def get_data(syms, timeframe):
             if df is not None: res[s] = df
     return res
 
+# دالة حساب التطابق المباشرة (تُرجع رقماً واحداً نظيفاً دون مصفوفات)
+def fast_corr(x, y):
+    xm = x - np.mean(x)
+    ym = y - np.mean(y)
+    denom = np.sqrt(np.sum(xm**2) * np.sum(ym**2))
+    return float(np.sum(xm * ym) / denom) if denom > 0 else 0.0
+
 def scan_pattern_with_sr(df, corr_thresh, ema_on):
     c, h, l, t, ema = df['c'].values, df['h'].values, df['l'].values, df['t'].values, df['ema100'].values
-    win = 15   # طول النمط (15 شمعة)
+    win = 14   # طول النمط (14 شمعة)
     fwd = 12   # مدى التوقع المستقبلي (12 شمعة)
     sigs = []
-    last_sig_idx = -10
+    last_sig_idx = -8
 
-    for i in range(110, len(df) - 1):
-        if i - last_sig_idx < 8: continue
+    for i in range(105, len(df) - 1):
+        if i - last_sig_idx < 6: continue
         if ema_on and c[i] < ema[i]: continue
 
-        # 1. استخراج الدعوم والمقاومات المحورية قبل الشمعة الحالية
-        lookback = c[max(0, i-80):i]
-        low_win = l[max(0, i-80):i]
-        high_win = h[max(0, i-80):i]
-        
-        sup = np.min(low_win[-35:])   # أقرب دعم قريب
-        res = np.max(high_win[:-5])   # أقرب مقاومة سابقة
+        # 1. استخراج الدعوم والمقاومات المحورية
+        low_win = l[max(0, i-70):i]
+        high_win = h[max(0, i-70):i]
+        sup = float(np.min(low_win[-35:]))
+        res = float(np.max(high_win[:-3]))
 
-        # احترام الدعم: السعر قريب من الدعم (ليس متضخماً في القمة) ولم يكسره
-        dist_from_sup = (c[i] - sup) / sup
-        if dist_from_sup > 0.025 or c[i] <= sup:
+        # احترام الدعم: السعر قريب من منطقة الدعم (ضمن 3.5%) وفوقها
+        if c[i] <= sup or ((c[i] - sup) / sup) > 0.035:
             continue
 
         # 2. مطابقة النمط التاريخي
         curr_pat = c[i - win + 1 : i + 1]
-        if np.std(curr_pat) == 0: continue
-
         best_corr = -1.0
         best_j = -1
 
         for j in range(win, i - win - fwd):
             hist_pat = c[j - win + 1 : j + 1]
-            if np.std(hist_pat) == 0: continue
-            corr_val = np.corrcoef(curr_pat, hist_pat)[0, 1]
-            if corr_val > best_corr:
-                best_corr = corr_val
+            cv = fast_corr(curr_pat, hist_pat)
+            if cv > best_corr:
+                best_corr = cv
                 best_j = j
 
-        # 3. التحقق من التطابق + احترام المقاومة كهدف والدعم كوقف خسارة
+        # 3. التحقق من التطابق واحترام المقاومة والدعم
         if best_corr >= corr_thresh and best_j != -1:
             hist_entry = c[best_j]
-            fut_high = np.max(h[best_j + 1 : best_j + fwd + 1])
+            fut_high = float(np.max(h[best_j + 1 : best_j + fwd + 1]))
             up_pct = (fut_high - hist_entry) / hist_entry
 
-            if up_pct >= 0.005:
-                entry = c[i]
+            if up_pct >= 0.004:
+                entry = float(c[i])
                 proj_tp = entry * (1 + up_pct)
-                # الهدف يحترم المقاومة (يأخذ الأقرب بين التوقع والمقاومة)
+                # الهدف يحترم المقاومة
                 tp = min(proj_tp, res) if res > entry * 1.004 else proj_tp
                 # الستوب لوس يحترم الدعم (أسفل الدعم بقليل)
-                sl = sup * 0.997
+                sl = sup * 0.996
 
-                if tp > entry > sl and (tp - entry) >= (entry - sl) * 0.8:
+                if tp > entry > sl:
                     last_sig_idx = i
                     lbl = f"تطابق {int(best_corr*100)}% (دعم/مقاومة)"
                     sigs.append((i, pd.Timestamp(t[i]), lbl, entry, sl, tp))
@@ -96,6 +97,8 @@ def scan_pattern_with_sr(df, corr_thresh, ema_on):
     return sigs
 
 data = get_data(SYMBOLS, tf)
+st.caption(f"حالة الاتصال بالسوق: تم جلب بيانات {len(data)} من أصل {len(SYMBOLS)} عملات بنجاح")
+
 trades, recs = [], []
 hours_back = 168 if tf == "4h" else 24
 period_label = "7 أيام" if tf == "4h" else "24 ساعة"
@@ -110,7 +113,7 @@ for sym, df in data.items():
         if ts >= cut:
             out, pnl = "مفتوحة ⏳", 0.0
             for j in range(idx + 1, len(df)):
-                fh, fl = df['h'].iloc[j], df['l'].iloc[j]
+                fh, fl = float(df['h'].iloc[j]), float(df['l'].iloc[j])
                 if fl <= sl:
                     out, pnl = "خاسرة", -POS_USD * ((ent - sl) / ent)
                     break
