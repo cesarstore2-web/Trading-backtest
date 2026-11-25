@@ -5,7 +5,7 @@ import ta
 import time
 
 # إعدادات الصفحة
-st.set_page_config(page_title="CRYPTO SCALPING AI | LIVE & 24H STATS", layout="centered")
+st.set_page_config(page_title="CRYPTO SCALPING AI | ALL-IN-ONE", layout="centered")
 
 # تصميم النيون الداكن (Cyberpunk UI)
 st.markdown("""
@@ -23,6 +23,53 @@ st.markdown("""
         background: linear-gradient(90deg, #0d1b2a 0%, #1b263b 100%);
         box-shadow: 0 0 15px rgba(0, 255, 204, 0.3);
         margin-bottom: 20px;
+    }
+    .scan-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 15px;
+        margin-bottom: 25px;
+        background-color: #131926;
+        border: 1px solid #00ffcc;
+        box-shadow: 0 0 15px rgba(0, 255, 204, 0.15);
+    }
+    .scan-table th {
+        background-color: #0d1b2a;
+        color: #00ffcc;
+        padding: 12px 8px;
+        border-bottom: 2px solid #00ffcc;
+        font-size: 13px;
+        text-align: center;
+    }
+    .scan-table td {
+        padding: 10px 8px;
+        border-bottom: 1px solid #233044;
+        text-align: center;
+        font-weight: bold;
+        font-size: 13px;
+    }
+    .badge-buy {
+        color: #00ff66;
+        background-color: rgba(0, 255, 102, 0.15);
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid #00ff66;
+        text-shadow: 0 0 8px #00ff66;
+    }
+    .badge-sell {
+        color: #ff0055;
+        background-color: rgba(255, 0, 85, 0.15);
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid #ff0055;
+        text-shadow: 0 0 8px #ff0055;
+    }
+    .badge-wait {
+        color: #ffcc00;
+        background-color: rgba(255, 204, 0, 0.15);
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid #ffcc00;
     }
     .signal-box-buy {
         border: 2px solid #00ff66;
@@ -52,14 +99,14 @@ st.markdown("""
         margin: 20px 0;
     }
     .big-text-buy {
-        font-size: 65px;
+        font-size: 60px;
         font-weight: bold;
         color: #00ff66;
         text-shadow: 0 0 20px #00ff66;
         margin: 0;
     }
     .big-text-sell {
-        font-size: 65px;
+        font-size: 60px;
         font-weight: bold;
         color: #ff0055;
         text-shadow: 0 0 20px #ff0055;
@@ -78,7 +125,7 @@ st.markdown("""
         margin-top: 15px;
         padding-top: 15px;
         border-top: 1px dashed rgba(255,255,255,0.2);
-        font-size: 16px;
+        font-size: 15px;
         font-weight: bold;
     }
     .confluence-row {
@@ -121,12 +168,12 @@ st.markdown("""
         box-shadow: 0 0 10px rgba(0, 255, 204, 0.15);
     }
     .perf-title {
-        font-size: 12px;
+        font-size: 11px;
         color: #a0aec0;
         margin-bottom: 5px;
     }
     .perf-val {
-        font-size: 20px;
+        font-size: 18px;
         font-weight: bold;
     }
 </style>
@@ -135,12 +182,12 @@ st.markdown("""
 # الهيدر العلوي
 st.markdown("""
 <div class="header-box">
-    <h2 style="margin:0; color:#00ffcc;">⚡ CRYPTO SCALPING AI | LIVE & 24H STATS ⚡</h2>
-    <p style="margin:5px 0 0 0; color:#a0aec0; font-size:14px;">خوارزمية المضاربة السريعة + محاكاة حقيقية لآخر 24 ساعة</p>
+    <h2 style="margin:0; color:#00ffcc;">⚡ CRYPTO SCALPING AI | LIVE RADAR ⚡</h2>
+    <p style="margin:5px 0 0 0; color:#a0aec0; font-size:13px;">مسح شامل فوري للعملات التسع + فريمات 1m / 3m / 5m / 15m</p>
 </div>
 """, unsafe_allow_html=True)
 
-# قائمة العملات التسع المطلوبة
+# قائمة العملات التسع
 pairs = {
     "BTCUSDT": "BTC-USD",
     "ETHUSDT": "ETH-USD",
@@ -153,23 +200,17 @@ pairs = {
     "PAXGUSDT": "PAXG-USD"
 }
 
-# شريط التحكم
-col1, col2, col3 = st.columns([1.8, 1.3, 1.4])
+pair_options = ["🌐 ALL COINS (مسح شامل)"] + list(pairs.keys())
+timeframe_options = ["1m", "3m", "5m", "15m"]
+
+col1, col2, col3 = st.columns([2.0, 1.1, 1.4])
 with col1:
-    selected_pair = st.selectbox("PAIR:", list(pairs.keys()), label_visibility="collapsed")
+    selected_mode = st.selectbox("PAIR:", pair_options, index=0, label_visibility="collapsed")
 with col2:
-    selected_tf = st.selectbox("TIMEFRAME:", ["5m", "15m"], label_visibility="collapsed")
+    selected_tf = st.selectbox("TIMEFRAME:", timeframe_options, index=1, label_visibility="collapsed")
 with col3:
-    start_btn = st.button("▶ SCALP SCAN", use_container_width=True, type="primary")
-
-# جلب البيانات الحية من السوق
-def fetch_scalp_data(ticker, interval):
-    df = yf.download(ticker, period="5d", interval=interval, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df.dropna()
-
-# تنسيق الأرقام العشرية حسب سعر العملة
+    refresh_btn = st.button("🔄 REFRESH SCAN", use_container_width=True, type="primary")
+# تنسيق الأسعار
 def format_price(price):
     if price < 1:
         return f"{price:.5f}"
@@ -178,47 +219,122 @@ def format_price(price):
     else:
         return f"{price:.2f}"
 
-# دالة محاكاة صفقات آخر 24 ساعة (مع خصم عمولة المنصة 0.1% دخول وخروج)
-def run_24h_backtest(df, interval, trade_size=100.0, fee_rate=0.001):
-    candles_24h = 288 if interval == "5m" else 96
-    if len(df) < candles_24h + 20:
+# جلب البيانات (مع بناء فريم 3m من شموع 1m لضمان الدقة)
+def fetch_scalp_data(ticker, interval):
+    if interval == "3m":
+        df = yf.download(ticker, period="2d", interval="1m", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna()
+        df_3m = df.resample('3min').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
+        return df_3m
+    else:
+        period = "1d" if interval == "1m" else "5d"
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df.dropna()
+
+# تحليل عملة واحدة
+def analyze_coin(df):
+    df['EMA9'] = ta.trend.ema_indicator(df['Close'], window=9)
+    df['EMA21'] = ta.trend.ema_indicator(df['Close'], window=21)
+    df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
+    df['RSI7'] = ta.momentum.rsi(df['Close'], window=7)
+    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+    df = df.dropna()
+
+    if len(df) < 20:
+        return None
+
+    last = df.iloc[-2]
+    curr = df.iloc[-1]
+    price = curr['Close']
+    atr = last['ATR']
+
+    c1 = last['EMA9'] > last['EMA21']
+    c2 = price > last['EMA50']
+    c3 = last['RSI7'] > 50
+    c4 = last['Close'] > last['Open']
+    c5 = last['ATR'] >= df['ATR'].tail(15).mean() * 0.9
+    c6 = 25 < last['RSI7'] < 75
+
+    conditions = [
+        ("1. FAST CROSS (EMA 9/21)", c1),
+        ("2. MICRO TREND (EMA 50)", c2),
+        ("3. SCALP MOMENTUM (RSI 7)", c3),
+        ("4. CANDLE BODY DIRECTION", c4),
+        ("5. LIQUIDITY / VOLATILITY", c5),
+        ("6. EXHAUSTION FILTER", c6)
+    ]
+
+    bull_score = sum([1 for _, st_val in conditions if st_val])
+    bear_score = 6 - bull_score
+
+    if bull_score >= 4:
+        decision = "BUY"
+        conf = int((bull_score / 6) * 100)
+        sl = price - (1.2 * atr)
+        tp = price + (2.0 * atr)
+    elif bear_score >= 4:
+        decision = "SELL"
+        conf = int((bear_score / 6) * 100)
+        sl = price + (1.2 * atr)
+        tp = price - (2.0 * atr)
+    else:
+        decision = "WAIT"
+        conf = 50
+        sl = 0.0
+        tp = 0.0
+
+    return {
+        "df": df,
+        "price": price,
+        "decision": decision,
+        "conf": conf,
+        "sl": sl,
+        "tp": tp,
+        "conditions": conditions
+    }
+
+# محاكاة أداء 24 ساعة
+def run_backtest(df, interval, trade_size=100.0, fee_rate=0.001):
+    candles_map = {"1m": 1440, "3m": 480, "5m": 288, "15m": 96}
+    lookback = min(candles_map.get(interval, 480), len(df) - 20)
+    if lookback <= 10:
         return 0, 0, 0.0, 0.0
 
-    start_idx = len(df) - candles_24h
-    wins = 0
-    losses = 0
-    net_profit = 0.0
-    in_trade = False
-    trade_type = ""
-    entry_p = 0.0
-    sl_p = 0.0
-    tp_p = 0.0
+    start_idx = len(df) - lookback
+    wins, losses, net_profit = 0, 0, 0.0
+    in_trade, trade_type = False, ""
+    entry_p, sl_p, tp_p = 0.0, 0.0, 0.0
 
     for i in range(start_idx, len(df) - 1):
         row = df.iloc[i]
-        
         if in_trade:
             if trade_type == "BUY":
                 if row['Low'] <= sl_p:
                     losses += 1
-                    gross = -trade_size * ((entry_p - sl_p) / entry_p)
-                    net_profit += gross - (trade_size * fee_rate * 2)
+                    net_profit += (-trade_size * ((entry_p - sl_p) / entry_p)) - (trade_size * fee_rate * 2)
                     in_trade = False
                 elif row['High'] >= tp_p:
                     wins += 1
-                    gross = trade_size * ((tp_p - entry_p) / entry_p)
-                    net_profit += gross - (trade_size * fee_rate * 2)
+                    net_profit += (trade_size * ((tp_p - entry_p) / entry_p)) - (trade_size * fee_rate * 2)
                     in_trade = False
             elif trade_type == "SELL":
                 if row['High'] >= sl_p:
                     losses += 1
-                    gross = -trade_size * ((sl_p - entry_p) / entry_p)
-                    net_profit += gross - (trade_size * fee_rate * 2)
+                    net_profit += (-trade_size * ((sl_p - entry_p) / entry_p)) - (trade_size * fee_rate * 2)
                     in_trade = False
                 elif row['Low'] <= tp_p:
                     wins += 1
-                    gross = trade_size * ((entry_p - tp_p) / entry_p)
-                    net_profit += gross - (trade_size * fee_rate * 2)
+                    net_profit += (trade_size * ((entry_p - tp_p) / entry_p)) - (trade_size * fee_rate * 2)
                     in_trade = False
             continue
 
@@ -232,16 +348,13 @@ def run_24h_backtest(df, interval, trade_size=100.0, fee_rate=0.001):
 
         bull = sum([c1, c2, c3, c4, c5, c6])
         bear = 6 - bull
-
         if bull >= 4:
-            in_trade = True
-            trade_type = "BUY"
+            in_trade, trade_type = True, "BUY"
             entry_p = row['Close']
             sl_p = entry_p - (1.2 * row['ATR'])
             tp_p = entry_p + (2.0 * row['ATR'])
         elif bear >= 4:
-            in_trade = True
-            trade_type = "SELL"
+            in_trade, trade_type = True, "SELL"
             entry_p = row['Close']
             sl_p = entry_p + (1.2 * row['ATR'])
             tp_p = entry_p - (2.0 * row['ATR'])
@@ -250,65 +363,129 @@ def run_24h_backtest(df, interval, trade_size=100.0, fee_rate=0.001):
     win_rate = (wins / total * 100) if total > 0 else 0.0
     return wins, losses, win_rate, net_profit
 
-if start_btn:
-    placeholder = st.empty()
+# الوضع الافتراضي: مسح شامل لكل العملات التسع
+if selected_mode == "🌐 ALL COINS (مسح شامل)":
+    st.markdown(f"<h4 style='color:#00ffcc; margin-bottom:5px;'>📡 LIVE MULTI-COIN RADAR ({selected_tf.upper()})</h4>", unsafe_allow_html=True)
     
-    with placeholder.container():
-        st.markdown(f"""
-        <div class="signal-box-scan">
-            <p class="big-text-scan">SCANNING...</p>
-            <p style="color:#ffffff; margin-top:10px;">CONF: --% &nbsp;|&nbsp; MODE: SCALPING ({selected_tf.upper()}) &nbsp;|&nbsp; ANALYZING...</p>
+    progress_bar = st.progress(0)
+    rows_html = ""
+    total_wins, total_losses, total_net = 0, 0, 0.0
+
+    for idx, (coin_name, ticker) in enumerate(pairs.items()):
+        df = fetch_scalp_data(ticker, selected_tf)
+        res = analyze_coin(df)
+        
+        if res:
+            w, l, wr, net = run_backtest(res['df'], selected_tf)
+            total_wins += w
+            total_losses += l
+            total_net += net
+
+            dec = res['decision']
+            if dec == "BUY":
+                badge = f'<span class="badge-buy">BUY ({res["conf"]}%)</span>'
+                sl_str = format_price(res['sl'])
+                tp_str = format_price(res['tp'])
+            elif dec == "SELL":
+                badge = f'<span class="badge-sell">SELL ({res["conf"]}%)</span>'
+                sl_str = format_price(res['sl'])
+                tp_str = format_price(res['tp'])
+            else:
+                badge = '<span class="badge-wait">WAIT</span>'
+                sl_str = "-"
+                tp_str = "-"
+
+            net_color = "#00ff66" if net >= 0 else "#ff0055"
+            rows_html += f"""
+            <tr>
+                <td style="color:#00ffcc;">{coin_name}</td>
+                <td>{format_price(res['price'])}</td>
+                <td>{badge}</td>
+                <td style="color:#ff0055;">{sl_str}</td>
+                <td style="color:#00ff66;">{tp_str}</td>
+                <td style="color:{net_color};">${net:+.2f}</td>
+            </tr>
+            """
+        progress_bar.progress((idx + 1) / len(pairs))
+    
+    progress_bar.empty()
+
+    overall_wr = (total_wins / (total_wins + total_losses) * 100) if (total_wins + total_losses) > 0 else 0.0
+    net_col = "#00ff66" if total_net >= 0 else "#ff0055"
+
+    st.markdown(f"""
+    <div class="perf-grid">
+        <div class="perf-card">
+            <div class="perf-title">TOTAL WINS (24H)</div>
+            <div class="perf-val" style="color:#00ff66;">{total_wins} 🟢</div>
         </div>
-        """, unsafe_allow_html=True)
-        time.sleep(1.0)
+        <div class="perf-card">
+            <div class="perf-title">TOTAL LOSSES (24H)</div>
+            <div class="perf-val" style="color:#ff0055;">{total_losses} 🔴</div>
+        </div>
+        <div class="perf-card">
+            <div class="perf-title">AVG WIN RATE</div>
+            <div class="perf-val" style="color:#00ffcc;">{overall_wr:.1f}%</div>
+        </div>
+        <div class="perf-card">
+            <div class="perf-title">PORTFOLIO NET</div>
+            <div class="perf-val" style="color:{net_col};">${total_net:+.2f}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    df = fetch_scalp_data(pairs[selected_pair], selected_tf)
-    
-    if len(df) > 50:
-        df['EMA9'] = ta.trend.ema_indicator(df['Close'], window=9)
-        df['EMA21'] = ta.trend.ema_indicator(df['Close'], window=21)
-        df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
-        df['RSI7'] = ta.momentum.rsi(df['Close'], window=7)
-        df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
-        df = df.dropna()
+    st.markdown(f"""
+    <table class="scan-table">
+        <thead>
+            <tr>
+                <th>PAIR</th>
+                <th>PRICE</th>
+                <th>SIGNAL</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>24H PNL</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows_html}
+        </tbody>
+    </table>
+    """, unsafe_allow_html=True)
 
-        wins, losses, win_rate, net_profit = run_24h_backtest(df, selected_tf, trade_size=100.0)
-        
-        last = df.iloc[-2]
-        curr = df.iloc[-1]
-        price = curr['Close']
-        atr = last['ATR']
-        
-        c1_fast_trend = last['EMA9'] > last['EMA21']
-        c2_macro_trend = price > last['EMA50']
-        c3_fast_momentum = last['RSI7'] > 50
-        c4_candle_action = last['Close'] > last['Open']
-        c5_volatility_spike = last['ATR'] >= df['ATR'].tail(15).mean() * 0.9
-        c6_rsi_not_extreme = 25 < last['RSI7'] < 75
+# وضع تحليل عملة واحدة بالتفصيل
+else:
+    df = fetch_scalp_data(pairs[selected_mode], selected_tf)
+    res = analyze_coin(df)
 
-        conditions = [
-            ("1. FAST CROSS (EMA 9/21)", c1_fast_trend),
-            ("2. MICRO TREND (EMA 50)", c2_macro_trend),
-            ("3. SCALP MOMENTUM (RSI 7)", c3_fast_momentum),
-            ("4. CANDLE BODY DIRECTION", c4_candle_action),
-            ("5. LIQUIDITY / VOLATILITY", c5_volatility_spike),
-            ("6. EXHAUSTION FILTER", c6_rsi_not_extreme)
-        ]
+    if res:
+        wins, losses, win_rate, net_profit = run_backtest(res['df'], selected_tf)
+        dec = res['decision']
+        price = res['price']
 
-        bull_score = sum([1 for _, status in conditions if status])
-        bear_score = 6 - bull_score
-
-        if bull_score >= 4:
-            decision = "BUY"
-            conf = int((bull_score / 6) * 100)
-            box_class = "signal-box-buy"
-            text_class = "big-text-buy"
-            sl = price - (1.2 * atr)
-            tp = price + (2.0 * atr)
+        if dec == "BUY":
+            box_class, text_class = "signal-box-buy", "big-text-buy"
             targets_html = f"""
             <div class="targets-box">
                 <span style="color:#00ffcc;">ENTRY: {format_price(price)}</span>
-                <span style="color:#ff0055;">SL: {format_price(sl)}</span>
-                <span style="color:#00ff66;">TP: {format_price(tp)}</span>
-            </div>
-            """
+                <span style="color:#ff0055;">SL: {format_price(res['sl'])}</span>
+                <span style="color:#00ff66;">TP: {format_price(res['tp'])}</span>
+            </div>"""
+        elif dec == "SELL":
+            box_class, text_class = "signal-box-sell", "big-text-sell"
+            targets_html = f"""
+            <div class="targets-box">
+                <span style="color:#00ffcc;">ENTRY: {format_price(price)}</span>
+                <span style="color:#ff0055;">SL: {format_price(res['sl'])}</span>
+                <span style="color:#00ff66;">TP: {format_price(res['tp'])}</span>
+            </div>"""
+        else:
+            box_class, text_class = "signal-box-scan", "big-text-scan"
+            targets_html = f"""
+            <div class="targets-box">
+                <span style="color:#ffcc00;">PRICE: {format_price(price)} (CHOPPY MARKET - WAIT)</span>
+            </div>"""
+
+        profit_color = "#00ff66" if net_profit >= 0 else "#ff0055"
+
+        st.markdown(f"""
+        <div class="{box_class}">
