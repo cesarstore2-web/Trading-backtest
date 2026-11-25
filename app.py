@@ -22,6 +22,7 @@ atr_mult = st.number_input("وقف الخسارة (ATR SL):", min_value=0.5, max
 rr_ratio = st.number_input("نسبة العائد (R:R):", min_value=0.5, max_value=10.0, value=def_rr, step=0.1, key=f"rr_{timeframe}")
 use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=def_ema, key=f"ema_{timeframe}")
 
+# رأس مال كل صفقة 100 دولار
 POSITION_SIZE_USD = 100.0
 
 HALAL_SYMBOLS = [
@@ -92,14 +93,15 @@ def check_candle_pattern(df, i, apply_ema):
 
     return pattern_name, direction
 
-# 4. جلب البيانات وتحليل السوق
+# 4. جلب البيانات وتحليل السوق لمدة 1 يوم
 def analyze_market(symbols, tf, atr_m, rr, apply_ema):
     exchange = ccxt.kraken({'enableRateLimit': True})
     all_trades = []
     live_recommendations = []
     errors = []
     
-    cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+    # تحديد بداية الـ 24 ساعة الماضية
+    cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
     
     for sym in symbols:
         try:
@@ -133,7 +135,7 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
                     })
                     break
 
-            # ب) الصفقات التاريخية لآخر 24 ساعة
+            # ب) الصفقات التاريخية لآخر 24 ساعة برأس مال 100$ لكل صفقة
             start_idx = min(200, len(df) - 2)
             for i in range(start_idx, len(df) - 1):
                 c0 = df.iloc[i]
@@ -192,38 +194,40 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
             
     return pd.DataFrame(all_trades), live_recommendations, errors
 
-# 5. عرض الواجهة والنتائج
+# 5. عرض الواجهة والنتائج دائماً
 st.markdown("---")
-with st.spinner('جاري جلب البيانات وتحليل السوق...'):
+with st.spinner('جاري تحليل السوق لآخر 24 ساعة...'):
     trades_df, live_recs, fetch_errors = analyze_market(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_ema200)
 
 if fetch_errors and trades_df.empty:
-    st.error("تنبيه من السيرفر:")
+    st.error("تنبيه من السيرفر أثناء جلب البيانات:")
     st.code("\n".join(fetch_errors[:3]))
 
-# التوصيات المستقبلية
-st.subheader("🎯 توصيات مستقبلية (الفرص اللحظية الآن)")
-if live_recs:
-    for rec in live_recs:
-        is_buy = "شراء" in rec["النوع"]
-        bg = "rgba(0, 200, 83, 0.15)" if is_buy else "rgba(255, 75, 75, 0.15)"
-        border = "#00c853" if is_buy else "#ff4b4b"
-        t_color = "#00e676" if is_buy else "#ff5252"
-        icon = "🟢" if is_buy else "🔴"
-        dec = 4 if rec["الدخول"] < 10 else 2
-        
-        html_card = f"<div style='background-color:{bg}; border-right:6px solid {border}; padding:15px; border-radius:8px; margin-bottom:12px;'>"
-        html_card += f"<div style='color:{t_color}; font-size:1.25rem; font-weight:bold; margin-bottom:6px;'>{icon} {rec['العملة']} | {rec['النوع']} — {rec['النموذج']} ({rec['الوقت']} UTC)</div>"
-        html_card += f"<div style='font-size:1.05rem;'><b>🔹 الدخول:</b> <code>{rec['الدخول']:.{dec}f}</code> | <b style='color:#00e676;'>🎯 الهدف:</b> <code>{rec['الهدف']:.{dec}f}</code> | <b style='color:#ff5252;'>🛑 الوقف:</b> <code>{rec['الوقف']:.{dec}f}</code></div>"
-        html_card += "</div>"
-        st.markdown(html_card, unsafe_allow_html=True)
-else:
-    st.info("لا توجد إشارة جديدة مكتملة في آخر شمعتين حالياً.")
-
-# الإحصائيات والجدول
+# حساب الإحصائيات دائماً (سواء وجدت صفقات أم كانت 0)
 if not trades_df.empty:
     trades_df = trades_df.sort_values(by="الوقت", ascending=False).reset_index(drop=True)
-    
     closed_df = trades_df[trades_df['الحالة'] != 'مفتوحة ⏳']
     total_closed = len(closed_df)
     wins = len(closed_df[closed_df['الحالة'] == 'ناجحة'])
+    losses = len(closed_df[closed_df['الحالة'] == 'خاسرة'])
+    open_trades = len(trades_df[trades_df['الحالة'] == 'مفتوحة ⏳'])
+    win_rate = (wins / total_closed) * 100 if total_closed > 0 else 0.0
+    net_profit = closed_df['الربح ($)'].sum()
+else:
+    total_closed = 0
+    wins = 0
+    losses = 0
+    open_trades = 0
+    win_rate = 0.0
+    net_profit = 0.0
+
+# --- قسم الإحصائيات والربح الصافي (يظهر دائماً) ---
+st.subheader(f"💰 ملخص الأداء (1 يوم | رأس مال الصفقة: {int(POSITION_SIZE_USD)}$)")
+col1, col2 = st.columns(2)
+with col1:
+    st.metric(label=f"الربح الصافي ({timeframe} - 24 ساعة)", value=f"{net_profit:.2f} $")
+with col2:
+    st.metric(label="نسبة النجاح", value=f"{win_rate:.1f}%", delta=f"مغلقة: {total_closed} | مفتوحة: {open_trades}")
+
+c_win, c_loss, c_open = st.columns(3)
+with c_win:
