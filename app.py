@@ -5,11 +5,11 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="مطابقة الأنماط + الدعوم والمقاومات", layout="centered")
+st.set_page_config(page_title="موجات إليوت Wave 0 إلى Wave 5 - Spot", layout="centered")
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
 tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=1)
-min_corr = st.slider("دقة تطابق النمط التاريخي (%):", 55, 95, 70) / 100.0
+fib_mult = st.selectbox("معامل امتداد الموجة الخامسة (Wave 5 Fib):", [1.618, 2.0, 2.618], index=1)
 use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 100)", value=False)
 
 SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD", "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"]
@@ -25,6 +25,11 @@ def get_data(syms, timeframe):
                 df = pd.DataFrame(d, columns=['t', 'o', 'h', 'l', 'c', 'v'])
                 df['t'] = pd.to_datetime(df['t'], unit='ms')
                 df['ema100'] = df['c'].ewm(span=100, adjust=False).mean()
+                delta = df['c'].diff()
+                gain = delta.clip(lower=0).rolling(14).mean()
+                loss = (-delta.clip(upper=0)).rolling(14).mean()
+                rs = gain / loss.replace(0, np.nan)
+                df['rsi'] = 100 - (100 / (1 + rs))
                 return s, df
         except Exception:
             pass
@@ -35,69 +40,61 @@ def get_data(syms, timeframe):
             if df is not None: res[s] = df
     return res
 
-# دالة حساب التطابق المباشرة (تُرجع رقماً واحداً نظيفاً دون مصفوفات)
-def fast_corr(x, y):
-    xm = x - np.mean(x)
-    ym = y - np.mean(y)
-    denom = np.sqrt(np.sum(xm**2) * np.sum(ym**2))
-    return float(np.sum(xm * ym) / denom) if denom > 0 else 0.0
-
-def scan_pattern_with_sr(df, corr_thresh, ema_on):
-    c, h, l, t, ema = df['c'].values, df['h'].values, df['l'].values, df['t'].values, df['ema100'].values
-    win = 14   # طول النمط (14 شمعة)
-    fwd = 12   # مدى التوقع المستقبلي (12 شمعة)
+def scan_elliott_wave0_to_5(df, w5_fib, ema_on):
+    o, h, l, c, t, ema, rsi = df['o'].values, df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['ema100'].values, df['rsi'].values
     sigs = []
-    last_sig_idx = -8
+    last_w0_price = -1.0
 
     for i in range(105, len(df) - 1):
-        if i - last_sig_idx < 6: continue
+        if np.isnan(rsi[i]): continue
         if ema_on and c[i] < ema[i]: continue
 
-        # 1. استخراج الدعوم والمقاومات المحورية
-        low_win = l[max(0, i-70):i]
-        high_win = h[max(0, i-70):i]
-        sup = float(np.min(low_win[-35:]))
-        res = float(np.max(high_win[:-3]))
+        # 1. البحث عن أدنى قاع محوري حديث يمثل بداية الموجة الأم (Wave 0)
+        lookback_lows = l[i-25:i]
+        w0_idx_rel = int(np.argmin(lookback_lows))
+        w0_idx = (i - 25) + w0_idx_rel
+        w0_price = float(l[w0_idx])
 
-        # احترام الدعم: السعر قريب من منطقة الدعم (ضمن 3.5%) وفوقها
-        if c[i] <= sup or ((c[i] - sup) / sup) > 0.035:
-            continue
+        # يجب أن يكون قاع Wave 0 قد تشكل منذ 2 إلى 6 شموع فقط (بداية الانطلاقة)
+        bars_since_w0 = i - w0_idx
+        if not (2 <= bars_since_w0 <= 6): continue
+        if abs(w0_price - last_w0_price) / w0_price < 0.002: continue
 
-        # 2. مطابقة النمط التاريخي
-        curr_pat = c[i - win + 1 : i + 1]
-        best_corr = -1.0
-        best_j = -1
+        # 2. التحقق من أن Wave 0 جاء بعد تشبع بيعي وانعكاس حقيقي لبداية Wave 1
+        min_rsi_at_w0 = np.min(rsi[max(0, w0_idx-2):w0_idx+2])
+        if min_rsi_at_w0 > 42: continue
 
-        for j in range(win, i - win - fwd):
-            hist_pat = c[j - win + 1 : j + 1]
-            cv = fast_corr(curr_pat, hist_pat)
-            if cv > best_corr:
-                best_corr = cv
-                best_j = j
+        # شمعة تأكيد صاعدة تؤكد انطلاق الموجة 1 من قاع Wave 0
+        bull_wave1 = (c[i] > o[i]) and (c[i] > np.max(h[w0_idx:i]))
+        if not bull_wave1: continue
 
-        # 3. التحقق من التطابق واحترام المقاومة والدعم
-        if best_corr >= corr_thresh and best_j != -1:
-            hist_entry = c[best_j]
-            fut_high = float(np.max(h[best_j + 1 : best_j + fwd + 1]))
-            up_pct = (fut_high - hist_entry) / hist_entry
+        # 3. حساب طول الموجة التأسيسية الأولى والتنبؤ بهدف Wave 5
+        entry = float(c[i])
+        wave1_len = entry - w0_price
+        if wave1_len <= 0: continue
 
-            if up_pct >= 0.004:
-                entry = float(c[i])
-                proj_tp = entry * (1 + up_pct)
-                # الهدف يحترم المقاومة
-                tp = min(proj_tp, res) if res > entry * 1.004 else proj_tp
-                # الستوب لوس يحترم الدعم (أسفل الدعم بقليل)
-                sl = sup * 0.996
+        # التنبؤ بسعر Wave 5 بناءً على امتداد فيبوناتشي + آخر مقاومة كبرى
+        fib_w5_target = w0_price + (wave1_len * w5_fib)
+        last_major_res = float(np.max(h[max(0, i-100):w0_idx]))
 
-                if tp > entry > sl:
-                    last_sig_idx = i
-                    lbl = f"تطابق {int(best_corr*100)}% (دعم/مقاومة)"
-                    sigs.append((i, pd.Timestamp(t[i]), lbl, entry, sl, tp))
+        # اختيار الهدف بين امتداد Wave 5 المتوقع وآخر مقاومة كبرى
+        if last_major_res > entry * 1.008:
+            tp = max(fib_w5_target, last_major_res) if fib_w5_target <= last_major_res * 1.03 else last_major_res
+        else:
+            tp = fib_w5_target
+
+        # 4. قاعدة إليوت: كسر Wave 0 يلغي الترقيم (الستوب لوس أسفل Wave 0 مباشرة)
+        sl = w0_price * 0.996
+
+        if tp > entry > sl and (tp - entry) >= (entry - sl) * 1.5:
+            last_w0_price = w0_price
+            lbl = f"Wave 0 ({w0_price:.2f}) → هدف W5"
+            sigs.append((i, pd.Timestamp(t[i]), lbl, entry, sl, tp))
 
     return sigs
 
 data = get_data(SYMBOLS, tf)
-st.caption(f"حالة الاتصال بالسوق: تم جلب بيانات {len(data)} من أصل {len(SYMBOLS)} عملات بنجاح")
+st.caption(f"حالة الاتصال بالسوق: متصل بـ {len(data)} عملات رقمية نقية")
 
 trades, recs = [], []
 hours_back = 168 if tf == "4h" else 24
@@ -106,9 +103,9 @@ cut = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_ba
 
 for sym, df in data.items():
     coin = sym.replace('/USD', '')
-    for idx, ts, pat_lbl, ent, sl, tp in scan_pattern_with_sr(df, min_corr, use_ema):
+    for idx, ts, wave_lbl, ent, sl, tp in scan_elliott_wave0_to_5(df, fib_mult, use_ema):
         if idx >= len(df) - 3:
-            recs.append((coin, pat_lbl, ts.strftime('%Y-%m-%d %H:%M'), ent, sl, tp))
+            recs.append((coin, wave_lbl, ts.strftime('%Y-%m-%d %H:%M'), ent, sl, tp))
 
         if ts >= cut:
             out, pnl = "مفتوحة ⏳", 0.0
@@ -120,9 +117,9 @@ for sym, df in data.items():
                 if fh >= tp:
                     out, pnl = "ناجحة", POS_USD * ((tp - ent) / ent)
                     break
-            trades.append([ts.strftime('%Y-%m-%d %H:%M'), coin, "شراء (Spot)", pat_lbl, out, round(pnl, 2)])
+            trades.append([ts.strftime('%Y-%m-%d %H:%M'), coin, "شراء إليوت (W0→W5)", wave_lbl, out, round(pnl, 2)])
 
-df_t = pd.DataFrame(trades, columns=['الوقت', 'العملة', 'النوع', 'التطابق', 'الحالة', 'الربح ($)'])
+df_t = pd.DataFrame(trades, columns=['الوقت', 'العملة', 'الاستراتيجية', 'تفاصيل الموجة', 'الحالة', 'الربح ($)'])
 if not df_t.empty:
     df_t = df_t.sort_values('الوقت', ascending=False).reset_index(drop=True)
     cl = df_t[df_t['الحالة'] != 'مفتوحة ⏳']
@@ -142,16 +139,16 @@ cw.markdown(f"<div style='background:#00c85326;border:1px solid #00c853;padding:
 cl_c.markdown(f"<div style='background:#ff4b4b26;border:1px solid #ff4b4b;padding:10px;border-radius:8px;text-align:center;color:#ff5252;'><b>❌ {l} خاسرة</b></div>", unsafe_allow_html=True)
 co.markdown(f"<div style='background:#ffc10726;border:1px solid #ffc107;padding:10px;border-radius:8px;text-align:center;color:#ffd54f;'><b>⏳ {op} مفتوحة</b></div>", unsafe_allow_html=True)
 
-if st.button("🔄 تحديث الفرص الآن", use_container_width=True):
+if st.button("🔄 تحديث موجات إليوت الآن", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-st.subheader("🎯 توصيات الشراء المستقبلية (تطابق + دعوم ومقاومات)")
-for coin, pat_lbl, tm, ent, sl, tp in recs:
+st.subheader("🎯 توصيات موجات إليوت اللحظية (Wave 0 → Wave 5)")
+for coin, wave_lbl, tm, ent, sl, tp in recs:
     dec = 4 if ent < 10 else 2
-    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm} UTC)</b><br>🔹 دخول: <code>{ent:.{dec}f}</code> | 🎯 هدف (مقاومة): <code>{tp:.{dec}f}</code> | 🛑 وقف (تحت الدعم): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
-if not recs: st.info("لا توجد إشارة مطابقة عند الدعم في آخر شمعتين حالياً.")
+    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | انطلاق من {wave_lbl} ({tm} UTC)</b><br>🔹 دخول (بداية W1): <code>{ent:.{dec}f}</code> | 🎯 هدف (مقاومة W5): <code>{tp:.{dec}f}</code> | 🛑 وقف (تحت W0): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+if not recs: st.info("لا توجد موجة Wave 0 جديدة مكتملة الانعكاس في آخر شمعتين حالياً.")
 
-st.subheader(f"📋 سجل صفقات آخر {period_label} (100$ للصفقة)")
+st.subheader(f"📋 سجل صفقات إليوت آخر {period_label} (100$ للصفقة)")
 if not df_t.empty: st.dataframe(df_t, use_container_width=True)
 else: st.info(f"لا توجد صفقات مسجلة في آخر {period_label}.")
