@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="ماسح النماذج الفنية", layout="centered")
+st.set_page_config(page_title="ماسح النماذج - شراء سبوت", layout="centered")
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
 tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h"], index=0)
@@ -44,7 +44,7 @@ def get_data(syms, timeframe):
             if df is not None: res[s] = df
     return res
 
-def scan_candles(df, ema_on):
+def scan_spot_buy(df, ema_on):
     o, h, l, c, t, atr, ema = df['o'].values, df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['atr'].values, df['ema'].values
     sigs = []
     for i in range(200, len(df) - 1):
@@ -54,37 +54,26 @@ def scan_candles(df, ema_on):
         
         uw0 = h[i] - max(o[i], c[i])
         lw0 = min(o[i], c[i]) - l[i]
-        bull0, bear0 = c[i] > o[i], c[i] < o[i]
+        bull0 = c[i] > o[i]
         bull1, bear1 = c[i-1] > o[i-1], c[i-1] < o[i-1]
-        bull2, bear2 = c[i-2] > o[i-2], c[i-2] < o[i-2]
+        bull2 = c[i-2] > o[i-2]
         
         down_tr = c[i-1] < c[i-3]
-        up_tr = c[i-1] > c[i-3]
-        pat, d = None, None
+        pat = None
 
-        # النماذج الصاعدة (الصورة - يمين)
+        # النماذج الصاعدة فقط (شراء سبوت)
         if down_tr:
             if uw0 >= 1.5 * b0 and lw0 <= 0.5 * b0:
-                pat, d = "المطرقة المقلوبة", "شراء (Long)"
+                pat = "المطرقة المقلوبة"
             elif bear1 and bull0 and o[i] <= c[i-1]*1.002 and c[i] > (o[i-1]+c[i-1])/2:
-                pat, d = "خط الاختراق", "شراء (Long)"
+                pat = "خط الاختراق"
             elif bull2 and bull1 and bull0 and (c[i] > c[i-1] > c[i-2]):
-                pat, d = "الجنود الثلاثة البيض", "شراء (Long)"
-
-        # النماذج الهابطة (الصورة - يسار)
-        if up_tr and pat is None:
-            if lw0 >= 1.5 * b0 and uw0 <= 0.5 * b0:
-                pat, d = "الرجل المشنوق", "بيع (Short)"
-            elif bull1 and bear0 and o[i] >= c[i-1]*0.998 and c[i] < (o[i-1]+c[i-1])/2:
-                pat, d = "الغطاء السحابي الداكن", "بيع (Short)"
-            elif bear2 and bear1 and bear0 and (c[i] < c[i-1] < c[i-2]):
-                pat, d = "الغربان السوداء الثلاثة", "بيع (Short)"
+                pat = "الجنود الثلاثة البيض"
 
         if pat:
-            if ema_on:
-                if d == "شراء (Long)" and c[i] < ema[i]: continue
-                if d == "بيع (Short)" and c[i] > ema[i]: continue
-            sigs.append((i, pd.Timestamp(t[i]), d, pat, c[i], atr[i]))
+            if ema_on and c[i] < ema[i]:
+                continue
+            sigs.append((i, pd.Timestamp(t[i]), "شراء (Spot)", pat, c[i], atr[i]))
     return sigs
 
 data = get_data(SYMBOLS, tf)
@@ -93,12 +82,11 @@ cut = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
 
 for sym, df in data.items():
     coin = sym.replace('/USD', '')
-    for idx, ts, d, pat, ent, a_val in scan_candles(df, use_ema):
-        is_l = "شراء" in d
+    for idx, ts, d, pat, ent, a_val in scan_spot_buy(df, use_ema):
         sl_d = a_val * atr_m
         tp_d = sl_d * rr_r
-        sl = ent - sl_d if is_l else ent + sl_d
-        tp = ent + tp_d if is_l else ent - tp_d
+        sl = ent - sl_d
+        tp = ent + tp_d
 
         if idx >= len(df) - 3:
             recs.append((coin, d, pat, ts.strftime('%H:%M'), ent, sl, tp))
@@ -107,12 +95,12 @@ for sym, df in data.items():
             out, pnl = "مفتوحة ⏳", 0.0
             for j in range(idx + 1, len(df)):
                 fh, fl = df['h'].iloc[j], df['l'].iloc[j]
-                if is_l:
-                    if fl <= sl: out, pnl = "خاسرة", -POS_USD * (sl_d / ent); break
-                    if fh >= tp: out, pnl = "ناجحة", POS_USD * (tp_d / ent); break
-                else:
-                    if fh >= sl: out, pnl = "خاسرة", -POS_USD * (sl_d / ent); break
-                    if fl <= tp: out, pnl = "ناجحة", POS_USD * (tp_d / ent); break
+                if fl <= sl:
+                    out, pnl = "خاسرة", -POS_USD * (sl_d / ent)
+                    break
+                if fh >= tp:
+                    out, pnl = "ناجحة", POS_USD * (tp_d / ent)
+                    break
             trades.append([ts.strftime('%Y-%m-%d %H:%M'), coin, d, pat, out, round(pnl, 2)])
 
 df_t = pd.DataFrame(trades, columns=['الوقت', 'العملة', 'النوع', 'النموذج', 'الحالة', 'الربح ($)'])
@@ -127,7 +115,7 @@ else:
 
 st.markdown("---")
 c1, c2 = st.columns(2)
-c1.metric(f"الربح الصافي (24س | {tf})", f"{net:.2f} $")
+c1.metric(f"الربح الصافي سبوت (24س | {tf})", f"{net:.2f} $")
 c2.metric("نسبة النجاح", f"{wr:.1f}%", f"مغلقة: {w+l} | مفتوحة: {op}")
 
 cw, cl_c, co = st.columns(3)
@@ -135,19 +123,16 @@ cw.markdown(f"<div style='background:#00c85326;border:1px solid #00c853;padding:
 cl_c.markdown(f"<div style='background:#ff4b4b26;border:1px solid #ff4b4b;padding:10px;border-radius:8px;text-align:center;color:#ff5252;'><b>❌ {l} خاسرة</b></div>", unsafe_allow_html=True)
 co.markdown(f"<div style='background:#ffc10726;border:1px solid #ffc107;padding:10px;border-radius:8px;text-align:center;color:#ffd54f;'><b>⏳ {op} مفتوحة</b></div>", unsafe_allow_html=True)
 
-if st.button("🔄 تحديث الفرص الآن", use_container_width=True):
+if st.button("🔄 تحديث فرص الشراء الآن", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-st.subheader("🎯 توصيات مستقبلية (الفرص اللحظية)")
+st.subheader("🎯 توصيات شراء سبوت المستقبلية (الفرص اللحظية)")
 for coin, d, pat, tm, ent, sl, tp in recs:
-    ib = "شراء" in d
-    col = "#00e676" if ib else "#ff5252"
-    bg = "#00c85326" if ib else "#ff4b4b26"
     dec = 4 if ent < 10 else 2
-    st.markdown(f"<div style='background:{bg};border-right:5px solid {col};padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:{col};font-size:1.1rem;'>{'🟢' if ib else '🔴'} {coin} | {d} — {pat} ({tm})</b><br>🔹 دخول: <code>{ent:.{dec}f}</code> | 🎯 هدف: <code>{tp:.{dec}f}</code> | 🛑 وقف: <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
-if not recs: st.info("لا توجد إشارة لحظية في آخر شمعتين حالياً.")
+    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {d} — {pat} ({tm} UTC)</b><br>🔹 دخول: <code>{ent:.{dec}f}</code> | 🎯 هدف: <code>{tp:.{dec}f}</code> | 🛑 وقف: <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+if not recs: st.info("لا توجد فرصة شراء مكتملة في آخر شمعتين حالياً.")
 
-st.subheader("📋 سجل صفقات 24 ساعة (100$ للصفقة)")
+st.subheader("📋 سجل صفقات الشراء 24 ساعة (100$ للصفقة)")
 if not df_t.empty: st.dataframe(df_t, use_container_width=True)
-else: st.info("لا توجد صفقات مسجلة في آخر 24 ساعة.")
+else: st.info("لا توجد صفقات شراء مسجلة في آخر 24 ساعة.")
