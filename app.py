@@ -5,11 +5,11 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="ماسح الأنماط التاريخية - Spot", layout="centered")
+st.set_page_config(page_title="مطابقة الأنماط + الدعوم والمقاومات", layout="centered")
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
 tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=1)
-min_corr = st.slider("دقة تطابق النمط التاريخي (%):", 70, 95, 80) / 100.0
+min_corr = st.slider("دقة تطابق النمط التاريخي (%):", 60, 95, 72) / 100.0
 use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 100)", value=False)
 
 SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD", "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"]
@@ -35,17 +35,31 @@ def get_data(syms, timeframe):
             if df is not None: res[s] = df
     return res
 
-def scan_fractal_pattern(df, corr_thresh, ema_on):
+def scan_pattern_with_sr(df, corr_thresh, ema_on):
     c, h, l, t, ema = df['c'].values, df['h'].values, df['l'].values, df['t'].values, df['ema100'].values
-    win = 20   # طول النمط المراد مطابقته (20 شمعة)
-    fwd = 12   # طول التوقع المستقبلي (12 شمعة)
+    win = 15   # طول النمط (15 شمعة)
+    fwd = 12   # مدى التوقع المستقبلي (12 شمعة)
     sigs = []
-    last_sig_idx = -15
+    last_sig_idx = -10
 
-    for i in range(120, len(df) - 1):
-        if i - last_sig_idx < 10: continue
+    for i in range(110, len(df) - 1):
+        if i - last_sig_idx < 8: continue
         if ema_on and c[i] < ema[i]: continue
 
+        # 1. استخراج الدعوم والمقاومات المحورية قبل الشمعة الحالية
+        lookback = c[max(0, i-80):i]
+        low_win = l[max(0, i-80):i]
+        high_win = h[max(0, i-80):i]
+        
+        sup = np.min(low_win[-35:])   # أقرب دعم قريب
+        res = np.max(high_win[:-5])   # أقرب مقاومة سابقة
+
+        # احترام الدعم: السعر قريب من الدعم (ليس متضخماً في القمة) ولم يكسره
+        dist_from_sup = (c[i] - sup) / sup
+        if dist_from_sup > 0.025 or c[i] <= sup:
+            continue
+
+        # 2. مطابقة النمط التاريخي
         curr_pat = c[i - win + 1 : i + 1]
         if np.std(curr_pat) == 0: continue
 
@@ -55,25 +69,29 @@ def scan_fractal_pattern(df, corr_thresh, ema_on):
         for j in range(win, i - win - fwd):
             hist_pat = c[j - win + 1 : j + 1]
             if np.std(hist_pat) == 0: continue
-            corr = np.corrcoef(curr_pat, hist_pat)[0, 1]
-            if corr > best_corr:
-                best_corr = corr
+            corr_val = np.corrcoef(curr_pat, hist_pat)[0, 1]
+            if corr_val > best_corr:
+                best_corr = corr_val
                 best_j = j
 
+        # 3. التحقق من التطابق + احترام المقاومة كهدف والدعم كوقف خسارة
         if best_corr >= corr_thresh and best_j != -1:
             hist_entry = c[best_j]
             fut_high = np.max(h[best_j + 1 : best_j + fwd + 1])
-            fut_low = np.min(l[best_j + 1 : best_j + fwd + 1])
-
             up_pct = (fut_high - hist_entry) / hist_entry
-            dn_pct = (hist_entry - fut_low) / hist_entry
 
-            if up_pct >= 0.008 and up_pct > (dn_pct * 1.3):
+            if up_pct >= 0.005:
                 entry = c[i]
-                tp = entry * (1 + up_pct)
-                sl = entry * (1 - max(dn_pct * 1.1, 0.004))
-                last_sig_idx = i
-                sigs.append((i, pd.Timestamp(t[i]), f"تطابق {int(best_corr*100)}%", entry, sl, tp))
+                proj_tp = entry * (1 + up_pct)
+                # الهدف يحترم المقاومة (يأخذ الأقرب بين التوقع والمقاومة)
+                tp = min(proj_tp, res) if res > entry * 1.004 else proj_tp
+                # الستوب لوس يحترم الدعم (أسفل الدعم بقليل)
+                sl = sup * 0.997
+
+                if tp > entry > sl and (tp - entry) >= (entry - sl) * 0.8:
+                    last_sig_idx = i
+                    lbl = f"تطابق {int(best_corr*100)}% (دعم/مقاومة)"
+                    sigs.append((i, pd.Timestamp(t[i]), lbl, entry, sl, tp))
 
     return sigs
 
@@ -85,7 +103,7 @@ cut = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_ba
 
 for sym, df in data.items():
     coin = sym.replace('/USD', '')
-    for idx, ts, pat_lbl, ent, sl, tp in scan_fractal_pattern(df, min_corr, use_ema):
+    for idx, ts, pat_lbl, ent, sl, tp in scan_pattern_with_sr(df, min_corr, use_ema):
         if idx >= len(df) - 3:
             recs.append((coin, pat_lbl, ts.strftime('%Y-%m-%d %H:%M'), ent, sl, tp))
 
@@ -99,9 +117,9 @@ for sym, df in data.items():
                 if fh >= tp:
                     out, pnl = "ناجحة", POS_USD * ((tp - ent) / ent)
                     break
-            trades.append([ts.strftime('%Y-%m-%d %H:%M'), coin, "شراء (Bars Pattern)", pat_lbl, out, round(pnl, 2)])
+            trades.append([ts.strftime('%Y-%m-%d %H:%M'), coin, "شراء (Spot)", pat_lbl, out, round(pnl, 2)])
 
-df_t = pd.DataFrame(trades, columns=['الوقت', 'العملة', 'الاستراتيجية', 'نسبة التطابق', 'الحالة', 'الربح ($)'])
+df_t = pd.DataFrame(trades, columns=['الوقت', 'العملة', 'النوع', 'التطابق', 'الحالة', 'الربح ($)'])
 if not df_t.empty:
     df_t = df_t.sort_values('الوقت', ascending=False).reset_index(drop=True)
     cl = df_t[df_t['الحالة'] != 'مفتوحة ⏳']
@@ -121,15 +139,15 @@ cw.markdown(f"<div style='background:#00c85326;border:1px solid #00c853;padding:
 cl_c.markdown(f"<div style='background:#ff4b4b26;border:1px solid #ff4b4b;padding:10px;border-radius:8px;text-align:center;color:#ff5252;'><b>❌ {l} خاسرة</b></div>", unsafe_allow_html=True)
 co.markdown(f"<div style='background:#ffc10726;border:1px solid #ffc107;padding:10px;border-radius:8px;text-align:center;color:#ffd54f;'><b>⏳ {op} مفتوحة</b></div>", unsafe_allow_html=True)
 
-if st.button("🔄 تحديث مطابقة الأنماط الآن", use_container_width=True):
+if st.button("🔄 تحديث الفرص الآن", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-st.subheader("🎯 توصيات الشراء المستقبلية (Bars Pattern - Spot)")
+st.subheader("🎯 توصيات الشراء المستقبلية (تطابق + دعوم ومقاومات)")
 for coin, pat_lbl, tm, ent, sl, tp in recs:
     dec = 4 if ent < 10 else 2
-    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | شراء سبوت ({pat_lbl}) — {tm} UTC</b><br>🔹 دخول: <code>{ent:.{dec}f}</code> | 🎯 هدف متوقع: <code>{tp:.{dec}f}</code> | 🛑 وقف: <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
-if not recs: st.info("لا يوجد نمط صاعد مطابق بنسبة عالية في آخر شمعتين حالياً.")
+    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm} UTC)</b><br>🔹 دخول: <code>{ent:.{dec}f}</code> | 🎯 هدف (مقاومة): <code>{tp:.{dec}f}</code> | 🛑 وقف (تحت الدعم): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+if not recs: st.info("لا توجد إشارة مطابقة عند الدعم في آخر شمعتين حالياً.")
 
 st.subheader(f"📋 سجل صفقات آخر {period_label} (100$ للصفقة)")
 if not df_t.empty: st.dataframe(df_t, use_container_width=True)
