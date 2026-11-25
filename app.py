@@ -7,7 +7,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="EMA2 x WMA20 + 1m Fib", page_icon="📈", layout="wide"
+    page_title="Pure Fibonacci 0.23 Scanner", page_icon="📐", layout="wide"
 )
 
 
@@ -39,7 +39,7 @@ def load_trades():
         return pd.DataFrame(columns=columns), None
 
 
-def save_trades(df, sha=None, msg="Update 1m Fib trades"):
+def save_trades(df, sha=None, msg="Update Pure Fib 0.23 trades"):
     repo = get_github_repo()
     file_path = st.secrets["FILE_PATH"]
     csv_buffer = StringIO()
@@ -76,22 +76,10 @@ def fetch_1m_data(ticker):
     return df_1m.copy()
 
 
-# --- 3. حساب المؤشرات ومستويات فيبوناتشي لآخر 20 شمعة ---
-def calculate_indicators(df):
-    df["EMA_2"] = df["Close"].ewm(span=2, adjust=False).mean()
-    weights = np.arange(1, 21)
-    df["WMA_20"] = (
-        df["Close"]
-        .rolling(20)
-        .apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
-    )
-    df["Swing_High"] = df["High"].rolling(20).max()
-    df["Swing_Low"] = df["Low"].rolling(20).min()
-    return df
-
-
-# --- 4. اختبار تاريخي بنفس منطق النسخة الأولى (89.3%) مع تحكم فيبوناتشي ---
-def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
+# --- 3. اختبار تاريخي خالص لفيبوناتشي (الدخول عند 0.23 + تأكيد 1m) ---
+def run_pure_fib_backtest(
+    coins_map, interval, trade_size, fib_entry, fib_sl, fib_tp
+):
     total_pnl = 0.0
     wins = 0
     losses = 0
@@ -104,8 +92,6 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
         if len(df) < 25 or df_1m.empty:
             continue
 
-        df = calculate_indicators(df)
-
         in_trade = False
         trade_type = ""
         entry_p = 0.0
@@ -115,7 +101,6 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
 
         for i in range(21, len(df)):
             row = df.iloc[i]
-            prev = df.iloc[i - 1]
             curr_time = df.index[i]
 
             if in_trade:
@@ -128,7 +113,7 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "شراء (Fib 1m)",
+                            "النوع": f"شراء (Fib {fib_entry})",
                             "الحالة": "ناجحة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -140,7 +125,7 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "شراء (Fib 1m)",
+                            "النوع": f"شراء (Fib {fib_entry})",
                             "الحالة": "خاسرة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -153,7 +138,7 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "بيع (Fib 1m)",
+                            "النوع": f"بيع (Fib {fib_entry})",
                             "الحالة": "ناجحة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -165,29 +150,35 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "بيع (Fib 1m)",
+                            "النوع": f"بيع (Fib {fib_entry})",
                             "الحالة": "خاسرة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
             else:
-                s_high = float(prev["Swing_High"])
-                s_low = float(prev["Swing_Low"])
+                # نافذة آخر 20 شمعة مغلقة لتحديد القمة والقاع واتجاه الموجة
+                window = df.iloc[i - 20 : i]
+                s_high = float(window["High"].max())
+                s_low = float(window["Low"].min())
                 fib_range = s_high - s_low
-                if pd.isna(fib_range) or fib_range <= 0:
+                if fib_range <= 0:
                     continue
+
+                idx_high = window["High"].idxmax()
+                idx_low = window["Low"].idxmin()
 
                 sub_1m = df_1m[df_1m.index >= curr_time]
                 if sub_1m.empty:
                     continue
                 confirm_1m_close = float(sub_1m["Close"].iloc[0])
-                wma_level = float(row["WMA_20"])
 
-                # تقاطع شراء + إغلاق 1m فوق التقاطع
-                if (
-                    prev["EMA_2"] <= prev["WMA_20"]
-                    and row["EMA_2"] > row["WMA_20"]
-                ):
-                    if confirm_1m_close > wma_level:
+                # 1. موجة صاعدة (القاع قبل القمة) -> تصحيح عند مستوى 0.23 من القمة
+                if idx_low < idx_high:
+                    entry_level = s_high - (fib_entry * fib_range)
+                    # ملامسة مستوى 0.23 وإغلاق شمعة 1m فوقه
+                    if (
+                        row["Low"] <= entry_level
+                        and confirm_1m_close > entry_level
+                    ):
                         target_val = s_low + (fib_tp * fib_range)
                         stop_val = s_low + (fib_sl * fib_range)
                         if confirm_1m_close < target_val:
@@ -198,12 +189,14 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
                             tp_p = target_val
                             entry_time = sub_1m.index[0]
 
-                # تقاطع بيع + إغلاق 1m تحت التقاطع
-                elif (
-                    prev["EMA_2"] >= prev["WMA_20"]
-                    and row["EMA_2"] < row["WMA_20"]
-                ):
-                    if confirm_1m_close < wma_level:
+                # 2. موجة هابطة (القمة قبل القاع) -> ارتداد عند مستوى 0.23 من القاع
+                elif idx_high < idx_low:
+                    entry_level = s_low + (fib_entry * fib_range)
+                    # ملامسة مستوى 0.23 وإغلاق شمعة 1m تحته
+                    if (
+                        row["High"] >= entry_level
+                        and confirm_1m_close < entry_level
+                    ):
                         target_val = s_high - (fib_tp * fib_range)
                         stop_val = s_high - (fib_sl * fib_range)
                         if confirm_1m_close > target_val:
@@ -215,55 +208,71 @@ def run_fib_1m_backtest(coins_map, interval, trade_size, fib_sl, fib_tp):
                             entry_time = sub_1m.index[0]
 
     return round(total_pnl, 2), wins, losses, pd.DataFrame(history_list)
-# --- 5. فحص الإشارات اللحظية ---
-def scan_coin_fib_1m(yf_ticker, display_name, interval, fib_sl, fib_tp):
+# --- 5. فحص الإشارات اللحظية لفيبوناتشي 0.23 ---
+def scan_pure_fib(
+    yf_ticker, display_name, interval, fib_entry, fib_sl, fib_tp
+):
     df = fetch_data(yf_ticker, interval, period="5d")
     df_1m = fetch_1m_data(yf_ticker)
 
     if len(df) < 25 or df_1m.empty:
         return None
 
-    df = calculate_indicators(df)
-    prev_ema = df["EMA_2"].iloc[-3]
-    prev_wma = df["WMA_20"].iloc[-3]
-    curr_ema = df["EMA_2"].iloc[-2]
-    curr_wma = df["WMA_20"].iloc[-2]
-
-    s_high = float(df["Swing_High"].iloc[-2])
-    s_low = float(df["Swing_Low"].iloc[-2])
+    window = df.iloc[-21:-1]
+    s_high = float(window["High"].max())
+    s_low = float(window["Low"].min())
     fib_range = s_high - s_low
 
+    idx_high = window["High"].idxmax()
+    idx_low = window["Low"].idxmin()
+
+    last_candle = df.iloc[-2]
     last_1m_close = float(df_1m["Close"].iloc[-2])
     current_price = float(df["Close"].iloc[-1])
 
-    signal = "انتظار / لا يوجد تقاطع"
+    signal = "انتظار السعر عند 0.23"
+    entry_lvl_display = 0.0
     sl_price = 0.0
     tp_price = 0.0
 
-    if prev_ema <= prev_wma and curr_ema > curr_wma:
+    # موجة صاعدة -> البحث عن شراء عند 0.23
+    if idx_low < idx_high and fib_range > 0:
+        entry_lvl = s_high - (fib_entry * fib_range)
+        entry_lvl_display = entry_lvl
         target_val = s_low + (fib_tp * fib_range)
         stop_val = s_low + (fib_sl * fib_range)
-        if last_1m_close > curr_wma and last_1m_close < target_val:
-            signal = "شراء مؤكد (BUY 1m)"
+        if (
+            last_candle["Low"] <= entry_lvl
+            and last_1m_close > entry_lvl
+            and last_1m_close < target_val
+        ):
+            signal = f"شراء مؤكد (BUY {fib_entry})"
             sl_price = stop_val
             tp_price = target_val
         else:
-            signal = "تقاطع شراء (غير مطابق للشرط)"
+            signal = "موجة صاعدة (مراقبة 0.23)"
 
-    elif prev_ema >= prev_wma and curr_ema < curr_wma:
+    # موجة هابطة -> البحث عن بيع عند 0.23
+    elif idx_high < idx_low and fib_range > 0:
+        entry_lvl = s_low + (fib_entry * fib_range)
+        entry_lvl_display = entry_lvl
         target_val = s_high - (fib_tp * fib_range)
         stop_val = s_high - (fib_sl * fib_range)
-        if last_1m_close < curr_wma and last_1m_close > target_val:
-            signal = "بيع مؤكد (SELL 1m)"
+        if (
+            last_candle["High"] >= entry_lvl
+            and last_1m_close < entry_lvl
+            and last_1m_close > target_val
+        ):
+            signal = f"بيع مؤكد (SELL {fib_entry})"
             sl_price = stop_val
             tp_price = target_val
         else:
-            signal = "تقاطع بيع (غير مطابق للشرط)"
+            signal = "موجة هابطة (مراقبة 0.23)"
 
     return {
         "العملة": display_name,
         "السعر الحالي": round(current_price, 5),
-        "إغلاق 1m": round(last_1m_close, 5),
+        f"مستوى الدخول ({fib_entry})": round(entry_lvl_display, 5),
         "الإشارة": signal,
         f"وقف الخسارة ({fib_sl})": round(sl_price, 5) if sl_price > 0 else "-",
         f"الهدف ({fib_tp})": round(tp_price, 5) if tp_price > 0 else "-",
@@ -271,7 +280,10 @@ def scan_coin_fib_1m(yf_ticker, display_name, interval, fib_sl, fib_tp):
 
 
 # --- 6. واجهة التطبيق ---
-st.title("📊 ماسح EMA 2 × WMA 20 + تأكيد 1m وفيبوناتشي")
+st.title("📐 ماسح الفيبوناتشي الخالص (دخول مستوى 0.23)")
+st.caption(
+    "بدون متوسطات متحركة | الدخول: ارتداد 0.23 + إغلاق 1m | إدارة الصفقة: مستويات فيبوناتشي"
+)
 
 COINS_MAP = {
     "XLMUSDT": "XLM-USD",
@@ -285,11 +297,19 @@ COINS_MAP = {
     "PAXGUSDT": "PAXG-USD",
 }
 
-with st.expander("⚙️ ضبط الفريم ورأس المال ومستويات فيبوناتشي", expanded=True):
+with st.expander("⚙️ ضبط مستويات الفيبوناتشي والفريم ورأس المال", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         selected_tf = st.selectbox(
             "الإطار الزمني الأساسي:", ["5m", "15m", "30m"], index=0
+        )
+        fib_entry_input = st.number_input(
+            "مستوى الدخول (Fib Entry):",
+            min_value=0.10,
+            max_value=0.786,
+            value=0.23,
+            step=0.01,
+            format="%.2f",
         )
         fib_sl_input = st.number_input(
             "مستوى وقف الخسارة (Fib SL):",
@@ -312,28 +332,42 @@ with st.expander("⚙️ ضبط الفريم ورأس المال ومستويا�
             format="%.2f",
         )
 
-with st.spinner("جاري فحص شموع 1 دقيقة وحساب أهداف فيبوناتشي..."):
-    net_pnl, w_count, l_count, bt_df = run_fib_1m_backtest(
-        COINS_MAP, selected_tf, trade_amount, fib_sl_input, fib_tp_input
+with st.spinner("جاري فحص ارتدادات فيبوناتشي 0.23 على البيانات الحقيقية..."):
+    net_pnl, w_count, l_count, bt_df = run_pure_fib_backtest(
+        COINS_MAP,
+        selected_tf,
+        trade_amount,
+        fib_entry_input,
+        fib_sl_input,
+        fib_tp_input,
     )
     total_t = w_count + l_count
     win_rate = round((w_count / total_t) * 100, 1) if total_t > 0 else 0.0
 
 c1, c2, c3 = st.columns(3)
 c1.metric(f"الربح الصافي (آخر 5 أيام - {selected_tf})", f"{net_pnl} $")
-c2.metric("نسبة النجاح (1m + Fib)", f"{win_rate}%", f"إجمالي الصفقات: {total_t}")
+c2.metric(
+    f"نسبة النجاح (Fib {fib_entry_input})",
+    f"{win_rate}%",
+    f"إجمالي الصفقات: {total_t}",
+)
 c3.metric("توزيع الصفقات", f"{w_count} ناجحة", f"-{l_count} خاسرة")
 
 st.divider()
 
-if st.button("فحص الفرص المؤكدة الآن 🔄", use_container_width=True):
+if st.button("فحص فرص 0.23 المؤكدة الآن 🔄", use_container_width=True):
     df_history, file_sha = load_trades()
     scan_results = []
     new_added = 0
 
     for display_name, yf_ticker in COINS_MAP.items():
-        res = scan_coin_fib_1m(
-            yf_ticker, display_name, selected_tf, fib_sl_input, fib_tp_input
+        res = scan_pure_fib(
+            yf_ticker,
+            display_name,
+            selected_tf,
+            fib_entry_input,
+            fib_sl_input,
+            fib_tp_input,
         )
         if res:
             scan_results.append(res)
@@ -343,7 +377,7 @@ if st.button("فحص الفرص المؤكدة الآن 🔄", use_container_wid
                     "Coin": display_name,
                     "Timeframe": selected_tf,
                     "Type": res["الإشارة"],
-                    "Entry_Price": res["إغلاق 1m"],
+                    "Entry_Price": res[f"مستوى الدخول ({fib_entry_input})"],
                     "Stop_Loss": res[f"وقف الخسارة ({fib_sl_input})"],
                     "Take_Profit": res[f"الهدف ({fib_tp_input})"],
                     "Status": "مفتوحة",
@@ -355,16 +389,20 @@ if st.button("فحص الفرص المؤكدة الآن 🔄", use_container_wid
                 new_added += 1
 
     if new_added > 0:
-        save_trades(df_history, file_sha, f"Add {new_added} 1m-Fib signals")
-        st.success(f"تم رصد وحفظ {new_added} فرصة مؤكدة في GitHub!")
+        save_trades(
+            df_history,
+            file_sha,
+            f"Add {new_added} Pure-Fib {fib_entry_input} signals",
+        )
+        st.success(f"تم رصد وحفظ {new_added} فرصة فيبوناتشي مؤكدة في GitHub!")
 
-    st.subheader("الأسعار والإشارات اللحظية الآن:")
+    st.subheader("الأسعار ومستويات 0.23 اللحظية:")
     st.dataframe(pd.DataFrame(scan_results), use_container_width=True)
 
 if not bt_df.empty:
     st.divider()
     st.subheader(
-        f"📋 سجل الصفقات المحسوبة (SL: {fib_sl_input} | TP: {fib_tp_input})"
+        f"📋 سجل الصفقات المحسوبة (Entry: {fib_entry_input} | SL: {fib_sl_input} | TP: {fib_tp_input})"
     )
     st.dataframe(
         bt_df.sort_values(by="الوقت", ascending=False), use_container_width=True
