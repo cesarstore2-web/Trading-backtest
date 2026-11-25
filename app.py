@@ -67,10 +67,8 @@ def fetch_data(ticker, interval):
 
 # --- 3. حساب المؤشرات (EMA 2, WMA 20, ATR 14) ---
 def calculate_indicators(df):
-    # EMA 2
     df["EMA_2"] = df["Close"].ewm(span=2, adjust=False).mean()
 
-    # WMA 20 (المتوسط المرجح)
     weights = np.arange(1, 21)
     df["WMA_20"] = (
         df["Close"]
@@ -78,7 +76,6 @@ def calculate_indicators(df):
         .apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
     )
 
-    # ATR 14
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -96,7 +93,6 @@ def scan_coin(yf_ticker, display_name, interval):
 
     df = calculate_indicators(df)
 
-    # نستخدم الشمعة المغلقة الأخيرة (-2) والسابقة لها (-3) لتجنب الإشارات الوهمية أثناء تشكل الشمعة
     prev_ema = df["EMA_2"].iloc[-3]
     prev_wma = df["WMA_20"].iloc[-3]
     curr_ema = df["EMA_2"].iloc[-2]
@@ -106,19 +102,17 @@ def scan_coin(yf_ticker, display_name, interval):
     atr = float(df["ATR"].iloc[-2])
 
     sl_dist = 2.30 * atr
-    tp_dist = sl_dist * 0.9  # R:R = 0.9
+    tp_dist = sl_dist * 0.9
 
     signal = "لا يوجد تقاطع"
     sl_price = 0.0
     tp_price = 0.0
 
-    # تقاطع صعودي (شراء)
     if prev_ema <= prev_wma and curr_ema > curr_wma:
         signal = "شراء (BUY)"
         sl_price = current_price - sl_dist
         tp_price = current_price + tp_dist
 
-    # تقاطع هبوطي (بيع)
     elif prev_ema >= prev_wma and curr_ema < curr_wma:
         signal = "بيع (SELL)"
         sl_price = current_price + sl_dist
@@ -135,13 +129,13 @@ def scan_coin(yf_ticker, display_name, interval):
     }
 
 
-# --- 5. تحديث حالة الصفقات المفتوحة (افتراض حجم صفقة 100$) ---
+# --- 5. تحديث حالة الصفقات المفتوحة ---
 def update_open_trades(df_trades, coins_map):
     if df_trades.empty:
         return df_trades, False
 
     updated = False
-    trade_size = 100.0  # حجم الصفقة الافتراضي 100$
+    trade_size = 100.0
 
     for idx, row in df_trades.iterrows():
         if row["Status"] == "مفتوحة":
@@ -192,7 +186,6 @@ st.caption(
     "الإعدادات: تقاطع EMA 2 مع WMA 20 | وقف الخسارة: 2.30 ATR | الهدف: 0.9 R:R"
 )
 
-# ربط أسماء العملات بصيغة Yahoo Finance
 COINS_MAP = {
     "XRPUSDT": "XRP-USD",
     "XLMUSDT": "XLM-USD",
@@ -207,21 +200,20 @@ COINS_MAP = {
 
 selected_tf = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m"], index=2)
 
-# تحميل الصفقات وتحديث المفتوح منها
 df_history, file_sha = load_trades()
 df_history, was_updated = update_open_trades(df_history, COINS_MAP)
 if was_updated:
     save_trades(df_history, file_sha, "Auto-update closed trades status")
-    df_history, file_sha = load_trades()  # إعادة التحميل لتحديث SHA
+    df_history, file_sha = load_trades()
 
 # --- بطاقات الإحصائيات (يوم / أسبوع / شهر) ---
 if not df_history.empty:
     df_history["Date_dt"] = pd.to_datetime(df_history["Date"])
     now = datetime.now()
 
-    def calc_stats(days):
+    def calc_stats(days_count):
         sub = df_history[
-            (df_history["Date_dt"] >= now - timedelta(days=days))
+            (df_history["Date_dt"] >= now - timedelta(days=days_count))
             & (df_history["Status"].isin(["ناجحة", "خاسرة"]))
         ]
         wins = len(sub[sub["Status"] == "ناجحة"])
@@ -232,12 +224,14 @@ if not df_history.empty:
         return wins, losses, win_rate, net_pnl
 
     col1, col2, col3 = st.columns(3)
-    for col, title, days in zip(
-        [col1, col2, col3],
-        ["أداء 1 يوم", "أداء 1 أسبوع", "أداء 1 شهر"],
-,
-    ):
-        w, l, wr, pnl = calc_stats(days)
+    stats_config = [
+        (col1, "أداء 1 يوم", 1),
+        (col2, "أداء 1 أسبوع", 7),
+        (col3, "أداء 1 شهر", 30),
+    ]
+
+    for col, title, days_val in stats_config:
+        w, l, wr, pnl = calc_stats(days_val)
         with col:
             st.metric(
                 label=f"{title} ({selected_tf})",
@@ -260,9 +254,7 @@ if st.button("فحص العملات الآن 🔄", use_container_width=True):
             if res:
                 scan_results.append(res)
 
-                # تسجيل الصفقة في GitHub إذا ظهرت إشارة شراء أو بيع
                 if "BUY" in res["الإشارة"] or "SELL" in res["الإشارة"]:
-                    # منع تكرار نفس الصفقة إذا كانت مفتوحة بالفعل على نفس الفريم
                     already_open = False
                     if not df_history.empty:
                         open_same = df_history[
@@ -298,3 +290,18 @@ if st.button("فحص العملات الآن 🔄", use_container_width=True):
             file_sha,
             f"Add {new_trades_added} new signals on {selected_tf}",
         )
+        st.success(f"تم رصد وحفظ {new_trades_added} صفقة جديدة في GitHub!")
+
+    st.subheader(f"نتائج الفحص المباشر ({selected_tf})")
+    st.dataframe(pd.DataFrame(scan_results), use_container_width=True)
+
+# --- عرض السجل الكامل ---
+st.divider()
+st.subheader("📑 سجل الصفقات المحفوظ في GitHub")
+if not df_history.empty:
+    display_df = df_history.drop(columns=["Date_dt"], errors="ignore")
+    st.dataframe(
+        display_df.sort_values(by="Date", ascending=False),
+        use_container_width=True,
+    )
+else:
