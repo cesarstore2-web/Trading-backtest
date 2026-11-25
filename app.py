@@ -4,39 +4,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 
-# إعدادات الصفحة
 st.set_page_config(page_title="ماسح النماذج الفنية", layout="centered")
 
-st.markdown("""
-    <style>
-    .stApp { direction: rtl; text-align: right; }
-    div[data-testid="stMetricValue"] { font-size: 2rem; font-weight: bold; }
-    .signal-card-buy {
-        background-color: rgba(0, 200, 83, 0.15);
-        border-right: 6px solid #00c853;
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 12px;
-    }
-    .signal-card-sell {
-        background-color: rgba(255, 75, 75, 0.15);
-        border-right: 6px solid #ff4b4b;
-        padding: 15px;
-        border-radius: 8px;
-        margin-bottom: 12px;
-    }
-    .signal-title-buy { color: #00e676; font-size: 1.3rem; font-weight: bold; margin-bottom: 5px; }
-    .signal-title-sell { color: #ff5252; font-size: 1.3rem; font-weight: bold; margin-bottom: 5px; }
-    .signal-details { font-size: 1.05rem; line-height: 1.6; }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("<style>.stApp { direction: rtl; text-align: right; } div[data-testid='stMetricValue'] { font-size: 2rem; font-weight: bold; }</style>", unsafe_allow_html=True)
 
 # 1. إعدادات واجهة المستخدم
-timeframe = st.selectbox(
-    "الإطار الزمني:", 
-    ["1m", "5m", "15m", "30m", "1h"], 
-    index=1  # الافتراضي 5m
-)
+timeframe = st.selectbox("الإطار الزمني:", ["1m", "5m", "15m", "30m", "1h"], index=1)
 
 if timeframe == "5m":
     def_atr, def_rr, def_ema = 2.50, 2.70, False
@@ -51,7 +24,6 @@ use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200
 
 POSITION_SIZE_USD = 100.0
 
-# عملات المشاريع التقنية المتوفرة على Kraken مقابل USD
 HALAL_SYMBOLS = [
     "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD",
     "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"
@@ -120,14 +92,13 @@ def check_candle_pattern(df, i, apply_ema):
 
     return pattern_name, direction
 
-# 4. جلب البيانات وتحليل السوق (Kraken مفتوحة لـ Streamlit Cloud)
+# 4. جلب البيانات وتحليل السوق
 def analyze_market(symbols, tf, atr_m, rr, apply_ema):
     exchange = ccxt.kraken({'enableRateLimit': True})
     all_trades = []
     live_recommendations = []
     errors = []
     
-    # Kraken تعيد حتى 720 شمعة في كل طلب، وهو ما يغطي آخر 24 ساعة + EMA 200 لفريمات 5m و 15m و 30m و 1h
     cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
     
     for sym in symbols:
@@ -223,11 +194,11 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
 
 # 5. عرض الواجهة والنتائج
 st.markdown("---")
-with st.spinner('جاري جلب البيانات من Kraken وتحليل السوق...'):
+with st.spinner('جاري جلب البيانات وتحليل السوق...'):
     trades_df, live_recs, fetch_errors = analyze_market(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_ema200)
 
 if fetch_errors and trades_df.empty:
-    st.error("⚠️ تنبيه من السيرفر:")
+    st.error("تنبيه من السيرفر:")
     st.code("\n".join(fetch_errors[:3]))
 
 # التوصيات المستقبلية
@@ -235,10 +206,24 @@ st.subheader("🎯 توصيات مستقبلية (الفرص اللحظية ال
 if live_recs:
     for rec in live_recs:
         is_buy = "شراء" in rec["النوع"]
-        card_class = "signal-card-buy" if is_buy else "signal-card-sell"
-        title_class = "signal-title-buy" if is_buy else "signal-title-sell"
+        bg = "rgba(0, 200, 83, 0.15)" if is_buy else "rgba(255, 75, 75, 0.15)"
+        border = "#00c853" if is_buy else "#ff4b4b"
+        t_color = "#00e676" if is_buy else "#ff5252"
         icon = "🟢" if is_buy else "🔴"
-        decimals = 4 if rec["الدخول"] < 10 else 2
+        dec = 4 if rec["الدخول"] < 10 else 2
         
-        st.markdown(f"""
-        <div class="{card_class}">
+        html_card = f"<div style='background-color:{bg}; border-right:6px solid {border}; padding:15px; border-radius:8px; margin-bottom:12px;'>"
+        html_card += f"<div style='color:{t_color}; font-size:1.25rem; font-weight:bold; margin-bottom:6px;'>{icon} {rec['العملة']} | {rec['النوع']} — {rec['النموذج']} ({rec['الوقت']} UTC)</div>"
+        html_card += f"<div style='font-size:1.05rem;'><b>🔹 الدخول:</b> <code>{rec['الدخول']:.{dec}f}</code> | <b style='color:#00e676;'>🎯 الهدف:</b> <code>{rec['الهدف']:.{dec}f}</code> | <b style='color:#ff5252;'>🛑 الوقف:</b> <code>{rec['الوقف']:.{dec}f}</code></div>"
+        html_card += "</div>"
+        st.markdown(html_card, unsafe_allow_html=True)
+else:
+    st.info("لا توجد إشارة جديدة مكتملة في آخر شمعتين حالياً.")
+
+# الإحصائيات والجدول
+if not trades_df.empty:
+    trades_df = trades_df.sort_values(by="الوقت", ascending=False).reset_index(drop=True)
+    
+    closed_df = trades_df[trades_df['الحالة'] != 'مفتوحة ⏳']
+    total_closed = len(closed_df)
+    wins = len(closed_df[closed_df['الحالة'] == 'ناجحة'])
