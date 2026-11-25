@@ -2,157 +2,172 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-st.set_page_config(page_title="PRICE ACTION PRO | MTF ENGULFING", layout="wide")
+st.set_page_config(page_title="COINGLASS RSI HEATMAP | 5M SCALPER", layout="wide")
 
-st.markdown("<style>.stApp{background-color:#0b0e14;color:#fff;font-family:monospace}.hdr{border:2px solid #00ffcc;border-radius:10px;padding:12px;text-align:center;background:#0d1b2a;margin-bottom:15px}table{width:100%;border-collapse:collapse;background:#131926;border:1px solid #00ffcc;margin-top:10px}th{background:#0d1b2a;color:#00ffcc;padding:10px;border-bottom:2px solid #00ffcc;font-size:12px}td{padding:8px;border-bottom:1px solid #233044;text-align:center;font-weight:bold;font-size:12px}.buy{color:#00ff66;border:1px solid #00ff66;padding:3px 8px;border-radius:4px}.sell{color:#ff0055;border:1px solid #ff0055;padding:3px 8px;border-radius:4px}.wait{color:#ffcc00;border:1px solid #ffcc00;padding:3px 8px;border-radius:4px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:15px 0}.card{background:#131926;border:1px solid #00ffcc;border-radius:8px;padding:10px;text-align:center}.box-buy{border:2px solid #00ff66;border-radius:10px;padding:20px;text-align:center;background:rgba(0,255,102,0.08)}.box-sell{border:2px solid #ff0055;border-radius:10px;padding:20px;text-align:center;background:rgba(255,0,85,0.08)}.box-wait{border:2px solid #ffcc00;border-radius:10px;padding:20px;text-align:center;background:rgba(255,204,0,0.08)}</style>", unsafe_allow_html=True)
+st.markdown("<style>.stApp{background-color:#0b0e14;color:#fff;font-family:monospace}.hdr{border:2px solid #00ffcc;border-radius:10px;padding:12px;text-align:center;background:#0d1b2a;margin-bottom:15px}table{width:100%;border-collapse:collapse;background:#131926;border:1px solid #00ffcc;margin-top:10px}th{background:#0d1b2a;color:#00ffcc;padding:10px;border-bottom:2px solid #00ffcc;font-size:12px}td{padding:8px;border-bottom:1px solid #233044;text-align:center;font-weight:bold;font-size:12px}.buy{color:#00ff66;border:1px solid #00ff66;padding:3px 8px;border-radius:4px;background:rgba(0,255,102,0.12)}.sell{color:#ff0055;border:1px solid #ff0055;padding:3px 8px;border-radius:4px;background:rgba(255,0,85,0.12)}.wait{color:#ffcc00;border:1px solid #ffcc00;padding:3px 8px;border-radius:4px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:15px 0}.pcard{background:#131926;border:1px solid #00ffcc;border-radius:10px;padding:14px;text-align:center;box-shadow:0 0 12px rgba(0,255,204,0.15)}.ptitle{color:#00ffcc;font-size:14px;font-weight:bold;border-bottom:1px dashed #233044;padding-bottom:6px;margin-bottom:10px}.pstats{display:flex;justify-content:space-around;font-size:13px}</style>", unsafe_allow_html=True)
 
-st.markdown("<div class='hdr'><h2 style='margin:0;color:#00ffcc'>⚡ PRICE ACTION SNIPER | MTF ENGULFING ⚡</h2><p style='margin:0;color:#aaa;font-size:12px'>إغلاق الفريم الكبير (H1/H4) + ابتلاع الفريم الصغير + إدارة مخاطر متكاملة</p></div>", unsafe_allow_html=True)
+st.markdown("<div class='hdr'><h2 style='margin:0;color:#00ffcc'>🔥 COINGLASS RSI HEATMAP (5M) | 1D • 7D • 30D STATS 🔥</h2><p style='margin:0;color:#aaa;font-size:12px'>Wilder RSI 14 • اقتناص الخروج من مناطق التشبع (Overbought >70 / Oversold <30)</p></div>", unsafe_allow_html=True)
 
 pairs = {"BTCUSDT":"BTC-USD","ETHUSDT":"ETH-USD","XRPUSDT":"XRP-USD","ADAUSDT":"ADA-USD","XLMUSDT":"XLM-USD","HBARUSDT":"HBAR-USD","LTCUSDT":"LTC-USD","ZECUSDT":"ZEC-USD","PAXGUSDT":"PAXG-USD"}
 
 with st.sidebar:
-    st.header("⚙️ إعدادات الإكسبيرت (Inputs)")
-    htf = st.selectbox("الفريم الكبير (تحديد الاتجاه):", ["1h", "4h"], index=0)
-    ltf = st.selectbox("الفريم الصغير (نقطة الدخول):", ["1m", "5m", "15m"], index=1)
-    mm_type = st.radio("نوع الإدارة:", ["Fixed Amount ($)", "Risk % of Balance"])
-    balance = st.number_input("رصيد الحساب ($):", value=1000.0, step=100.0)
-    fixed_amt = st.number_input("حجم الصفقة الثابت ($):", value=100.0, step=10.0)
-    risk_pct = st.slider("نسبة المخاطرة (%):", 0.5, 5.0, 1.0, 0.5)
-    sl_mode = st.radio("نظام حساب الوقف والهدف:", ["Dynamic (قمة/قاع الشمعة 1:2)", "Fixed % / Pips"])
-    fixed_sl_pct = st.number_input("SL ثابت (% من السعر):", value=0.4, step=0.1)
-    fixed_tp_pct = st.number_input("TP ثابت (% من السعر):", value=0.8, step=0.1)
-    use_be = st.checkbox("تفعيل Break Even (عند 1:1)", value=True)
-    use_trail = st.checkbox("تفعيل Trailing Stop", value=False)
-    max_spread_pct = st.number_input("أقصى سبريد مسموح (%):", value=0.15, step=0.05)
-    use_time = st.checkbox("تفعيل فلتر الوقت", value=False)
-    start_hr = st.slider("ساعة البداية:", 0, 23, 8)
-    end_hr = st.slider("ساعة النهاية:", 0, 23, 22)
+    st.header("⚙️ إعدادات CoinGlass RSI")
+    os_lvl = st.slider("منطقة Oversold (شراء عند الصعود فوق):", 20, 38, 30)
+    ob_lvl = st.slider("منطقة Overbought (بيع عند الهبوط تحت):", 62, 80, 70)
+    use_state_change = st.checkbox("تأكيد الخروج من المنطقة (State Change)", value=True)
+    sl_mult = st.slider("وقف الخسارة (مضاعف ATR):", 1.0, 3.0, 1.5, 0.1)
+    tp_mult = st.slider("جني الأرباح (مضاعف ATR):", 1.5, 4.0, 2.5, 0.1)
+    trade_size = st.number_input("حجم كل صفقة ($):", value=100.0, step=10.0)
 
-c1, c2 = st.columns([2, 1])
-mode = c1.selectbox("اختر العملة أو المسح الشامل:", ["🌐 ALL COINS (مسح شامل)"] + list(pairs.keys()), label_visibility="collapsed")
-if c2.button("🔄 تحديث الآن", use_container_width=True, type="primary"):
+c1, c2 = st.columns([2.5, 1.0])
+mode = c1.selectbox("اختر العرض:", ["🔥 ALL COINS HEATMAP (مسح شامل)"] + list(pairs.keys()), label_visibility="collapsed")
+if c2.button("🔄 تحديث البيانات", use_container_width=True, type="primary"):
     st.cache_data.clear()
     st.rerun()
 
 def fmt(p):
     return f"{p:.5f}" if p < 1 else (f"{p:.4f}" if p < 50 else f"{p:.2f}")
 
-@st.cache_data(ttl=60, show_spinner=False)
-def get_data(ticker, interval):
-    try:
-        if interval == "4h":
-            df = yf.download(ticker, period="30d", interval="1h", progress=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            return df.dropna().resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
-        period = "1d" if interval == "1m" else ("7d" if interval in ["5m", "15m"] else "30d")
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        return df.dropna()
-    except Exception:
-        return pd.DataFrame()
+def heat_css(r):
+    if r >= 70: return "background:#ff0055;color:#fff;"
+    elif r >= 60: return "background:rgba(255,0,85,0.35);color:#ff0055;"
+    elif r <= 30: return "background:#00ff66;color:#000;"
+    elif r <= 40: return "background:rgba(0,255,102,0.35);color:#00ff66;"
+    return "background:#1e2638;color:#a0aec0;"
 
-def check_signal(c_prev, c_sig, htf_dir, cur_hour):
-    if use_time:
-        if start_hr <= end_hr and not (start_hr <= cur_hour <= end_hr): return "WAIT"
-        if start_hr > end_hr and not (cur_hour >= start_hr or cur_hour <= end_hr): return "WAIT"
-    if htf_dir == "BULL":
-        if c_prev['Close'] < c_prev['Open'] and c_sig['Close'] > c_sig['Open']:
-            if (c_sig['Close'] >= c_prev['Open'] and c_sig['Open'] <= c_prev['Close']) or (c_sig['Close'] > c_prev['High']):
-                return "BUY"
-    elif htf_dir == "BEAR":
-        if c_prev['Close'] > c_prev['Open'] and c_sig['Close'] < c_sig['Open']:
-            if (c_sig['Close'] <= c_prev['Open'] and c_sig['Open'] >= c_prev['Close']) or (c_sig['Close'] < c_prev['Low']):
-                return "SELL"
-    return "WAIT"
+def zone_name(r):
+    if r >= 70: return "OVERBOUGHT"
+    elif r >= 60: return "STRONG"
+    elif r <= 30: return "OVERSOLD"
+    elif r <= 40: return "WEAK"
+    return "NEUTRAL"
 
-def calc_levels(side, entry, c_prev, c_sig):
-    margin = entry * 0.0005
-    if sl_mode.startswith("Dynamic"):
-        if side == "BUY":
-            sl = min(c_sig['Low'], c_prev['Low']) - margin
-            tp = entry + 2.0 * max(entry - sl, entry * 0.001)
-        else:
-            sl = max(c_sig['High'], c_prev['High']) + margin
-            tp = entry - 2.0 * max(sl - entry, entry * 0.001)
-    else:
-        sl = entry * (1 - fixed_sl_pct/100.0) if side=="BUY" else entry * (1 + fixed_sl_pct/100.0)
-        tp = entry * (1 + fixed_tp_pct/100.0) if side=="BUY" else entry * (1 - fixed_tp_pct/100.0)
-    return sl, tp
+# حساب Wilder Smoothing RSI 14 المطابق لـ CoinGlass
+def calc_wilder_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
+    return 100 - (100 / (1 + rs))
 
-def run_engine(ticker):
-    df_h = get_data(ticker, htf)
-    df_l = get_data(ticker, ltf)
-    if df_h.empty or df_l.empty or len(df_h) < 5 or len(df_l) < 30: return None
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_35d_5m(tickers_list):
+    # جلب 35 يوماً على فريم 5 دقائق لتغطية 1 يوم، 1 أسبوع، و 1 شهر كامل
+    raw = yf.download(tickers_list, period="35d", interval="5m", group_by="ticker", progress=False)
+    out = {}
+    for tk in tickers_list:
+        try:
+            df = raw[tk].dropna() if len(tickers_list) > 1 else raw.dropna()
+            if len(df) > 50:
+                df['RSI'] = calc_wilder_rsi(df['Close'], 14)
+                tr = pd.concat([df['High']-df['Low'], (df['High']-df['Close'].shift()).abs(), (df['Low']-df['Close'].shift()).abs()], axis=1).max(axis=1)
+                df['ATR'] = tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+                out[tk] = df.dropna()
+            else:
+                out[tk] = pd.DataFrame()
+        except Exception:
+            out[tk] = pd.DataFrame()
+    return out
 
-    last_h = df_h.iloc[-2]
-    htf_dir = "BULL" if last_h['Close'] > last_h['Open'] else ("BEAR" if last_h['Close'] < last_h['Open'] else "NEUTRAL")
+def simulate_period(df, candles_count):
+    sub = df.tail(candles_count + 2)
+    if len(sub) < 10: return 0, 0, 0.0
+    wins, losses, net = 0, 0, 0.0
+    in_pos, side, ep, slp, tpp = False, "", 0.0, 0.0, 0.0
 
-    c_prev, c_sig, c_open = df_l.iloc[-3], df_l.iloc[-2], df_l.iloc[-1]
-    entry_live = float(c_open['Open'])
-    cur_hr = c_open.name.hour if hasattr(c_open.name, 'hour') else 12
-    est_spread = ((float(c_open['High']) - float(c_open['Low'])) / entry_live) * 10
-    sig_live = check_signal(c_prev, c_sig, htf_dir, cur_hr) if est_spread <= max_spread_pct else "WAIT"
-    sl_live, tp_live = calc_levels(sig_live, entry_live, c_prev, c_sig) if sig_live != "WAIT" else (0.0, 0.0)
-
-    cmap = {"1m": 1440, "5m": 288, "15m": 96}
-    lb = min(cmap.get(ltf, 288), len(df_l) - 5)
-    wins, losses, be_trades, cur_bal = 0, 0, 0, balance
-    in_pos, side, ep, slp, tpp, init_risk, be_done, pos_size = False, "", 0.0, 0.0, 0.0, 0.0, False, 0.0
-
-    for i in range(len(df_l) - lb, len(df_l) - 1):
-        bar = df_l.iloc[i]
-        past_h = df_h[df_h.index <= bar.name]
-        if len(past_h) < 2: continue
-        h_c = past_h.iloc[-2]
-        h_dir = "BULL" if h_c['Close'] > h_c['Open'] else "BEAR"
-
+    for i in range(1, len(sub)):
+        bar = sub.iloc[i]
+        prev = sub.iloc[i-1]
         if in_pos:
             if side == "BUY":
                 if bar['Low'] <= slp:
-                    pnl = -pos_size * ((ep - slp) / ep)
-                    if abs(slp - ep) < 1e-8: be_trades += 1
-                    elif pnl < 0: losses += 1
-                    else: wins += 1
-                    cur_bal += pnl; in_pos = False; continue
-                if bar['High'] >= tpp:
-                    cur_bal += pos_size * ((tpp - ep) / ep); wins += 1; in_pos = False; continue
-                if use_be and not be_done and bar['High'] >= ep + init_risk: slp = ep; be_done = True
-                if use_trail and bar['High'] - init_risk > slp: slp = bar['High'] - init_risk
+                    losses += 1; net -= trade_size * ((ep - slp) / ep) + (trade_size * 0.001); in_pos = False
+                elif bar['High'] >= tpp:
+                    wins += 1; net += trade_size * ((tpp - ep) / ep) - (trade_size * 0.001); in_pos = False
             elif side == "SELL":
                 if bar['High'] >= slp:
-                    pnl = -pos_size * ((slp - ep) / ep)
-                    if abs(slp - ep) < 1e-8: be_trades += 1
-                    elif pnl < 0: losses += 1
-                    else: wins += 1
-                    cur_bal += pnl; in_pos = False; continue
-                if bar['Low'] <= tpp:
-                    cur_bal += pos_size * ((ep - tpp) / ep); wins += 1; in_pos = False; continue
-                if use_be and not be_done and bar['Low'] <= ep - init_risk: slp = ep; be_done = True
-                if use_trail and bar['Low'] + init_risk < slp: slp = bar['Low'] + init_risk
+                    losses += 1; net -= trade_size * ((slp - ep) / ep) + (trade_size * 0.001); in_pos = False
+                elif bar['Low'] <= tpp:
+                    wins += 1; net += trade_size * ((ep - tpp) / ep) - (trade_size * 0.001); in_pos = False
             continue
 
-        p_c, s_c = df_l.iloc[i-2], df_l.iloc[i-1]
-        b_hr = bar.name.hour if hasattr(bar.name, 'hour') else 12
-        sig = check_signal(p_c, s_c, h_dir, b_hr)
-        if sig in ["BUY", "SELL"]:
-            in_pos, side, ep = True, sig, float(bar['Open'])
-            slp, tpp = calc_levels(side, ep, p_c, s_c)
-            init_risk, be_done = abs(ep - slp), False
-            pos_size = fixed_amt if mm_type == "Fixed Amount ($)" else (cur_bal * (risk_pct / 100.0)) / max(init_risk / ep, 0.001)
+        r_cur, r_prv = float(bar['RSI']), float(prev['RSI'])
+        if use_state_change:
+            buy_sig = (r_prv <= os_lvl) and (r_cur > os_lvl)
+            sell_sig = (r_prv >= ob_lvl) and (r_cur < ob_lvl)
+        else:
+            buy_sig = r_cur <= os_lvl
+            sell_sig = r_cur >= ob_lvl
 
-    return {"price": float(c_open['Close']), "htf_dir": htf_dir, "sig": sig_live, "entry": entry_live, "sl": sl_live, "tp": tp_live, "w": wins, "l": losses, "be": be_trades, "net": cur_bal - balance}
+        if buy_sig or sell_sig:
+            in_pos = True
+            side = "BUY" if buy_sig else "SELL"
+            ep = float(bar['Close'])
+            atr_v = float(bar['ATR'])
+            slp = ep - (sl_mult * atr_v) if side == "BUY" else ep + (sl_mult * atr_v)
+            tpp = ep + (tp_mult * atr_v) if side == "BUY" else ep - (tp_mult * atr_v)
 
-if mode == "🌐 ALL COINS (مسح شامل)":
-    status_txt = st.empty()
-    bar = st.progress(0)
-    rows, tw, tl, tbe, tnet = "", 0, 0, 0, 0.0
-    for idx, (name, tk) in enumerate(pairs.items()):
-        status_txt.text(f"⏳ جاري فحص {name} ({idx+1}/{len(pairs)})...")
-        res = run_engine(tk)
+    return wins, losses, net
+
+def analyze_coin(df):
+    if df.empty or len(df) < 30: return None
+    last, prev, curr = df.iloc[-2], df.iloc[-3], df.iloc[-1]
+    r_cur, r_prv = float(last['RSI']), float(prev['RSI'])
+    price, atr = float(curr['Close']), float(last['ATR'])
+
+    if use_state_change:
+        b_sig = (r_prv <= os_lvl) and (r_cur > os_lvl)
+        s_sig = (r_prv >= ob_lvl) and (r_cur < ob_lvl)
+    else:
+        b_sig = r_cur <= os_lvl
+        s_sig = r_cur >= ob_lvl
+
+    sig = "BUY" if b_sig else ("SELL" if s_sig else "WAIT")
+    sl = price - (sl_mult * atr) if sig == "BUY" else (price + (sl_mult * atr) if sig == "SELL" else 0.0)
+    tp = price + (tp_mult * atr) if sig == "BUY" else (price - (tp_mult * atr) if sig == "SELL" else 0.0)
+
+    # حساب الفترات الثلاث: 1 يوم (288 شمعة)، 1 أسبوع (2016 شمعة)، 1 شهر (8640 شمعة)
+    s_1d = simulate_period(df, 288)
+    s_7d = simulate_period(df, 2016)
+    s_30d = simulate_period(df, 8640)
+
+    return {"price": price, "rsi": r_cur, "sig": sig, "sl": sl, "tp": tp, "1d": s_1d, "7d": s_7d, "30d": s_30d}
+
+def render_period_cards(d1, d7, d30):
+    def card_html(title, stats):
+        w, l, net = stats
+        wr = (w / (w + l) * 100) if (w + l) > 0 else 0.0
+        nc = "#00ff66" if net >= 0 else "#ff0055"
+        return f"<div class='pcard'><div class='ptitle'>{title}</div><div class='pstats'><span><small style='color:#aaa'>WIN</small><br><b style='color:#00ff66'>{w} 🟢</b></span><span><small style='color:#aaa'>LOSS</small><br><b style='color:#ff0055'>{l} 🔴</b></span><span><small style='color:#aaa'>RATE</small><br><b style='color:#00ffcc'>{wr:.1f}%</b></span><span><small style='color:#aaa'>NET PNL</small><br><b style='color:{nc}'>${net:+.2f}</b></span></div></div>"
+    st.markdown(f"<div class='grid3'>{card_html('📅 1 DAY (24H)', d1)}{card_html('📆 1 WEEK (7D)', d7)}{card_html('🗓️ 1 MONTH (30D)', d30)}</div>", unsafe_allow_html=True)
+
+tickers = list(pairs.values())
+with st.spinner("🔥 جاري تحميل بيانات 30 يوماً لفريم 5 دقائق من yfinance..."):
+    data_map = fetch_35d_5m(tickers)
+
+if mode == "🔥 ALL COINS HEATMAP (مسح شامل)":
+    rows = ""
+    t1d, t7d, t30d = [0, 0, 0.0], [0, 0, 0.0], [0, 0, 0.0]
+    for name, tk in pairs.items():
+        res = analyze_coin(data_map.get(tk, pd.DataFrame()))
         if res:
-            tw += res['w']; tl += res['l']; tbe += res['be']; tnet += res['net']
-            h_badge = f"<span class='buy'>BULL ({htf.upper()})</span>" if res['htf_dir']=="BULL" else f"<span class='sell'>BEAR ({htf.upper()})</span>"
+            for idx in range(3):
+                t1d[idx] += res['1d'][idx]
+                t7d[idx] += res['7d'][idx]
+                t30d[idx] += res['30d'][idx]
             s_cls = "buy" if res['sig']=="BUY" else ("sell" if res['sig']=="SELL" else "wait")
             sl_s = fmt(res['sl']) if res['sig']!="WAIT" else "-"
             tp_s = fmt(res['tp']) if res['sig']!="WAIT" else "-"
-            ncol = "#00ff66" if res['net']>=0 else "#ff0055"
+            c30 = "#00ff66" if res['30d'][2] >= 0 else "#ff0055"
+            rows += f"<tr><td style='color:#00ffcc'>{name}</td><td>{fmt(res['price'])}</td><td style='{heat_css(res['rsi'])}'>{res['rsi']:.1f} ({zone_name(res['rsi'])})</td><td><span class='{s_cls}'>{res['sig']}</span></td><td style='color:#ff0055'>{sl_s}</td><td style='color:#00ff66'>{tp_s}</td><td>{res['1d'][0]}W/{res['1d'][1]}L</td><td>{res['7d'][0]}W/{res['7d'][1]}L</td><td style='color:{c30}'>${res['30d'][2]:+.2f}</td></tr>"
+    if rows:
+        render_period_cards(t1d, t7d, t30d)
+        st.markdown(f"<table><thead><tr><th>PAIR</th><th>PRICE</th><th>5M RSI ZONE</th><th>SIGNAL</th><th>SL</th><th>TP</th><th>1D W/L</th><th>7D W/L</th><th>30D NET</th></tr></thead><tbody>{rows}</tbody></table>", unsafe_allow_html=True)
+    else:
+        st.warning("تعذر جلب البيانات حالياً، اضغط تحديث البيانات.")
+else:
+    res = analyze_coin(data_map.get(pairs[mode], pd.DataFrame()))
+    if res:
+        render_period_cards(res['1d'], res['7d'], res['30d'])
