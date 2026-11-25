@@ -10,180 +10,149 @@ st.markdown("<div class='hdr'><h2 style='margin:0;color:#00ffcc'>⚡ PRICE ACTIO
 
 pairs = {"BTCUSDT":"BTC-USD","ETHUSDT":"ETH-USD","XRPUSDT":"XRP-USD","ADAUSDT":"ADA-USD","XLMUSDT":"XLM-USD","HBARUSDT":"HBAR-USD","LTCUSDT":"LTC-USD","ZECUSDT":"ZEC-USD","PAXGUSDT":"PAXG-USD"}
 
-# ==========================================
-# 4. الإعدادات الخارجية المطلوبة (Sidebar Inputs)
-# ==========================================
 with st.sidebar:
     st.header("⚙️ إعدادات الإكسبيرت (Inputs)")
-    
-    st.subheader("1. الفريمات الزمنية")
     htf = st.selectbox("الفريم الكبير (تحديد الاتجاه):", ["1h", "4h"], index=0)
     ltf = st.selectbox("الفريم الصغير (نقطة الدخول):", ["1m", "5m", "15m"], index=1)
-    
-    st.subheader("2. إدارة رأس المال")
     mm_type = st.radio("نوع الإدارة:", ["Fixed Amount ($)", "Risk % of Balance"])
     balance = st.number_input("رصيد الحساب ($):", value=1000.0, step=100.0)
     fixed_amt = st.number_input("حجم الصفقة الثابت ($):", value=100.0, step=10.0)
     risk_pct = st.slider("نسبة المخاطرة (%):", 0.5, 5.0, 1.0, 0.5)
-    
-    st.subheader("3. الوقف والهدف (SL / TP)")
     sl_mode = st.radio("نظام حساب الوقف والهدف:", ["Dynamic (قمة/قاع الشمعة 1:2)", "Fixed % / Pips"])
     fixed_sl_pct = st.number_input("SL ثابت (% من السعر):", value=0.4, step=0.1)
     fixed_tp_pct = st.number_input("TP ثابت (% من السعر):", value=0.8, step=0.1)
-    
-    st.subheader("4. تأمين الصفقة والحماية")
     use_be = st.checkbox("تفعيل Break Even (عند 1:1)", value=True)
     use_trail = st.checkbox("تفعيل Trailing Stop", value=False)
     max_spread_pct = st.number_input("أقصى سبريد مسموح (%):", value=0.15, step=0.05)
-    
-    st.subheader("5. فلتر أوقات التداول (UTC)")
     use_time = st.checkbox("تفعيل فلتر الوقت", value=False)
     start_hr = st.slider("ساعة البداية:", 0, 23, 8)
     end_hr = st.slider("ساعة النهاية:", 0, 23, 22)
 
-c1, c2 = st.columns([3, 1])
+c1, c2 = st.columns([2, 1])
 mode = c1.selectbox("اختر العملة أو المسح الشامل:", ["🌐 ALL COINS (مسح شامل)"] + list(pairs.keys()), label_visibility="collapsed")
-c2.button("🔄 تحديث الآن", use_container_width=True, type="primary")
+if c2.button("🔄 تحديث الآن", use_container_width=True, type="primary"):
+    st.cache_data.clear()
+    st.rerun()
 
 def fmt(p):
     return f"{p:.5f}" if p < 1 else (f"{p:.4f}" if p < 50 else f"{p:.2f}")
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_data(ticker, interval):
-    if interval == "4h":
-        df = yf.download(ticker, period="30d", interval="1h", progress=False)
+    try:
+        if interval == "4h":
+            df = yf.download(ticker, period="30d", interval="1h", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            return df.dropna().resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
+        period = "1d" if interval == "1m" else ("7d" if interval in ["5m", "15m"] else "30d")
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        return df.dropna().resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
-    period = "1d" if interval == "1m" else ("7d" if interval in ["5m", "15m"] else "30d")
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-    return df.dropna()
+        return df.dropna()
+    except Exception:
+        return pd.DataFrame()
 
 def check_signal(c_prev, c_sig, htf_dir, cur_hour):
-    # فلتر الوقت
     if use_time:
         if start_hr <= end_hr and not (start_hr <= cur_hour <= end_hr): return "WAIT"
         if start_hr > end_hr and not (cur_hour >= start_hr or cur_hour <= end_hr): return "WAIT"
-
-    # 1 & 2. شروط الشراء: الفريم الكبير صاعد + تصحيح هابط + ابتلاع صاعد أو إغلاق أعلى من قمة التصحيح
     if htf_dir == "BULL":
-        prev_bear = c_prev['Close'] < c_prev['Open']
-        curr_bull = c_sig['Close'] > c_sig['Open']
-        engulf_or_break = (c_sig['Close'] >= c_prev['Open'] and c_sig['Open'] <= c_prev['Close']) or (c_sig['Close'] > c_prev['High'])
-        if prev_bear and curr_bull and engulf_or_break:
-            return "BUY"
-
-    # 1 & 2. شروط البيع: الفريم الكبير هابط + تصحيح صاعد + ابتلاع هابط أو إغلاق أدنى من قاع التصحيح
+        if c_prev['Close'] < c_prev['Open'] and c_sig['Close'] > c_sig['Open']:
+            if (c_sig['Close'] >= c_prev['Open'] and c_sig['Open'] <= c_prev['Close']) or (c_sig['Close'] > c_prev['High']):
+                return "BUY"
     elif htf_dir == "BEAR":
-        prev_bull = c_prev['Close'] > c_prev['Open']
-        curr_bear = c_sig['Close'] < c_sig['Open']
-        engulf_or_break = (c_sig['Close'] <= c_prev['Open'] and c_sig['Open'] >= c_prev['Close']) or (c_sig['Close'] < c_prev['Low'])
-        if prev_bull and curr_bear and engulf_or_break:
-            return "SELL"
-
+        if c_prev['Close'] > c_prev['Open'] and c_sig['Close'] < c_sig['Open']:
+            if (c_sig['Close'] <= c_prev['Open'] and c_sig['Open'] >= c_prev['Close']) or (c_sig['Close'] < c_prev['Low']):
+                return "SELL"
     return "WAIT"
 
 def calc_levels(side, entry, c_prev, c_sig):
-    margin = entry * 0.0005 # هامش أمان 0.05% (يعادل 2-3 نقاط)
+    margin = entry * 0.0005
     if sl_mode.startswith("Dynamic"):
         if side == "BUY":
             sl = min(c_sig['Low'], c_prev['Low']) - margin
-            risk_dist = max(entry - sl, entry * 0.001)
-            tp = entry + (2.0 * risk_dist) # 1:2 R:R
+            tp = entry + 2.0 * max(entry - sl, entry * 0.001)
         else:
             sl = max(c_sig['High'], c_prev['High']) + margin
-            risk_dist = max(sl - entry, entry * 0.001)
-            tp = entry - (2.0 * risk_dist) # 1:2 R:R
+            tp = entry - 2.0 * max(sl - entry, entry * 0.001)
     else:
-        if side == "BUY":
-            sl = entry * (1 - fixed_sl_pct / 100.0)
-            tp = entry * (1 + fixed_tp_pct / 100.0)
-        else:
-            sl = entry * (1 + fixed_sl_pct / 100.0)
-            tp = entry * (1 - fixed_tp_pct / 100.0)
+        sl = entry * (1 - fixed_sl_pct/100.0) if side=="BUY" else entry * (1 + fixed_sl_pct/100.0)
+        tp = entry * (1 + fixed_tp_pct/100.0) if side=="BUY" else entry * (1 - fixed_tp_pct/100.0)
     return sl, tp
 
 def run_engine(ticker):
     df_h = get_data(ticker, htf)
     df_l = get_data(ticker, ltf)
-    if len(df_h) < 5 or len(df_l) < 30: return None
+    if df_h.empty or df_l.empty or len(df_h) < 5 or len(df_l) < 30: return None
 
-    # اتجاه آخر شمعة مكتملة على الفريم الكبير
     last_h = df_h.iloc[-2]
     htf_dir = "BULL" if last_h['Close'] > last_h['Open'] else ("BEAR" if last_h['Close'] < last_h['Open'] else "NEUTRAL")
 
-    # فحص الإشارة الحية (آخر شمعتين مكتملتين على الفريم الصغير للدخول مع افتتاح الشمعة الجديدة)
     c_prev, c_sig, c_open = df_l.iloc[-3], df_l.iloc[-2], df_l.iloc[-1]
-    entry_live = c_open['Open']
+    entry_live = float(c_open['Open'])
     cur_hr = c_open.name.hour if hasattr(c_open.name, 'hour') else 12
-    
-    # فحص السبريد التقديري
-    est_spread = ((c_open['High'] - c_open['Low']) / entry_live) * 10
-    spread_ok = est_spread <= max_spread_pct
-
-    sig_live = check_signal(c_prev, c_sig, htf_dir, cur_hr) if spread_ok else "WAIT"
+    est_spread = ((float(c_open['High']) - float(c_open['Low'])) / entry_live) * 10
+    sig_live = check_signal(c_prev, c_sig, htf_dir, cur_hr) if est_spread <= max_spread_pct else "WAIT"
     sl_live, tp_live = calc_levels(sig_live, entry_live, c_prev, c_sig) if sig_live != "WAIT" else (0.0, 0.0)
 
-    # محاكاة آخر 24 ساعة بدقة (صفقة واحدة في نفس الوقت + Break Even + Trailing)
     cmap = {"1m": 1440, "5m": 288, "15m": 96}
     lb = min(cmap.get(ltf, 288), len(df_l) - 5)
-    
-    wins, losses, be_trades = 0, 0, 0
-    cur_bal = balance
-    in_pos, side = False, ""
-    ep, slp, tpp, init_risk, be_done = 0.0, 0.0, 0.0, 0.0, False
-    pos_size = 0.0
+    wins, losses, be_trades, cur_bal = 0, 0, 0, balance
+    in_pos, side, ep, slp, tpp, init_risk, be_done, pos_size = False, "", 0.0, 0.0, 0.0, 0.0, False, 0.0
 
     for i in range(len(df_l) - lb, len(df_l) - 1):
         bar = df_l.iloc[i]
-        # تحديد اتجاه شمعة الفريم الكبير المقابلة لوقت هذه الشمعة
         past_h = df_h[df_h.index <= bar.name]
         if len(past_h) < 2: continue
-        h_candle = past_h.iloc[-2]
-        h_dir = "BULL" if h_candle['Close'] > h_candle['Open'] else "BEAR"
+        h_c = past_h.iloc[-2]
+        h_dir = "BULL" if h_c['Close'] > h_c['Open'] else "BEAR"
 
         if in_pos:
             if side == "BUY":
-                # 1. التحقق من ضرب الستوب
                 if bar['Low'] <= slp:
                     pnl = -pos_size * ((ep - slp) / ep)
                     if abs(slp - ep) < 1e-8: be_trades += 1
                     elif pnl < 0: losses += 1
                     else: wins += 1
-                    cur_bal += pnl
-                    in_pos = False
-                    continue
-                # 2. التحقق من ضرب الهدف
+                    cur_bal += pnl; in_pos = False; continue
                 if bar['High'] >= tpp:
-                    pnl = pos_size * ((tpp - ep) / ep)
-                    wins += 1
-                    cur_bal += pnl
-                    in_pos = False
-                    continue
-                # 3. تأمين الصفقة Break Even عند تحقيق 1:1
-                if use_be and not be_done and bar['High'] >= ep + init_risk:
-                    slp = ep
-                    be_done = True
-                # 4. الوقف المتحرك Trailing Stop
-                if use_trail and bar['High'] - init_risk > slp:
-                    slp = bar['High'] - init_risk
-
+                    cur_bal += pos_size * ((tpp - ep) / ep); wins += 1; in_pos = False; continue
+                if use_be and not be_done and bar['High'] >= ep + init_risk: slp = ep; be_done = True
+                if use_trail and bar['High'] - init_risk > slp: slp = bar['High'] - init_risk
             elif side == "SELL":
                 if bar['High'] >= slp:
                     pnl = -pos_size * ((slp - ep) / ep)
                     if abs(slp - ep) < 1e-8: be_trades += 1
                     elif pnl < 0: losses += 1
                     else: wins += 1
-                    cur_bal += pnl
-                    in_pos = False
-                    continue
+                    cur_bal += pnl; in_pos = False; continue
                 if bar['Low'] <= tpp:
-                    pnl = pos_size * ((ep - tpp) / ep)
-                    wins += 1
-                    cur_bal += pnl
-                    in_pos = False
-                    continue
-                if use_be and not be_done and bar['Low'] <= ep - init_risk:
-                    slp = ep
-                    be_done = True
-                if use_trail and bar['Low'] + init_risk < slp:
-                    slp = bar['Low'] + init_risk
+                    cur_bal += pos_size * ((ep - tpp) / ep); wins += 1; in_pos = False; continue
+                if use_be and not be_done and bar['Low'] <= ep - init_risk: slp = ep; be_done = True
+                if use_trail and bar['Low'] + init_risk < slp: slp = bar['Low'] + init_risk
+            continue
+
+        p_c, s_c = df_l.iloc[i-2], df_l.iloc[i-1]
+        b_hr = bar.name.hour if hasattr(bar.name, 'hour') else 12
+        sig = check_signal(p_c, s_c, h_dir, b_hr)
+        if sig in ["BUY", "SELL"]:
+            in_pos, side, ep = True, sig, float(bar['Open'])
+            slp, tpp = calc_levels(side, ep, p_c, s_c)
+            init_risk, be_done = abs(ep - slp), False
+            pos_size = fixed_amt if mm_type == "Fixed Amount ($)" else (cur_bal * (risk_pct / 100.0)) / max(init_risk / ep, 0.001)
+
+    return {"price": float(c_open['Close']), "htf_dir": htf_dir, "sig": sig_live, "entry": entry_live, "sl": sl_live, "tp": tp_live, "w": wins, "l": losses, "be": be_trades, "net": cur_bal - balance}
+
+if mode == "🌐 ALL COINS (مسح شامل)":
+    status_txt = st.empty()
+    bar = st.progress(0)
+    rows, tw, tl, tbe, tnet = "", 0, 0, 0, 0.0
+    for idx, (name, tk) in enumerate(pairs.items()):
+        status_txt.text(f"⏳ جاري فحص {name} ({idx+1}/{len(pairs)})...")
+        res = run_engine(tk)
+        if res:
+            tw += res['w']; tl += res['l']; tbe += res['be']; tnet += res['net']
+            h_badge = f"<span class='buy'>BULL ({htf.upper()})</span>" if res['htf_dir']=="BULL" else f"<span class='sell'>BEAR ({htf.upper()})</span>"
+            s_cls = "buy" if res['sig']=="BUY" else ("sell" if res['sig']=="SELL" else "wait")
+            sl_s = fmt(res['sl']) if res['sig']!="WAIT" else "-"
+            tp_s = fmt(res['tp']) if res['sig']!="WAIT" else "-"
+            ncol = "#00ff66" if res['net']>=0 else "#ff0055"
