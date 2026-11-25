@@ -31,39 +31,30 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 1. إعدادات واجهة المستخدم مع الضبط التلقائي للفريمات (5m و 15m)
+# 1. إعدادات واجهة المستخدم
 timeframe = st.selectbox(
     "الإطار الزمني:", 
-    ["1m", "3m", "5m", "15m", "30m", "1h"], 
-    index=2  # الافتراضي 5m
+    ["1m", "5m", "15m", "30m", "1h"], 
+    index=1  # الافتراضي 5m
 )
 
-# تحديد القيم الافتراضية الذكية حسب الفريم المختار
 if timeframe == "5m":
-    def_atr = 2.50
-    def_rr = 2.70
-    def_ema = False
+    def_atr, def_rr, def_ema = 2.50, 2.70, False
 elif timeframe == "15m":
-    def_atr = 1.90
-    def_rr = 3.20
-    def_ema = True
+    def_atr, def_rr, def_ema = 1.90, 3.20, True
 else:
-    def_atr = 2.50
-    def_rr = 2.70
-    def_ema = False
+    def_atr, def_rr, def_ema = 2.50, 2.70, False
 
-# استخدام key ديناميكي مرتبط بالفريم لتحديث القيم تلقائياً عند تغيير الفريم
 atr_mult = st.number_input("وقف الخسارة (ATR SL):", min_value=0.5, max_value=10.0, value=def_atr, step=0.1, key=f"atr_{timeframe}")
 rr_ratio = st.number_input("نسبة العائد (R:R):", min_value=0.5, max_value=10.0, value=def_rr, step=0.1, key=f"rr_{timeframe}")
 use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=def_ema, key=f"ema_{timeframe}")
 
-# رأس مال كل صفقة 100 دولار (تداول فوري بدون رافعة)
 POSITION_SIZE_USD = 100.0
 
-# قائمة العملات ذات المشاريع التقنية الحقيقية
+# عملات المشاريع التقنية المتوفرة على Kraken مقابل USD
 HALAL_SYMBOLS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "ADA/USDT",
-    "DOT/USDT", "LINK/USDT", "ATOM/USDT", "NEAR/USDT", "ALGO/USDT"
+    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD",
+    "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"
 ]
 
 # 2. حساب المؤشرات
@@ -75,12 +66,11 @@ def calculate_indicators(df):
     df['atr'] = tr.rolling(14).mean()
     
     df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-    
     df['downtrend'] = df['close'].shift(1) < df['close'].shift(3)
     df['uptrend'] = df['close'].shift(1) > df['close'].shift(3)
     return df
 
-# دالة فحص شمعة واحدة لتحديد النموذج
+# 3. فحص النماذج
 def check_candle_pattern(df, i, apply_ema):
     c0 = df.iloc[i]
     c1 = df.iloc[i - 1]
@@ -106,31 +96,22 @@ def check_candle_pattern(df, i, apply_ema):
     pattern_name = None
     direction = None
 
-    # --- النماذج الصاعدة (شراء) ---
     if c0['downtrend']:
         if upper_wick0 >= (1.5 * body0) and lower_wick0 <= (0.5 * body0):
-            pattern_name = "المطرقة المقلوبة"
-            direction = "شراء (Long)"
+            pattern_name, direction = "المطرقة المقلوبة", "شراء (Long)"
         elif is_bear1 and is_bull0 and c0['open'] <= (c1['close'] * 1.002) and c0['close'] > (c1['open'] + c1['close']) / 2:
-            pattern_name = "خط الاختراق"
-            direction = "شراء (Long)"
+            pattern_name, direction = "خط الاختراق", "شراء (Long)"
         elif is_bull2 and is_bull1 and is_bull0 and (c0['close'] > c1['close'] > c2['close']):
-            pattern_name = "الجنود الثلاثة البيض"
-            direction = "شراء (Long)"
+            pattern_name, direction = "الجنود الثلاثة البيض", "شراء (Long)"
 
-    # --- النماذج الهابطة (بيع) ---
     if c0['uptrend'] and pattern_name is None:
         if lower_wick0 >= (1.5 * body0) and upper_wick0 <= (0.5 * body0):
-            pattern_name = "الرجل المشنوق"
-            direction = "بيع (Short)"
+            pattern_name, direction = "الرجل المشنوق", "بيع (Short)"
         elif is_bull1 and is_bear0 and c0['open'] >= (c1['close'] * 0.998) and c0['close'] < (c1['open'] + c1['close']) / 2:
-            pattern_name = "الغطاء السحابي الداكن"
-            direction = "بيع (Short)"
+            pattern_name, direction = "الغطاء السحابي الداكن", "بيع (Short)"
         elif is_bear2 and is_bear1 and is_bear0 and (c0['close'] < c1['close'] < c2['close']):
-            pattern_name = "الغربان السوداء الثلاثة"
-            direction = "بيع (Short)"
+            pattern_name, direction = "الغربان السوداء الثلاثة", "بيع (Short)"
 
-    # تطبيق فلتر EMA 200
     if pattern_name and apply_ema:
         if direction == "شراء (Long)" and c0['close'] < c0['ema200']:
             return None, None
@@ -139,21 +120,19 @@ def check_candle_pattern(df, i, apply_ema):
 
     return pattern_name, direction
 
-# 3. تحليل البيانات التاريخية + البحث عن التوصيات المستقبلية اللحظية
+# 4. جلب البيانات وتحليل السوق (Kraken مفتوحة لـ Streamlit Cloud)
 def analyze_market(symbols, tf, atr_m, rr, apply_ema):
-    exchange = ccxt.kucoin({'enableRateLimit': True})
+    exchange = ccxt.kraken({'enableRateLimit': True})
     all_trades = []
     live_recommendations = []
     errors = []
     
-    candles_per_day = {"1m": 1440, "3m": 480, "5m": 288, "15m": 96, "30m": 48, "1h": 24}
-    needed_candles = min(1500, candles_per_day.get(tf, 288) + 210)
-    
+    # Kraken تعيد حتى 720 شمعة في كل طلب، وهو ما يغطي آخر 24 ساعة + EMA 200 لفريمات 5m و 15m و 30m و 1h
     cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
     
     for sym in symbols:
         try:
-            ohlcv = exchange.fetch_ohlcv(sym, timeframe=tf, limit=needed_candles)
+            ohlcv = exchange.fetch_ohlcv(sym, timeframe=tf, limit=720)
             if not ohlcv or len(ohlcv) < 50:
                 continue
                 
@@ -162,7 +141,7 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df = calculate_indicators(df)
             
-            # أ) فحص التوصيات المستقبلية (آخر شمعتين مغلقتين: -2 و -3)
+            # أ) التوصيات المستقبلية (آخر شمعتين مغلقتين)
             for check_idx in [len(df) - 2, len(df) - 3]:
                 p_name, p_dir = check_candle_pattern(df, check_idx, apply_ema)
                 if p_name and not pd.isna(df.iloc[check_idx]['atr']):
@@ -173,7 +152,7 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
                     is_l = "شراء" in p_dir
                     
                     live_recommendations.append({
-                        "العملة": sym.replace('/USDT', ''),
+                        "العملة": sym.replace('/USD', ''),
                         "النوع": p_dir,
                         "النموذج": p_name,
                         "الوقت": c_sig['timestamp'].strftime('%H:%M'),
@@ -181,9 +160,9 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
                         "الوقف": entry_p - sl_d if is_l else entry_p + sl_d,
                         "الهدف": entry_p + tp_d if is_l else entry_p - tp_d
                     })
-                    break # نكتفي بأحدث إشارة للعملة
+                    break
 
-            # ب) محاكاة الصفقات التاريخية لآخر 24 ساعة
+            # ب) الصفقات التاريخية لآخر 24 ساعة
             start_idx = min(200, len(df) - 2)
             for i in range(start_idx, len(df) - 1):
                 c0 = df.iloc[i]
@@ -231,7 +210,7 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
                             
                 all_trades.append({
                     "الوقت": c0['timestamp'].strftime('%Y-%m-%d %H:%M'),
-                    "العملة": sym.replace('/USDT', ''),
+                    "العملة": sym.replace('/USD', ''),
                     "النوع": direction,
                     "النموذج": pattern_name,
                     "الحالة": outcome,
@@ -242,9 +221,24 @@ def analyze_market(symbols, tf, atr_m, rr, apply_ema):
             
     return pd.DataFrame(all_trades), live_recommendations, errors
 
-# 4. عرض النتائج
-with st.spinner('جاري تحليل السوق واستخراج التوصيات...'):
+# 5. عرض الواجهة والنتائج
+st.markdown("---")
+with st.spinner('جاري جلب البيانات من Kraken وتحليل السوق...'):
     trades_df, live_recs, fetch_errors = analyze_market(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_ema200)
 
-# --- القسم الأول: التوصيات المستقبلية بخط وألوان واضحة ---
-st.markdown("---")
+if fetch_errors and trades_df.empty:
+    st.error("⚠️ تنبيه من السيرفر:")
+    st.code("\n".join(fetch_errors[:3]))
+
+# التوصيات المستقبلية
+st.subheader("🎯 توصيات مستقبلية (الفرص اللحظية الآن)")
+if live_recs:
+    for rec in live_recs:
+        is_buy = "شراء" in rec["النوع"]
+        card_class = "signal-card-buy" if is_buy else "signal-card-sell"
+        title_class = "signal-title-buy" if is_buy else "signal-title-sell"
+        icon = "🟢" if is_buy else "🔴"
+        decimals = 4 if rec["الدخول"] < 10 else 2
+        
+        st.markdown(f"""
+        <div class="{card_class}">
