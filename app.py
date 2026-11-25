@@ -8,11 +8,18 @@ from concurrent.futures import ThreadPoolExecutor
 st.set_page_config(page_title="RSI Trendline Breakout - Spot", layout="centered")
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
-tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=1)
-rr_ratio = st.number_input("نسبة العائد للمخاطرة (R:R):", 1.0, 6.0, 2.5, 0.1)
-use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 100)", value=False)
+# 1. الإعدادات الافتراضية الجديدة: فريم 4h افتراضي، R:R = 1.50، وبدون فلتر
+tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=4)
+rr_ratio = st.number_input("نسبة العائد للمخاطرة (R:R):", 1.0, 6.0, 1.50, 0.1)
 
-SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD", "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"]
+# 25 عملة رقمية ذات مشاريع تقنية حقيقية وقوية التذبذب (متوفرة على Kraken)
+SYMBOLS = [
+    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD",
+    "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD",
+    "SUI/USD", "APT/USD", "SEI/USD", "INJ/USD", "TIA/USD",
+    "RENDER/USD", "FET/USD", "ARB/USD", "OP/USD", "POL/USD",
+    "FIL/USD", "ICP/USD", "STX/USD", "RUNE/USD", "GRT/USD"
+]
 POS_USD = 100.0
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -20,12 +27,11 @@ def get_data(syms, timeframe):
     ex = ccxt.kraken({'enableRateLimit': False})
     def fetch(s):
         try:
-            d = ex.fetch_ohlcv(s, timeframe=timeframe, limit=450)
-            if d and len(d) > 120:
+            d = ex.fetch_ohlcv(s, timeframe=timeframe, limit=300)
+            if d and len(d) > 60:
                 df = pd.DataFrame(d, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                # تحويل التوقيت إلى توقيت المغرب (UTC+1)
+                # توقيت المغرب (UTC+1)
                 df['t'] = pd.to_datetime(df['t'], unit='ms') + timedelta(hours=1)
-                df['ema100'] = df['c'].ewm(span=100, adjust=False).mean()
                 delta = df['c'].diff()
                 gain = delta.clip(lower=0).rolling(14).mean()
                 loss = (-delta.clip(upper=0)).rolling(14).mean()
@@ -36,25 +42,24 @@ def get_data(syms, timeframe):
             pass
         return s, None
     res = {}
-    with ThreadPoolExecutor(max_workers=10) as p:
+    with ThreadPoolExecutor(max_workers=15) as p:
         for s, df in p.map(fetch, syms):
             if df is not None: res[s] = df
     return res
 
-def scan_rsi_trendline_breakout(df, rr, ema_on):
-    h, l, c, t, ema, rsi = df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['ema100'].values, df['rsi'].values
+def scan_rsi_trendline_breakout(df, rr):
+    h, l, c, t, rsi = df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['rsi'].values
     sigs = []
     last_sig_idx = -8
 
-    for i in range(105, len(df) - 1):
+    for i in range(40, len(df) - 1):
         if i - last_sig_idx < 6 or np.isnan(rsi[i]): continue
-        if ema_on and c[i] < ema[i]: continue
 
-        # 1. التحقق من وجود تشبع بيعي حديث (Oversold Zone) قبل الاختراق
+        # 1. التحقق من تشبع بيعي حديث (Oversold Zone) قبل كسر الترند
         recent_rsi = rsi[i-25:i]
         if np.min(recent_rsi) > 38: continue
 
-        # 2. استخراج قمتين هابطتين لرسم خط ترند RSI وخط ترند السعر
+        # 2. رسم خط ترند هابط على RSI وعلى السعر
         win_rsi = rsi[i-25:i]
         win_high = h[i-25:i]
         
@@ -64,11 +69,9 @@ def scan_rsi_trendline_breakout(df, rr, ema_on):
         r1, r2 = win_rsi[p1_rel], win_rsi[p2_rel]
         h1, h2 = win_high[p1_rel], win_high[p2_rel]
 
-        # اشتراط أن يكون الترند هابطاً على الـ RSI وعلى السعر معاً
         if r2 >= r1 or h2 >= h1 or (p2_rel - p1_rel) < 4:
             continue
 
-        # حساب قيمة خط ترند الـ RSI وخط ترند السعر عند الشمعة الحالية i
         idx1, idx2 = (i - 25) + p1_rel, (i - 25) + p2_rel
         rsi_slope = (r2 - r1) / (idx2 - idx1)
         price_slope = (h2 - h1) / (idx2 - idx1)
@@ -77,13 +80,12 @@ def scan_rsi_trendline_breakout(df, rr, ema_on):
         rsi_trend_prev = r1 + rsi_slope * (i - 1 - idx1)
         price_trend_now = h1 + price_slope * (i - idx1)
 
-        # 3. شرط الاختراق المزدوج: RSI يكسر الترند صعوداً + السعر يكسر الترند صعوداً
+        # 3. الاختراق المزدوج (RSI + السعر) صعوداً
         rsi_breakout = (rsi[i] > rsi_trend_now) and (rsi[i-1] <= rsi_trend_prev)
         price_breakout = c[i] > price_trend_now
 
         if rsi_breakout and price_breakout:
             entry = float(c[i])
-            # الستوب لوس أسفل آخر قاع محوري (Below the recent swing Low)
             recent_swing_low = float(np.min(l[idx1:i+1]))
             sl = recent_swing_low * 0.997
             risk = entry - sl
@@ -97,7 +99,7 @@ def scan_rsi_trendline_breakout(df, rr, ema_on):
     return sigs
 
 data = get_data(SYMBOLS, tf)
-st.caption(f"حالة الاتصال بالسوق: متصل بـ {len(data)} عملات رقمية نقية | التوقيت: المغرب (UTC+1)")
+st.caption(f"حالة الاتصال: متصل بـ {len(data)} عملة قوية التذبذب | التوقيت: المغرب (UTC+1)")
 
 trades, recs = [], []
 hours_back = 168 if tf == "4h" else 24
@@ -107,7 +109,7 @@ cut = now_ma - timedelta(hours=hours_back)
 
 for sym, df in data.items():
     coin = sym.replace('/USD', '')
-    for idx, ts, pat_lbl, ent, sl, tp in scan_rsi_trendline_breakout(df, rr_ratio, use_ema):
+    for idx, ts, pat_lbl, ent, sl, tp in scan_rsi_trendline_breakout(df, rr_ratio):
         if idx >= len(df) - 3:
             recs.append((coin, pat_lbl, ts.strftime('%Y-%m-%d %H:%M'), ent, sl, tp))
 
@@ -150,7 +152,7 @@ if st.button("🔄 تحديث اختراقات RSI الآن", use_container_widt
 st.subheader("🎯 توصيات RSI Trendline Breakout اللحظية (Spot)")
 for coin, pat_lbl, tm, ent, sl, tp in recs:
     dec = 4 if ent < 10 else 2
-    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm})</b><br>🔹 دخول (Breakout): <code>{ent:.{dec}f}</code> | 🎯 هدف: <code>{tp:.{dec}f}</code> | 🛑 وقف (تحت القاع): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm})</b><br>🔹 دخول (Breakout): <code>{ent:.{dec}f}</code> | 🎯 هدف (1.5R): <code>{tp:.{dec}f}</code> | 🛑 وقف (تحت القاع): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
 if not recs: st.info("لا يوجد كسر ترند RSI صاعد في آخر شمعتين حالياً.")
 
 st.subheader(f"📋 سجل صفقات آخر {period_label} (100$ للصفقة)")
