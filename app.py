@@ -11,20 +11,51 @@ st.markdown("""
     <style>
     .stApp { direction: rtl; text-align: right; }
     div[data-testid="stMetricValue"] { font-size: 2rem; font-weight: bold; }
+    .signal-card-buy {
+        background-color: rgba(0, 200, 83, 0.15);
+        border-right: 6px solid #00c853;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+    .signal-card-sell {
+        background-color: rgba(255, 75, 75, 0.15);
+        border-right: 6px solid #ff4b4b;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+    }
+    .signal-title-buy { color: #00e676; font-size: 1.3rem; font-weight: bold; margin-bottom: 5px; }
+    .signal-title-sell { color: #ff5252; font-size: 1.3rem; font-weight: bold; margin-bottom: 5px; }
+    .signal-details { font-size: 1.05rem; line-height: 1.6; }
     </style>
     """, unsafe_allow_html=True)
 
-# 1. إعدادات واجهة المستخدم
+# 1. إعدادات واجهة المستخدم مع الضبط التلقائي للفريمات (5m و 15m)
 timeframe = st.selectbox(
     "الإطار الزمني:", 
     ["1m", "3m", "5m", "15m", "30m", "1h"], 
-    index=3  # الافتراضي 15m
+    index=2  # الافتراضي 5m
 )
-atr_mult = st.number_input("وقف الخسارة (ATR SL):", min_value=0.5, max_value=10.0, value=2.7, step=0.1)
-rr_ratio = st.number_input("نسبة العائد (R:R):", min_value=0.5, max_value=10.0, value=3.2, step=0.1)
 
-use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=False)
-use_breakeven = st.checkbox("تأمين الصفقة عند 1.5 R:R (Break-Even)", value=False)
+# تحديد القيم الافتراضية الذكية حسب الفريم المختار
+if timeframe == "5m":
+    def_atr = 2.50
+    def_rr = 2.70
+    def_ema = False
+elif timeframe == "15m":
+    def_atr = 1.90
+    def_rr = 3.20
+    def_ema = True
+else:
+    def_atr = 2.50
+    def_rr = 2.70
+    def_ema = False
+
+# استخدام key ديناميكي مرتبط بالفريم لتحديث القيم تلقائياً عند تغيير الفريم
+atr_mult = st.number_input("وقف الخسارة (ATR SL):", min_value=0.5, max_value=10.0, value=def_atr, step=0.1, key=f"atr_{timeframe}")
+rr_ratio = st.number_input("نسبة العائد (R:R):", min_value=0.5, max_value=10.0, value=def_rr, step=0.1, key=f"rr_{timeframe}")
+use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=def_ema, key=f"ema_{timeframe}")
 
 # رأس مال كل صفقة 100 دولار (تداول فوري بدون رافعة)
 POSITION_SIZE_USD = 100.0
@@ -49,93 +80,74 @@ def calculate_indicators(df):
     df['uptrend'] = df['close'].shift(1) > df['close'].shift(3)
     return df
 
-# 3. اكتشاف النماذج الستة
-def detect_patterns(df, cutoff_time):
-    signals = []
-    start_idx = min(200, len(df) - 2)
-    if start_idx < 10:
-        return signals
+# دالة فحص شمعة واحدة لتحديد النموذج
+def check_candle_pattern(df, i, apply_ema):
+    c0 = df.iloc[i]
+    c1 = df.iloc[i - 1]
+    c2 = df.iloc[i - 2]
+    
+    body0 = abs(c0['close'] - c0['open'])
+    body1 = abs(c1['close'] - c1['open'])
+    body2 = abs(c2['close'] - c2['open'])
+    
+    if body0 == 0 or body1 == 0 or body2 == 0:
+        return None, None
 
-    for i in range(start_idx, len(df) - 1):
-        c0 = df.iloc[i]
-        
-        if c0['timestamp'] < cutoff_time:
-            continue
+    upper_wick0 = c0['high'] - max(c0['open'], c0['close'])
+    lower_wick0 = min(c0['open'], c0['close']) - c0['low']
+    
+    is_bull0 = c0['close'] > c0['open']
+    is_bear0 = c0['close'] < c0['open']
+    is_bull1 = c1['close'] > c1['open']
+    is_bear1 = c1['close'] < c1['open']
+    is_bull2 = c2['close'] > c2['open']
+    is_bear2 = c2['close'] < c2['open']
 
-        c1 = df.iloc[i - 1]
-        c2 = df.iloc[i - 2]
-        
-        body0 = abs(c0['close'] - c0['open'])
-        body1 = abs(c1['close'] - c1['open'])
-        body2 = abs(c2['close'] - c2['open'])
-        
-        if body0 == 0 or body1 == 0 or body2 == 0:
-            continue
+    pattern_name = None
+    direction = None
 
-        upper_wick0 = c0['high'] - max(c0['open'], c0['close'])
-        lower_wick0 = min(c0['open'], c0['close']) - c0['low']
-        
-        is_bull0 = c0['close'] > c0['open']
-        is_bear0 = c0['close'] < c0['open']
-        is_bull1 = c1['close'] > c1['open']
-        is_bear1 = c1['close'] < c1['open']
-        is_bull2 = c2['close'] > c2['open']
-        is_bear2 = c2['close'] < c2['open']
+    # --- النماذج الصاعدة (شراء) ---
+    if c0['downtrend']:
+        if upper_wick0 >= (1.5 * body0) and lower_wick0 <= (0.5 * body0):
+            pattern_name = "المطرقة المقلوبة"
+            direction = "شراء (Long)"
+        elif is_bear1 and is_bull0 and c0['open'] <= (c1['close'] * 1.002) and c0['close'] > (c1['open'] + c1['close']) / 2:
+            pattern_name = "خط الاختراق"
+            direction = "شراء (Long)"
+        elif is_bull2 and is_bull1 and is_bull0 and (c0['close'] > c1['close'] > c2['close']):
+            pattern_name = "الجنود الثلاثة البيض"
+            direction = "شراء (Long)"
 
-        pattern_name = None
-        direction = None
+    # --- النماذج الهابطة (بيع) ---
+    if c0['uptrend'] and pattern_name is None:
+        if lower_wick0 >= (1.5 * body0) and upper_wick0 <= (0.5 * body0):
+            pattern_name = "الرجل المشنوق"
+            direction = "بيع (Short)"
+        elif is_bull1 and is_bear0 and c0['open'] >= (c1['close'] * 0.998) and c0['close'] < (c1['open'] + c1['close']) / 2:
+            pattern_name = "الغطاء السحابي الداكن"
+            direction = "بيع (Short)"
+        elif is_bear2 and is_bear1 and is_bear0 and (c0['close'] < c1['close'] < c2['close']):
+            pattern_name = "الغربان السوداء الثلاثة"
+            direction = "بيع (Short)"
 
-        # --- النماذج الصاعدة (شراء) ---
-        if c0['downtrend']:
-            if upper_wick0 >= (1.5 * body0) and lower_wick0 <= (0.5 * body0):
-                pattern_name = "المطرقة المقلوبة"
-                direction = "شراء (Long)"
-            elif is_bear1 and is_bull0 and c0['open'] <= (c1['close'] * 1.002) and c0['close'] > (c1['open'] + c1['close']) / 2:
-                pattern_name = "خط الاختراق"
-                direction = "شراء (Long)"
-            elif is_bull2 and is_bull1 and is_bull0 and (c0['close'] > c1['close'] > c2['close']):
-                pattern_name = "الجنود الثلاثة البيض"
-                direction = "شراء (Long)"
+    # تطبيق فلتر EMA 200
+    if pattern_name and apply_ema:
+        if direction == "شراء (Long)" and c0['close'] < c0['ema200']:
+            return None, None
+        if direction == "بيع (Short)" and c0['close'] > c0['ema200']:
+            return None, None
 
-        # --- النماذج الهابطة (بيع) ---
-        if c0['uptrend'] and pattern_name is None:
-            if lower_wick0 >= (1.5 * body0) and upper_wick0 <= (0.5 * body0):
-                pattern_name = "الرجل المشنوق"
-                direction = "بيع (Short)"
-            elif is_bull1 and is_bear0 and c0['open'] >= (c1['close'] * 0.998) and c0['close'] < (c1['open'] + c1['close']) / 2:
-                pattern_name = "الغطاء السحابي الداكن"
-                direction = "بيع (Short)"
-            elif is_bear2 and is_bear1 and is_bear0 and (c0['close'] < c1['close'] < c2['close']):
-                pattern_name = "الغربان السوداء الثلاثة"
-                direction = "بيع (Short)"
+    return pattern_name, direction
 
-        # تطبيق فلتر EMA 200
-        if pattern_name:
-            if use_ema200:
-                if direction == "شراء (Long)" and c0['close'] < c0['ema200']:
-                    continue
-                if direction == "بيع (Short)" and c0['close'] > c0['ema200']:
-                    continue
-            
-            signals.append({
-                "index": i,
-                "timestamp": c0['timestamp'],
-                "pattern": pattern_name,
-                "direction": direction,
-                "entry": c0['close'],
-                "atr": c0['atr']
-            })
-    return signals
-
-# 4. محاكي الصفقات (آخر 24 ساعة برأس مال 100$ للصفقة)
-def run_backtest(symbols, tf, atr_m, rr, be_active):
-    # استخدام KuCoin لأنه يدعم جلب 1500 شمعة في طلب واحد بدون تقطيع وبدون حظر أمريكي
+# 3. تحليل البيانات التاريخية + البحث عن التوصيات المستقبلية اللحظية
+def analyze_market(symbols, tf, atr_m, rr, apply_ema):
     exchange = ccxt.kucoin({'enableRateLimit': True})
     all_trades = []
+    live_recommendations = []
     errors = []
     
     candles_per_day = {"1m": 1440, "3m": 480, "5m": 288, "15m": 96, "30m": 48, "1h": 24}
-    needed_candles = min(1500, candles_per_day.get(tf, 96) + 210)
+    needed_candles = min(1500, candles_per_day.get(tf, 288) + 210)
     
     cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
     
@@ -150,52 +162,67 @@ def run_backtest(symbols, tf, atr_m, rr, be_active):
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df = calculate_indicators(df)
             
-            signals = detect_patterns(df, cutoff_time)
-            
-            for sig in signals:
-                idx = sig['index']
-                entry = sig['entry']
-                if pd.isna(sig['atr']) or sig['atr'] == 0:
+            # أ) فحص التوصيات المستقبلية (آخر شمعتين مغلقتين: -2 و -3)
+            for check_idx in [len(df) - 2, len(df) - 3]:
+                p_name, p_dir = check_candle_pattern(df, check_idx, apply_ema)
+                if p_name and not pd.isna(df.iloc[check_idx]['atr']):
+                    c_sig = df.iloc[check_idx]
+                    entry_p = c_sig['close']
+                    sl_d = c_sig['atr'] * atr_m
+                    tp_d = sl_d * rr
+                    is_l = "شراء" in p_dir
+                    
+                    live_recommendations.append({
+                        "العملة": sym.replace('/USDT', ''),
+                        "النوع": p_dir,
+                        "النموذج": p_name,
+                        "الوقت": c_sig['timestamp'].strftime('%H:%M'),
+                        "الدخول": entry_p,
+                        "الوقف": entry_p - sl_d if is_l else entry_p + sl_d,
+                        "الهدف": entry_p + tp_d if is_l else entry_p - tp_d
+                    })
+                    break # نكتفي بأحدث إشارة للعملة
+
+            # ب) محاكاة الصفقات التاريخية لآخر 24 ساعة
+            start_idx = min(200, len(df) - 2)
+            for i in range(start_idx, len(df) - 1):
+                c0 = df.iloc[i]
+                if c0['timestamp'] < cutoff_time or pd.isna(c0['atr']) or c0['atr'] == 0:
                     continue
                     
-                sl_dist = sig['atr'] * atr_m
+                pattern_name, direction = check_candle_pattern(df, i, apply_ema)
+                if not pattern_name:
+                    continue
+                    
+                entry = c0['close']
+                sl_dist = c0['atr'] * atr_m
                 tp_dist = sl_dist * rr
-                be_dist = sl_dist * 1.5
                 
-                is_long = "شراء" in sig['direction']
+                is_long = "شراء" in direction
                 sl = entry - sl_dist if is_long else entry + sl_dist
                 tp = entry + tp_dist if is_long else entry - tp_dist
-                be_trigger = entry + be_dist if is_long else entry - be_dist
                 
                 sl_pct = sl_dist / entry
                 tp_pct = tp_dist / entry
                 
-                be_triggered = False
                 outcome = "مفتوحة ⏳"
                 pnl = 0.0
                 
-                for j in range(idx + 1, len(df)):
+                for j in range(i + 1, len(df)):
                     future_c = df.iloc[j]
-                    
                     if is_long:
-                        if be_active and not be_triggered and future_c['high'] >= be_trigger:
-                            be_triggered = True
-                            sl = entry
                         if future_c['low'] <= sl:
-                            outcome = "تعادل" if be_triggered else "خاسرة"
-                            pnl = 0.0 if be_triggered else -(POSITION_SIZE_USD * sl_pct)
+                            outcome = "خاسرة"
+                            pnl = -(POSITION_SIZE_USD * sl_pct)
                             break
                         elif future_c['high'] >= tp:
                             outcome = "ناجحة"
                             pnl = POSITION_SIZE_USD * tp_pct
                             break
                     else:
-                        if be_active and not be_triggered and future_c['low'] <= be_trigger:
-                            be_triggered = True
-                            sl = entry
                         if future_c['high'] >= sl:
-                            outcome = "تعادل" if be_triggered else "خاسرة"
-                            pnl = 0.0 if be_triggered else -(POSITION_SIZE_USD * sl_pct)
+                            outcome = "خاسرة"
+                            pnl = -(POSITION_SIZE_USD * sl_pct)
                             break
                         elif future_c['low'] <= tp:
                             outcome = "ناجحة"
@@ -203,46 +230,21 @@ def run_backtest(symbols, tf, atr_m, rr, be_active):
                             break
                             
                 all_trades.append({
-                    "الوقت": sig['timestamp'].strftime('%Y-%m-%d %H:%M'),
+                    "الوقت": c0['timestamp'].strftime('%Y-%m-%d %H:%M'),
                     "العملة": sym.replace('/USDT', ''),
-                    "النوع": sig['direction'],
-                    "النموذج": sig['pattern'],
+                    "النوع": direction,
+                    "النموذج": pattern_name,
                     "الحالة": outcome,
                     "الربح ($)": round(pnl, 2)
                 })
         except Exception as e:
             errors.append(f"{sym}: {str(e)}")
             
-    return pd.DataFrame(all_trades), errors
+    return pd.DataFrame(all_trades), live_recommendations, errors
 
-# 5. عرض النتائج
-with st.spinner('جاري تحليل السوق لآخر 24 ساعة...'):
-    trades_df, fetch_errors = run_backtest(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_breakeven)
+# 4. عرض النتائج
+with st.spinner('جاري تحليل السوق واستخراج التوصيات...'):
+    trades_df, live_recs, fetch_errors = analyze_market(HALAL_SYMBOLS, timeframe, atr_mult, rr_ratio, use_ema200)
 
-if fetch_errors and trades_df.empty:
-    st.error(f"حدث خطأ في الاتصال بالمنصة: {fetch_errors[0]}")
-
-if not trades_df.empty:
-    trades_df = trades_df.sort_values(by="الوقت", ascending=False).reset_index(drop=True)
-    
-    # حساب الإحصائيات للصفقات المغلقة فقط
-    closed_df = trades_df[trades_df['الحالة'] != 'مفتوحة ⏳']
-    
-    total_closed = len(closed_df)
-    wins = len(closed_df[closed_df['الحالة'] == 'ناجحة'])
-    losses = len(closed_df[closed_df['الحالة'] == 'خاسرة'])
-    draws = len(closed_df[closed_df['الحالة'] == 'تعادل'])
-    open_trades = len(trades_df[trades_df['الحالة'] == 'مفتوحة ⏳'])
-    
-    win_rate = (wins / total_closed) * 100 if total_closed > 0 else 0.0
-    net_profit = closed_df['الربح ($)'].sum()
-
-    st.markdown("---")
-    st.caption(f"الربح الصافي ({timeframe} - آخر 24 ساعة | صفقة 100$)")
-    st.metric(label="", value=f"{net_profit:.2f} $")
-
-    st.caption("نسبة النجاح (للصفقات المغلقة)")
-    st.metric(label="", value=f"{win_rate:.1f}%", delta=f"مغلقة: {total_closed} | مفتوحة: {open_trades}")
-
-    st.caption("توزيع الصفقات")
-    st.markdown(f"### {wins} ناجحة | {draws} تعادل")
+# --- القسم الأول: التوصيات المستقبلية بخط وألوان واضحة ---
+st.markdown("---")
