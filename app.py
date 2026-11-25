@@ -5,256 +5,147 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="ماسح استراتيجيات الهارمونيك والبرايس أكشن", layout="centered")
+st.set_page_config(page_title="ماسح النماذج", layout="centered")
+st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
-st.markdown("<style>.stApp { direction: rtl; text-align: right; } div[data-testid='stMetricValue'] { font-size: 2rem; font-weight: bold; }</style>", unsafe_allow_html=True)
+tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h"], index=1)
+s_len = st.slider("حساسية القمم والقيعان:", 3, 10, 4)
+use_ema = st.checkbox("فلتر الاتجاه العام (EMA 200)", value=False)
 
-# 1. إعدادات واجهة المستخدم
-timeframe = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h"], index=1)
+SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD", "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"]
+POS_USD = 100.0
 
-# إعدادات حساسية استخراج القمم والقيعان (Swing) وإدارة المخاطر
-swing_len = st.slider("حساسية القمم والقيعان (Swing Length):", min_value=3, max_value=10, value=5)
-use_ema200 = st.checkbox("تفعيل فلتر الاتجاه العام (EMA 200)", value=False)
-
-POSITION_SIZE_USD = 100.0
-
-HALAL_SYMBOLS = [
-    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD",
-    "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD"
-]
-
-# 2. جلب البيانات بسرعة فائقة بالتوازي مع كاش 60 ثانية
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_all_ohlcv(symbols, tf):
-    exchange = ccxt.kraken({'enableRateLimit': False})
-    def fetch_one(sym):
+def get_data(syms, timeframe):
+    ex = ccxt.kraken({'enableRateLimit': False})
+    def fetch(s):
         try:
-            data = exchange.fetch_ohlcv(sym, timeframe=tf, limit=500)
-            if data and len(data) > 60:
-                df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-                return sym, df
+            d = ex.fetch_ohlcv(s, timeframe=timeframe, limit=500)
+            if d and len(d) > 60:
+                df = pd.DataFrame(d, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+                df['t'] = pd.to_datetime(df['t'], unit='ms')
+                df['ema'] = df['c'].ewm(span=200, adjust=False).mean()
+                return s, df
         except Exception:
             pass
-        return sym, None
+        return s, None
+    res = {}
+    with ThreadPoolExecutor(max_workers=10) as p:
+        for s, df in p.map(fetch, syms):
+            if df is not None: res[s] = df
+    return res
 
-    results = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        for sym, df in executor.map(fetch_one, symbols):
-            if df is not None:
-                results[sym] = df
-    return results
+def scan(df, lr, ema_on):
+    h, l, c, t, ema = df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['ema'].values
+    ph = [(i, h[i]) for i in range(lr, len(df)-lr) if h[i] == np.max(h[i-lr:i+lr+1])]
+    pl = [(i, l[i]) for i in range(lr, len(df)-lr) if l[i] == np.min(l[i-lr:i+lr+1])]
+    sigs = []
 
-# 3. استخراج القمم والقيعان المحورية (Pivots)
-def get_pivots(df, left_right=5):
-    highs = df['high'].values
-    lows = df['low'].values
-    n = len(df)
-    pivot_highs = []
-    pivot_lows = []
-    
-    for i in range(left_right, n - left_right):
-        if highs[i] == np.max(highs[i - left_right : i + left_right + 1]):
-            pivot_highs.append((i, highs[i]))
-        if lows[i] == np.min(lows[i - left_right : i + left_right + 1]):
-            pivot_lows.append((i, lows[i]))
-            
-    return pivot_highs, pivot_lows
-
-# 4. فحص الاستراتيجيات الثلاث المستخرجة من الصور
-def detect_image_strategies(df, s_len, apply_ema):
-    signals = []
-    ph, pl = get_pivots(df, s_len)
-    if len(ph) < 3 or len(pl) < 3:
-        return signals
-
-    closes = df['close'].values
-    opens = df['open'].values
-    highs = df['high'].values
-    lows = df['low'].values
-    ema = df['ema200'].values
-    times = df['timestamp'].values
-
-    # أ) استراتيجية الصورة 1 و 3: نموذج التنين (Dragon) والقاع المزدوج مع كسر الترند (شراء)
+    # 1 & 3: التنين + القاع المزدوج وكسر الترند (شراء)
     for k in range(1, len(pl)):
-        idx_leg1, price_leg1 = pl[k - 1]
-        idx_leg2, price_leg2 = pl[k]
-        
-        if idx_leg2 - idx_leg1 < 4 or idx_leg2 - idx_leg1 > 60:
-            continue
-            
-        # القاع الثاني قريب من القاع الأول (نسبة تفاوت 1.5%)
-        if abs(price_leg2 - price_leg1) / price_leg1 > 0.015:
-            continue
-            
-        # البحث عن سنام التنين / خط العنق بين القاعين
-        mid_highs = [p for p in ph if idx_leg1 < p[0] < idx_leg2]
-        # البحث عن رأس التنين / بداية الهبوط قبل القاع الأول
-        head_highs = [p for p in ph if p[0] < idx_leg1 and idx_leg1 - p[0] < 60]
-        
-        if not mid_highs or not head_highs:
-            continue
-            
-        idx_hump, price_hump = max(mid_highs, key=lambda x: x[1])
-        idx_head, price_head = max(head_highs, key=lambda x: x[1])
-        
-        if price_head <= price_hump or price_hump <= max(price_leg1, price_leg2):
-            continue
-
-        # معادلة خط الترند الهابط بين الرأس والسنام
-        slope = (price_hump - price_head) / (idx_hump - idx_head)
-        
-        # مراقبة كسر خط الترند بعد القاع الثاني
-        for i in range(idx_leg2 + 1, min(idx_leg2 + 25, len(df) - 1)):
-            trend_val = price_head + slope * (i - idx_head)
-            
-            # شرط الكسر الصاعد للترند أو خط العنق
-            if closes[i] > trend_val and closes[i - 1] <= (price_head + slope * (i - 1 - idx_head)):
-                if apply_ema and closes[i] < ema[i]:
-                    break
-                    
-                # التمييز بين التنين (كسر الترند مباشرة) والقاع المزدوج (كسر خط العنق)
-                is_double_bottom = closes[i] >= price_hump
-                pat_name = "قاع مزدوج + كسر ترند (صورة 3)" if is_double_bottom else "نموذج التنين Dragon (صورة 1)"
-                
-                entry_p = closes[i]
-                sl_p = min(price_leg1, price_leg2) * 0.998
-                tp_p = price_head
-                
-                if tp_p > entry_p and entry_p > sl_p:
-                    signals.append({
-                        "index": i,
-                        "timestamp": pd.Timestamp(times[i]),
-                        "direction": "شراء (Long)",
-                        "pattern": pat_name,
-                        "entry": entry_p,
-                        "sl": sl_p,
-                        "tp": tp_p
-                    })
+        i1, p1 = pl[k-1]
+        i2, p2 = pl[k]
+        if not (4 <= i2 - i1 <= 60) or abs(p2 - p1)/p1 > 0.015: continue
+        mh = [x for x in ph if i1 < x[0] < i2]
+        hh = [x for x in ph if x[0] < i1 and i1 - x[0] < 60]
+        if not mh or not hh: continue
+        ih, ph_p = max(mh, key=lambda x: x[1])
+        id_h, hd_p = max(hh, key=lambda x: x[1])
+        if hd_p <= ph_p or ph_p <= max(p1, p2): continue
+        slope = (ph_p - hd_p) / (ih - id_h)
+        for i in range(i2+1, min(i2+25, len(df)-1)):
+            tr = hd_p + slope * (i - id_h)
+            if c[i] > tr and c[i-1] <= (hd_p + slope * (i-1 - id_h)):
+                if ema_on and c[i] < ema[i]: break
+                pat = "قاع مزدوج + ترند (صورة 3)" if c[i] >= ph_p else "نموذج التنين (صورة 1)"
+                sl, tp = min(p1, p2)*0.998, hd_p
+                if tp > c[i] > sl:
+                    sigs.append((i, pd.Timestamp(t[i]), "شراء (Long)", pat, c[i], sl, tp))
                 break
 
-    # ب) استراتيجية الصورة 2: كسر الترند الصاعد + فجوة FVG + إعادة الاختبار (بيع)
+    # 2: كسر الترند الصاعد + FVG (بيع)
     for k in range(1, len(ph)):
-        idx_h1, price_h1 = ph[k - 1]
-        idx_h2, price_h2 = ph[k]
-        
-        if price_h2 <= price_h1 or idx_h2 - idx_h1 < 5 or idx_h2 - idx_h1 > 50:
-            continue
-            
-        # القاع الذي يرتكز عليه خط الترند الصاعد
-        lows_before = [p for p in pl if p[0] < idx_h1 and idx_h1 - p[0] < 40]
-        mid_lows = [p for p in pl if idx_h1 < p[0] < idx_h2]
-        
-        if not lows_before or not mid_lows:
-            continue
-            
-        idx_l1, price_l1 = min(lows_before, key=lambda x: x[1])
-        idx_l2, price_l2 = min(mid_lows, key=lambda x: x[1])
-        
-        if price_l2 <= price_l1:
-            continue
-            
-        # معادلة خط الترند الصاعد
-        up_slope = (price_l2 - price_l1) / (idx_l2 - idx_l1)
-        
-        # البحث عن كسر الترند الصاعد مع وجود FVG هابط بعد القمة الثانية
-        fvg_top = None
-        fvg_bottom = None
-        
-        for i in range(idx_h2 + 2, min(idx_h2 + 25, len(df) - 1)):
-            trend_up_val = price_l1 + up_slope * (i - idx_l1)
-            
-            # اكتشاف FVG هابط (قاع شمعة i-2 أعلى من قمة شمعة i)
-            if fvg_top is None and lows[i - 2] > highs[i] and closes[i] < trend_up_val:
-                fvg_top = lows[i - 2]
-                fvg_bottom = highs[i]
+        i1, p1 = ph[k-1]
+        i2, p2 = ph[k]
+        if p2 <= p1 or not (5 <= i2 - i1 <= 50): continue
+        lb = [x for x in pl if x[0] < i1 and i1 - x[0] < 40]
+        ml = [x for x in pl if i1 < x[0] < i2]
+        if not lb or not ml: continue
+        il1, pl1 = min(lb, key=lambda x: x[1])
+        il2, pl2 = min(ml, key=lambda x: x[1])
+        if pl2 <= pl1: continue
+        slope = (pl2 - pl1) / (il2 - il1)
+        f_top, f_bot = None, None
+        for i in range(i2+2, min(i2+25, len(df)-1)):
+            tr = pl1 + slope * (i - il1)
+            if f_top is None and l[i-2] > h[i] and c[i] < tr:
+                f_top, f_bot = l[i-2], h[i]
                 continue
-                
-            # بعد تشكل FVG، ننتظر عودة السعر لإعادة اختبار الفجوة (الدخول بيع)
-            if fvg_top is not None:
-                if highs[i] >= fvg_bottom and closes[i] <= fvg_top:
-                    if apply_ema and closes[i] > ema[i]:
-                        break
-                    entry_p = closes[i]
-                    sl_p = fvg_top * 1.002
-                    tp_p = price_l1
-                    
-                    if entry_p > tp_p and sl_p > entry_p:
-                        signals.append({
-                            "index": i,
-                            "timestamp": pd.Timestamp(times[i]),
-                            "direction": "بيع (Short)",
-                            "pattern": "كسر ترند + FVG (صورة 2)",
-                            "entry": entry_p,
-                            "sl": sl_p,
-                            "tp": tp_p
-                        })
+            if f_top is not None:
+                if h[i] >= f_bot and c[i] <= f_top:
+                    if ema_on and c[i] > ema[i]: break
+                    sl, tp = f_top*1.002, pl1
+                    if sl > c[i] > tp:
+                        sigs.append((i, pd.Timestamp(t[i]), "بيع (Short)", "كسر ترند + FVG (صورة 2)", c[i], sl, tp))
                     break
-                elif highs[i] > fvg_top * 1.005:
-                    break
+                elif h[i] > f_top*1.005: break
+    return sigs
 
-    return signals
+data = get_data(SYMBOLS, tf)
+trades, recs = [], []
+cut = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
 
-# 5. تشغيل الفحص والمحاكاة لآخر 24 ساعة برأس مال 100$
-market_data = fetch_all_ohlcv(HALAL_SYMBOLS, timeframe)
-
-all_trades = []
-live_recs = []
-cutoff_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
-
-for sym, df in market_data.items():
-    coin_name = sym.replace('/USD', '')
-    sigs = detect_image_strategies(df, swing_len, use_ema200)
-    
-    for s in sigs:
-        idx = s['index']
-        # إذا كانت الإشارة في آخر 4 شموع، تعتبر توصية مستقبلية لحظية
+for sym, df in data.items():
+    coin = sym.replace('/USD', '')
+    for idx, ts, d, pat, ent, sl, tp in scan(df, s_len, use_ema):
         if idx >= len(df) - 5:
-            live_recs.append({
-                "العملة": coin_name,
-                "النوع": s['direction'],
-                "النموذج": s['pattern'],
-                "الوقت": s['timestamp'].strftime('%H:%M'),
-                "الدخول": s['entry'],
-                "الوقف": s['sl'],
-                "الهدف": s['tp']
-            })
-            
-        # محاكاة الصفقات لآخر 24 ساعة
-        if s['timestamp'] >= cutoff_time:
-            entry = s['entry']
-            sl = s['sl']
-            tp = s['tp']
-            is_long = "شراء" in s['direction']
-            
-            sl_pct = abs(entry - sl) / entry
-            tp_pct = abs(tp - entry) / entry
-            
-            outcome = "مفتوحة ⏳"
-            pnl = 0.0
-            
-            for j in range(idx + 1, len(df)):
-                fc = df.iloc[j]
-                if is_long:
-                    if fc['low'] <= sl:
-                        outcome = "خاسرة"
-                        pnl = -(POSITION_SIZE_USD * sl_pct)
-                        break
-                    elif fc['high'] >= tp:
-                        outcome = "ناجحة"
-                        pnl = POSITION_SIZE_USD * tp_pct
-                        break
+            recs.append((coin, d, pat, ts.strftime('%H:%M'), ent, sl, tp))
+        if ts >= cut:
+            is_l = "شراء" in d
+            out, pnl = "مفتوحة ⏳", 0.0
+            for j in range(idx+1, len(df)):
+                fh, fl = df['h'].iloc[j], df['l'].iloc[j]
+                if is_l:
+                    if fl <= sl: out, pnl = "خاسرة", -POS_USD*(abs(ent-sl)/ent); break
+                    if fh >= tp: out, pnl = "ناجحة", POS_USD*(abs(tp-ent)/ent); break
                 else:
-                    if fc['high'] >= sl:
-                        outcome = "خاسرة"
-                        pnl = -(POSITION_SIZE_USD * sl_pct)
-                        break
-                    elif fc['low'] <= tp:
-                        outcome = "ناجحة"
-                        pnl = POSITION_SIZE_USD * tp_pct
-                        break
-                        
-            all_trades.append({
-                "الوقت": s['timestamp'].strftime('%Y-%m-%d %H:%M'),
-                "العملة": coin_name,
+                    if fh >= sl: out, pnl = "خاسرة", -POS_USD*(abs(ent-sl)/ent); break
+                    if fl <= tp: out, pnl = "ناجحة", POS_USD*(abs(tp-ent)/ent); break
+            trades.append([ts.strftime('%Y-%m-%d %H:%M'), coin, d, pat, out, round(pnl, 2)])
+
+df_t = pd.DataFrame(trades, columns=['الوقت', 'العملة', 'النوع', 'النموذج', 'الحالة', 'الربح ($)'])
+if not df_t.empty:
+    df_t = df_t.sort_values('الوقت', ascending=False).reset_index(drop=True)
+    cl = df_t[df_t['الحالة'] != 'مفتوحة ⏳']
+    w, l, op = len(cl[cl['الحالة']=='ناجحة']), len(cl[cl['الحالة']=='خاسرة']), len(df_t[df_t['الحالة']=='مفتوحة ⏳'])
+    wr = (w / len(cl) * 100) if len(cl) > 0 else 0.0
+    net = cl['الربح ($)'].sum()
+else:
+    w, l, op, wr, net = 0, 0, 0, 0.0, 0.0
+
+st.markdown("---")
+c1, c2 = st.columns(2)
+c1.metric(f"الربح الصافي (24س | {tf})", f"{net:.2f} $")
+c2.metric("نسبة النجاح", f"{wr:.1f}%", f"مغلقة: {w+l} | مفتوحة: {op}")
+
+cw, cl_c, co = st.columns(3)
+cw.markdown(f"<div style='background:#00c85326;border:1px solid #00c853;padding:10px;border-radius:8px;text-align:center;color:#00e676;'><b>✅ {w} ناجحة</b></div>", unsafe_allow_html=True)
+cl_c.markdown(f"<div style='background:#ff4b4b26;border:1px solid #ff4b4b;padding:10px;border-radius:8px;text-align:center;color:#ff5252;'><b>❌ {l} خاسرة</b></div>", unsafe_allow_html=True)
+co.markdown(f"<div style='background:#ffc10726;border:1px solid #ffc107;padding:10px;border-radius:8px;text-align:center;color:#ffd54f;'><b>⏳ {op} مفتوحة</b></div>", unsafe_allow_html=True)
+
+if st.button("🔄 تحديث الآن", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+st.subheader("🎯 توصيات مستقبلية (الفرص اللحظية)")
+for coin, d, pat, tm, ent, sl, tp in recs:
+    ib = "شراء" in d
+    col = "#00e676" if ib else "#ff5252"
+    bg = "#00c85326" if ib else "#ff4b4b26"
+    dec = 4 if ent < 10 else 2
+    st.markdown(f"<div style='background:{bg};border-right:5px solid {col};padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:{col};font-size:1.1rem;'>{'🟢' if ib else '🔴'} {coin} | {d} — {pat} ({tm})</b><br>🔹 دخول: <code>{ent:.{dec}f}</code> | 🎯 هدف: <code>{tp:.{dec}f}</code> | 🛑 وقف: <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+if not recs: st.info("لا توجد إشارة لحظية حالياً.")
+
+st.subheader("📋 سجل صفقات 24 ساعة (100$ للصفقة)")
+if not df_t.empty: st.dataframe(df_t, use_container_width=True)
+else: st.info("لا توجد صفقات مسجلة في آخر 24 ساعة.")
