@@ -7,7 +7,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="EMA2 x WMA20 + Golden Fib", page_icon="📈", layout="wide"
+    page_title="EMA2 x WMA20 + Fib 0.55", page_icon="📈", layout="wide"
 )
 
 
@@ -39,7 +39,7 @@ def load_trades():
         return pd.DataFrame(columns=columns), None
 
 
-def save_trades(df, sha=None, msg="Update Golden Fib trades"):
+def save_trades(df, sha=None, msg="Update Fib 0.55 trades"):
     repo = get_github_repo()
     file_path = st.secrets["FILE_PATH"]
     csv_buffer = StringIO()
@@ -90,8 +90,8 @@ def calculate_indicators(df):
     return df
 
 
-# --- 4. اختبار تاريخي متوازن (SL -0.24 | TP 0.618 | فلتر R:R >= 0.5) ---
-def run_balanced_backtest(coins_map, interval, trade_size=100.0):
+# --- 4. اختبار تاريخي (SL -0.25 | TP 0.55 | فلتر R:R >= 0.5) ---
+def run_custom_fib_backtest(coins_map, interval, trade_size=100.0):
     total_pnl = 0.0
     wins = 0
     losses = 0
@@ -128,7 +128,7 @@ def run_balanced_backtest(coins_map, interval, trade_size=100.0):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "شراء (Fib 0.618)",
+                            "النوع": "شراء (Fib 0.55)",
                             "الحالة": "ناجحة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -140,7 +140,7 @@ def run_balanced_backtest(coins_map, interval, trade_size=100.0):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "شراء (Fib 0.618)",
+                            "النوع": "شراء (Fib 0.55)",
                             "الحالة": "خاسرة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -153,7 +153,7 @@ def run_balanced_backtest(coins_map, interval, trade_size=100.0):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "بيع (Fib 0.618)",
+                            "النوع": "بيع (Fib 0.55)",
                             "الحالة": "ناجحة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -165,7 +165,7 @@ def run_balanced_backtest(coins_map, interval, trade_size=100.0):
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": "بيع (Fib 0.618)",
+                            "النوع": "بيع (Fib 0.55)",
                             "الحالة": "خاسرة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -188,17 +188,16 @@ def run_balanced_backtest(coins_map, interval, trade_size=100.0):
                     and row["EMA_2"] > row["WMA_20"]
                 ):
                     if confirm_1m_close > wma_level:
-                        target_618 = s_low + (0.618 * fib_range)
-                        stop_024 = s_low - (0.24 * fib_range)
-                        reward = target_618 - confirm_1m_close
-                        risk = confirm_1m_close - stop_024
-                        # فلتر متوازن: R:R >= 0.5
+                        target_55 = s_low + (0.55 * fib_range)
+                        stop_025 = s_low - (0.25 * fib_range)
+                        reward = target_55 - confirm_1m_close
+                        risk = confirm_1m_close - stop_025
                         if risk > 0 and (reward / risk) >= 0.5:
                             in_trade = True
                             trade_type = "BUY"
                             entry_p = confirm_1m_close
-                            sl_p = stop_024
-                            tp_p = target_618
+                            sl_p = stop_025
+                            tp_p = target_55
                             entry_time = sub_1m.index[0]
 
                 # تقاطع بيع + إغلاق 1m تحت التقاطع
@@ -207,21 +206,21 @@ def run_balanced_backtest(coins_map, interval, trade_size=100.0):
                     and row["EMA_2"] < row["WMA_20"]
                 ):
                     if confirm_1m_close < wma_level:
-                        target_618 = s_high - (0.618 * fib_range)
-                        stop_024 = s_high + (0.24 * fib_range)
-                        reward = confirm_1m_close - target_618
-                        risk = stop_024 - confirm_1m_close
+                        target_55 = s_high - (0.55 * fib_range)
+                        stop_025 = s_high + (0.25 * fib_range)
+                        reward = confirm_1m_close - target_55
+                        risk = stop_025 - confirm_1m_close
                         if risk > 0 and (reward / risk) >= 0.5:
                             in_trade = True
                             trade_type = "SELL"
                             entry_p = confirm_1m_close
-                            sl_p = stop_024
-                            tp_p = target_618
+                            sl_p = stop_025
+                            tp_p = target_55
                             entry_time = sub_1m.index[0]
 
     return round(total_pnl, 2), wins, losses, pd.DataFrame(history_list)
-# --- 5. فحص الإشارات اللحظية المتوازنة ---
-def scan_coin_balanced(yf_ticker, display_name, interval):
+# --- 5. فحص الإشارات اللحظية (SL -0.25 | TP 0.55) ---
+def scan_coin_custom_fib(yf_ticker, display_name, interval):
     df = fetch_data(yf_ticker, interval, period="5d")
     df_1m = fetch_1m_data(yf_ticker)
 
@@ -246,26 +245,26 @@ def scan_coin_balanced(yf_ticker, display_name, interval):
     tp_price = 0.0
 
     if prev_ema <= prev_wma and curr_ema > curr_wma:
-        target_618 = s_low + (0.618 * fib_range)
-        stop_024 = s_low - (0.24 * fib_range)
-        reward = target_618 - last_1m_close
-        risk = last_1m_close - stop_024
+        target_55 = s_low + (0.55 * fib_range)
+        stop_025 = s_low - (0.25 * fib_range)
+        reward = target_55 - last_1m_close
+        risk = last_1m_close - stop_025
         if last_1m_close > curr_wma and risk > 0 and (reward / risk) >= 0.5:
-            signal = "شراء مؤكد (BUY 0.618)"
-            sl_price = stop_024
-            tp_price = target_618
+            signal = "شراء مؤكد (BUY 0.55)"
+            sl_price = stop_025
+            tp_price = target_55
         else:
             signal = "تقاطع شراء (غير مطابق للشرط)"
 
     elif prev_ema >= prev_wma and curr_ema < curr_wma:
-        target_618 = s_high - (0.618 * fib_range)
-        stop_024 = s_high + (0.24 * fib_range)
-        reward = last_1m_close - target_618
-        risk = stop_024 - last_1m_close
+        target_55 = s_high - (0.55 * fib_range)
+        stop_025 = s_high + (0.25 * fib_range)
+        reward = last_1m_close - target_55
+        risk = stop_025 - last_1m_close
         if last_1m_close < curr_wma and risk > 0 and (reward / risk) >= 0.5:
-            signal = "بيع مؤكد (SELL 0.618)"
-            sl_price = stop_024
-            tp_price = target_618
+            signal = "بيع مؤكد (SELL 0.55)"
+            sl_price = stop_025
+            tp_price = target_55
         else:
             signal = "تقاطع بيع (غير مطابق للشرط)"
 
@@ -274,14 +273,14 @@ def scan_coin_balanced(yf_ticker, display_name, interval):
         "السعر الحالي": round(current_price, 5),
         "إغلاق 1m": round(last_1m_close, 5),
         "الإشارة": signal,
-        "وقف الخسارة (-0.24)": round(sl_price, 5) if sl_price > 0 else "-",
-        "الهدف (0.618)": round(tp_price, 5) if tp_price > 0 else "-",
+        "وقف الخسارة (-0.25)": round(sl_price, 5) if sl_price > 0 else "-",
+        "الهدف (0.55)": round(tp_price, 5) if tp_price > 0 else "-",
     }
 
 
 # --- 6. واجهة التطبيق ---
-st.title("📊 ماسح EMA 2 × WMA 20 (النسبة الذهبية 0.618)")
-st.caption("التأكيد: 1m | الوقف: Fib -0.24 | الهدف: Fib 0.618 | فلتر R:R >= 0.5")
+st.title("📊 ماسح EMA 2 × WMA 20 (فيبوناتشي -0.25 / 0.55)")
+st.caption("التأكيد: 1m | الوقف: Fib -0.25 | الهدف: Fib 0.55 | فلتر R:R >= 0.5")
 
 COINS_MAP = {
     "XLMUSDT": "XLM-USD",
@@ -305,8 +304,8 @@ with col_cap:
         "حجم الصفقة بالدولار ($):", min_value=10, value=100, step=10
     )
 
-with st.spinner("جاري حساب الأداء على النسبة الذهبية 0.618..."):
-    net_pnl, w_count, l_count, bt_df = run_balanced_backtest(
+with st.spinner("جاري حساب الأداء على مستويات (-0.25 / 0.55)..."):
+    net_pnl, w_count, l_count, bt_df = run_custom_fib_backtest(
         COINS_MAP, selected_tf, trade_amount
     )
     total_t = w_count + l_count
@@ -314,7 +313,7 @@ with st.spinner("جاري حساب الأداء على النسبة الذهبي
 
 c1, c2, c3 = st.columns(3)
 c1.metric(f"الربح الصافي (آخر 5 أيام - {selected_tf})", f"{net_pnl} $")
-c2.metric("نسبة النجاح (Fib 0.618)", f"{win_rate}%", f"إجمالي الصفقات: {total_t}")
+c2.metric("نسبة النجاح (Fib 0.55)", f"{win_rate}%", f"إجمالي الصفقات: {total_t}")
 c3.metric("توزيع الصفقات", f"{w_count} ناجحة", f"-{l_count} خاسرة")
 
 st.divider()
@@ -325,7 +324,7 @@ if st.button("فحص الفرص المؤكدة الآن 🔄", use_container_wid
     new_added = 0
 
     for display_name, yf_ticker in COINS_MAP.items():
-        res = scan_coin_balanced(yf_ticker, display_name, selected_tf)
+        res = scan_coin_custom_fib(yf_ticker, display_name, selected_tf)
         if res:
             scan_results.append(res)
             if "مؤكد" in res["الإشارة"]:
@@ -335,8 +334,8 @@ if st.button("فحص الفرص المؤكدة الآن 🔄", use_container_wid
                     "Timeframe": selected_tf,
                     "Type": res["الإشارة"],
                     "Entry_Price": res["إغلاق 1m"],
-                    "Stop_Loss": res["وقف الخسارة (-0.24)"],
-                    "Take_Profit": res["الهدف (0.618)"],
+                    "Stop_Loss": res["وقف الخسارة (-0.25)"],
+                    "Take_Profit": res["الهدف (0.55)"],
                     "Status": "مفتوحة",
                     "PnL": 0.0,
                 }])
@@ -346,7 +345,7 @@ if st.button("فحص الفرص المؤكدة الآن 🔄", use_container_wid
                 new_added += 1
 
     if new_added > 0:
-        save_trades(df_history, file_sha, f"Add {new_added} Golden-Fib signals")
+        save_trades(df_history, file_sha, f"Add {new_added} Fib-0.55 signals")
         st.success(f"تم رصد وحفظ {new_added} فرصة مؤكدة في GitHub!")
 
     st.subheader("الأسعار والإشارات اللحظية الآن:")
