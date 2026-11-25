@@ -7,7 +7,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Pure Fibonacci 0.23 Scanner", page_icon="📐", layout="wide"
+    page_title="AMD + FVG Smart Money Scanner", page_icon="🎯", layout="wide"
 )
 
 
@@ -39,7 +39,7 @@ def load_trades():
         return pd.DataFrame(columns=columns), None
 
 
-def save_trades(df, sha=None, msg="Update Pure Fib 0.23 trades"):
+def save_trades(df, sha=None, msg="Update AMD-FVG trades"):
     repo = get_github_repo()
     file_path = st.secrets["FILE_PATH"]
     csv_buffer = StringIO()
@@ -64,22 +64,19 @@ def fetch_data(ticker, interval, period="5d"):
     return df.copy()
 
 
-@st.cache_data(ttl=60)
-def fetch_1m_data(ticker):
-    df_1m = yf.download(
-        tickers=ticker, period="5d", interval="1m", progress=False
-    )
-    if df_1m.empty:
-        return pd.DataFrame()
-    if isinstance(df_1m.columns, pd.MultiIndex):
-        df_1m.columns = df_1m.columns.get_level_values(0)
-    return df_1m.copy()
+# --- 3. حساب مؤشر ATR ---
+def calculate_atr(df, period=14):
+    high_low = df["High"] - df["Low"]
+    high_close = np.abs(df["High"] - df["Close"].shift())
+    low_close = np.abs(df["Low"] - df["Close"].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df["ATR"] = tr.rolling(period).mean()
+    return df
 
 
-# --- 3. اختبار تاريخي خالص لفيبوناتشي (الدخول عند 0.23 + تأكيد 1m) ---
-def run_pure_fib_backtest(
-    coins_map, interval, trade_size, fib_entry, fib_sl, fib_tp
-):
+# --- 4. اختبار تاريخي لنموذج AMD (تجميع + تلاعب + FVG) برأس مال 100$ ثابت ---
+def run_amd_fvg_backtest(coins_map, interval, atr_mult, rr_ratio):
+    trade_size = 100.0  # 100 دولار لكل صفقة في الخفاء
     total_pnl = 0.0
     wins = 0
     losses = 0
@@ -87,10 +84,10 @@ def run_pure_fib_backtest(
 
     for display_name, yf_ticker in coins_map.items():
         df = fetch_data(yf_ticker, interval, period="5d")
-        df_1m = fetch_1m_data(yf_ticker)
-
-        if len(df) < 25 or df_1m.empty:
+        if len(df) < 35:
             continue
+
+        df = calculate_atr(df)
 
         in_trade = False
         trade_type = ""
@@ -99,9 +96,19 @@ def run_pure_fib_backtest(
         tp_p = 0.0
         entry_time = ""
 
-        for i in range(21, len(df)):
+        # متغيرات تتبع نموذج AMD و FVG
+        fvg_active = False
+        fvg_dir = ""
+        fvg_top = 0.0
+        fvg_bottom = 0.0
+        fvg_age = 0
+
+        for i in range(20, len(df)):
             row = df.iloc[i]
             curr_time = df.index[i]
+            atr = float(df["ATR"].iloc[i - 1])
+            if pd.isna(atr) or atr <= 0:
+                continue
 
             if in_trade:
                 if trade_type == "BUY":
@@ -113,7 +120,7 @@ def run_pure_fib_backtest(
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": f"شراء (Fib {fib_entry})",
+                            "النوع": "شراء (AMD + FVG)",
                             "الحالة": "ناجحة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -125,7 +132,7 @@ def run_pure_fib_backtest(
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": f"شراء (Fib {fib_entry})",
+                            "النوع": "شراء (AMD + FVG)",
                             "الحالة": "خاسرة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -138,7 +145,7 @@ def run_pure_fib_backtest(
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": f"بيع (Fib {fib_entry})",
+                            "النوع": "بيع (AMD + FVG)",
                             "الحالة": "ناجحة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
@@ -150,139 +157,146 @@ def run_pure_fib_backtest(
                         history_list.append({
                             "الوقت": str(entry_time)[:16],
                             "العملة": display_name,
-                            "النوع": f"بيع (Fib {fib_entry})",
+                            "النوع": "بيع (AMD + FVG)",
                             "الحالة": "خاسرة",
                             "الربح/الخسارة ($)": round(pnl, 2),
                         })
             else:
-                # نافذة آخر 20 شمعة مغلقة لتحديد القمة والقاع واتجاه الموجة
-                window = df.iloc[i - 20 : i]
-                s_high = float(window["High"].max())
-                s_low = float(window["Low"].min())
-                fib_range = s_high - s_low
-                if fib_range <= 0:
-                    continue
-
-                idx_high = window["High"].idxmax()
-                idx_low = window["Low"].idxmin()
-
-                sub_1m = df_1m[df_1m.index >= curr_time]
-                if sub_1m.empty:
-                    continue
-                confirm_1m_close = float(sub_1m["Close"].iloc[0])
-
-                # 1. موجة صاعدة (القاع قبل القمة) -> تصحيح عند مستوى 0.23 من القمة
-                if idx_low < idx_high:
-                    entry_level = s_high - (fib_entry * fib_range)
-                    # ملامسة مستوى 0.23 وإغلاق شمعة 1m فوقه
-                    if (
-                        row["Low"] <= entry_level
-                        and confirm_1m_close > entry_level
+                # 1. التحقق من دخول صفقة عند إعادة اختبار منطقة FVG النشطة
+                if fvg_active:
+                    fvg_age += 1
+                    if fvg_age > 10:  # انتهاء صلاحية الفجوة إذا لم يختبرها السعر خلال 10 شموع
+                        fvg_active = False
+                    elif (
+                        fvg_dir == "BUY"
+                        and row["Low"] <= fvg_top
+                        and row["Close"] > fvg_bottom
                     ):
-                        target_val = s_low + (fib_tp * fib_range)
-                        stop_val = s_low + (fib_sl * fib_range)
-                        if confirm_1m_close < target_val:
-                            in_trade = True
-                            trade_type = "BUY"
-                            entry_p = confirm_1m_close
-                            sl_p = stop_val
-                            tp_p = target_val
-                            entry_time = sub_1m.index[0]
-
-                # 2. موجة هابطة (القمة قبل القاع) -> ارتداد عند مستوى 0.23 من القاع
-                elif idx_high < idx_low:
-                    entry_level = s_low + (fib_entry * fib_range)
-                    # ملامسة مستوى 0.23 وإغلاق شمعة 1m تحته
-                    if (
-                        row["High"] >= entry_level
-                        and confirm_1m_close < entry_level
+                        in_trade = True
+                        trade_type = "BUY"
+                        entry_p = float(row["Close"])
+                        sl_dist = atr_mult * atr
+                        sl_p = entry_p - sl_dist
+                        tp_p = entry_p + (sl_dist * rr_ratio)
+                        entry_time = curr_time
+                        fvg_active = False
+                        continue
+                    elif (
+                        fvg_dir == "SELL"
+                        and row["High"] >= fvg_bottom
+                        and row["Close"] < fvg_top
                     ):
-                        target_val = s_high - (fib_tp * fib_range)
-                        stop_val = s_high - (fib_sl * fib_range)
-                        if confirm_1m_close > target_val:
-                            in_trade = True
-                            trade_type = "SELL"
-                            entry_p = confirm_1m_close
-                            sl_p = stop_val
-                            tp_p = target_val
-                            entry_time = sub_1m.index[0]
+                        in_trade = True
+                        trade_type = "SELL"
+                        entry_p = float(row["Close"])
+                        sl_dist = atr_mult * atr
+                        sl_p = entry_p + sl_dist
+                        tp_p = entry_p - (sl_dist * rr_ratio)
+                        entry_time = curr_time
+                        fvg_active = False
+                        continue
+
+                # 2. البحث عن نموذج التجميع (Accumulation) -> التلاعب (Manipulation) -> الفجوة (FVG)
+                # نافذة التجميع (12 شمعة قبل حركة التلاعب والاندفاع)
+                acc_window = df.iloc[i - 16 : i - 4]
+                acc_high = float(acc_window["High"].max())
+                acc_low = float(acc_window["Low"].min())
+
+                # الشموع الثلاث الأخيرة لتشكيل التلاعب وفجوة FVG
+                c1 = df.iloc[i - 3]
+                c2 = df.iloc[i - 2]
+                c3 = df.iloc[i - 1]
+
+                # سيناريو الشراء (الصورة الأولى): كسر قاع التجميع ثم فجوة FVG صاعدة
+                manip_low = min(float(c1["Low"]), float(c2["Low"]))
+                if manip_low < acc_low and float(c3["Low"]) > float(c1["High"]):
+                    fvg_active = True
+                    fvg_dir = "BUY"
+                    fvg_top = float(c3["Low"])
+                    fvg_bottom = float(c1["High"])
+                    fvg_age = 0
+
+                # سيناريو البيع (الصورة الثانية): كسر قمة التجميع ثم فجوة FVG هابطة
+                manip_high = max(float(c1["High"]), float(c2["High"]))
+                if manip_high > acc_high and float(c3["High"]) < float(
+                    c1["Low"]
+                ):
+                    fvg_active = True
+                    fvg_dir = "SELL"
+                    fvg_top = float(c1["Low"])
+                    fvg_bottom = float(c3["High"])
+                    fvg_age = 0
 
     return round(total_pnl, 2), wins, losses, pd.DataFrame(history_list)
-# --- 5. فحص الإشارات اللحظية لفيبوناتشي 0.23 ---
-def scan_pure_fib(
-    yf_ticker, display_name, interval, fib_entry, fib_sl, fib_tp
-):
+# --- 5. فحص الإشارات اللحظية لنموذج AMD + FVG ---
+def scan_amd_fvg_live(yf_ticker, display_name, interval, atr_mult, rr_ratio):
     df = fetch_data(yf_ticker, interval, period="5d")
-    df_1m = fetch_1m_data(yf_ticker)
-
-    if len(df) < 25 or df_1m.empty:
+    if len(df) < 25:
         return None
 
-    window = df.iloc[-21:-1]
-    s_high = float(window["High"].max())
-    s_low = float(window["Low"].min())
-    fib_range = s_high - s_low
-
-    idx_high = window["High"].idxmax()
-    idx_low = window["Low"].idxmin()
-
-    last_candle = df.iloc[-2]
-    last_1m_close = float(df_1m["Close"].iloc[-2])
+    df = calculate_atr(df)
+    atr = float(df["ATR"].iloc[-2])
     current_price = float(df["Close"].iloc[-1])
 
-    signal = "انتظار السعر عند 0.23"
-    entry_lvl_display = 0.0
+    # فحص آخر 16 شمعة للبحث عن تجميع وتلاعب وفجوة FVG حديثة
+    acc_window = df.iloc[-17:-5]
+    acc_high = float(acc_window["High"].max())
+    acc_low = float(acc_window["Low"].min())
+
+    c1 = df.iloc[-4]
+    c2 = df.iloc[-3]
+    c3 = df.iloc[-2]
+    last_candle = df.iloc[-1]
+
+    signal = "مراقبة التجميع (Accumulation)"
+    fvg_zone = "-"
     sl_price = 0.0
     tp_price = 0.0
 
-    # موجة صاعدة -> البحث عن شراء عند 0.23
-    if idx_low < idx_high and fib_range > 0:
-        entry_lvl = s_high - (fib_entry * fib_range)
-        entry_lvl_display = entry_lvl
-        target_val = s_low + (fib_tp * fib_range)
-        stop_val = s_low + (fib_sl * fib_range)
-        if (
-            last_candle["Low"] <= entry_lvl
-            and last_1m_close > entry_lvl
-            and last_1m_close < target_val
-        ):
-            signal = f"شراء مؤكد (BUY {fib_entry})"
-            sl_price = stop_val
-            tp_price = target_val
+    # فحص نموذج الشراء (كسر قاع التجميع + FVG صاعد + إعادة اختبار)
+    manip_low = min(float(c1["Low"]), float(c2["Low"]))
+    if manip_low < acc_low and float(c3["Low"]) > float(c1["High"]):
+        fvg_top = float(c3["Low"])
+        fvg_bottom = float(c1["High"])
+        fvg_zone = f"{round(fvg_bottom, 5)} - {round(fvg_top, 5)}"
+        if float(last_candle["Low"]) <= fvg_top and current_price > fvg_bottom:
+            signal = "شراء مؤكد (AMD + FVG)"
+            sl_dist = atr_mult * atr
+            sl_price = current_price - sl_dist
+            tp_price = current_price + (sl_dist * rr_ratio)
         else:
-            signal = "موجة صاعدة (مراقبة 0.23)"
+            signal = "تلاعب شراء + FVG (بانتظار إعادة الاختبار)"
 
-    # موجة هابطة -> البحث عن بيع عند 0.23
-    elif idx_high < idx_low and fib_range > 0:
-        entry_lvl = s_low + (fib_entry * fib_range)
-        entry_lvl_display = entry_lvl
-        target_val = s_high - (fib_tp * fib_range)
-        stop_val = s_high - (fib_sl * fib_range)
-        if (
-            last_candle["High"] >= entry_lvl
-            and last_1m_close < entry_lvl
-            and last_1m_close > target_val
-        ):
-            signal = f"بيع مؤكد (SELL {fib_entry})"
-            sl_price = stop_val
-            tp_price = target_val
+    # فحص نموذج البيع (كسر قمة التجميع + FVG هابط + إعادة اختبار)
+    manip_high = max(float(c1["High"]), float(c2["High"]))
+    if manip_high > acc_high and float(c3["High"]) < float(c1["Low"]):
+        fvg_top = float(c1["Low"])
+        fvg_bottom = float(c3["High"])
+        fvg_zone = f"{round(fvg_bottom, 5)} - {round(fvg_top, 5)}"
+        if float(last_candle["High"]) >= fvg_bottom and current_price < fvg_top:
+            signal = "بيع مؤكد (AMD + FVG)"
+            sl_dist = atr_mult * atr
+            sl_price = current_price + sl_dist
+            tp_price = current_price - (sl_dist * rr_ratio)
         else:
-            signal = "موجة هابطة (مراقبة 0.23)"
+            signal = "تلاعب بيع + FVG (بانتظار إعادة الاختبار)"
 
     return {
         "العملة": display_name,
         "السعر الحالي": round(current_price, 5),
-        f"مستوى الدخول ({fib_entry})": round(entry_lvl_display, 5),
-        "الإشارة": signal,
-        f"وقف الخسارة ({fib_sl})": round(sl_price, 5) if sl_price > 0 else "-",
-        f"الهدف ({fib_tp})": round(tp_price, 5) if tp_price > 0 else "-",
+        "منطقة FVG": fvg_zone,
+        "الحالة / الإشارة": signal,
+        f"وقف الخسارة ({atr_mult} ATR)": (
+            round(sl_price, 5) if sl_price > 0 else "-"
+        ),
+        f"الهدف ({rr_ratio} R:R)": round(tp_price, 5) if tp_price > 0 else "-",
     }
 
 
 # --- 6. واجهة التطبيق ---
-st.title("📐 ماسح الفيبوناتشي الخالص (دخول مستوى 0.23)")
+st.title("🎯 ماسح Smart Money (نموذج AMD + FVG)")
 st.caption(
-    "بدون متوسطات متحركة | الدخول: ارتداد 0.23 + إغلاق 1m | إدارة الصفقة: مستويات فيبوناتشي"
+    "التجميع (Accumulation) ➔ التلاعب (Manipulation) ➔ الدخول من الفجوة (FVG) نحو التوزيع (Distribution)"
 )
 
 COINS_MAP = {
@@ -297,89 +311,66 @@ COINS_MAP = {
     "PAXGUSDT": "PAXG-USD",
 }
 
-with st.expander("⚙️ ضبط مستويات الفيبوناتشي والفريم ورأس المال", expanded=True):
-    col1, col2 = st.columns(2)
+# --- لوحة التحكم المباشرة (الفريم + ATR SL + العائد R:R) ---
+with st.expander("⚙️ ضبط الإطار الزمني ووقف الخسارة والعائد", expanded=True):
+    col1, col2, col3 = st.columns(3)
     with col1:
         selected_tf = st.selectbox(
-            "الإطار الزمني الأساسي:", ["5m", "15m", "30m"], index=0
-        )
-        fib_entry_input = st.number_input(
-            "مستوى الدخول (Fib Entry):",
-            min_value=0.10,
-            max_value=0.786,
-            value=0.23,
-            step=0.01,
-            format="%.2f",
-        )
-        fib_sl_input = st.number_input(
-            "مستوى وقف الخسارة (Fib SL):",
-            min_value=-1.00,
-            max_value=0.20,
-            value=-0.24,
-            step=0.01,
-            format="%.2f",
+            "الإطار الزمني:", ["5m", "15m", "30m"], index=1
         )
     with col2:
-        trade_amount = st.number_input(
-            "حجم الصفقة بالدولار ($):", min_value=10, value=100, step=10
+        atr_sl_input = st.number_input(
+            "معامل وقف الخسارة (ATR SL):",
+            min_value=0.5,
+            max_value=5.0,
+            value=1.5,
+            step=0.1,
+            format="%.1f",
         )
-        fib_tp_input = st.number_input(
-            "مستوى الهدف (Fib Target):",
-            min_value=0.20,
-            max_value=2.00,
-            value=0.50,
-            step=0.01,
-            format="%.2f",
+    with col3:
+        rr_input = st.number_input(
+            "نسبة العائد للمخاطرة (R:R):",
+            min_value=0.5,
+            max_value=5.0,
+            value=2.0,
+            step=0.1,
+            format="%.1f",
         )
 
-with st.spinner("جاري فحص ارتدادات فيبوناتشي 0.23 على البيانات الحقيقية..."):
-    net_pnl, w_count, l_count, bt_df = run_pure_fib_backtest(
-        COINS_MAP,
-        selected_tf,
-        trade_amount,
-        fib_entry_input,
-        fib_sl_input,
-        fib_tp_input,
+with st.spinner("جاري مسح نماذج التجميع والتلاعب وفجوات FVG..."):
+    net_pnl, w_count, l_count, bt_df = run_amd_fvg_backtest(
+        COINS_MAP, selected_tf, atr_sl_input, rr_input
     )
     total_t = w_count + l_count
     win_rate = round((w_count / total_t) * 100, 1) if total_t > 0 else 0.0
 
 c1, c2, c3 = st.columns(3)
 c1.metric(f"الربح الصافي (آخر 5 أيام - {selected_tf})", f"{net_pnl} $")
-c2.metric(
-    f"نسبة النجاح (Fib {fib_entry_input})",
-    f"{win_rate}%",
-    f"إجمالي الصفقات: {total_t}",
-)
+c2.metric("نسبة النجاح (AMD + FVG)", f"{win_rate}%", f"إجمالي الصفقات: {total_t}")
 c3.metric("توزيع الصفقات", f"{w_count} ناجحة", f"-{l_count} خاسرة")
 
 st.divider()
 
-if st.button("فحص فرص 0.23 المؤكدة الآن 🔄", use_container_width=True):
+if st.button("فحص نماذج AMD + FVG اللحظية 🔄", use_container_width=True):
     df_history, file_sha = load_trades()
     scan_results = []
     new_added = 0
 
     for display_name, yf_ticker in COINS_MAP.items():
-        res = scan_pure_fib(
-            yf_ticker,
-            display_name,
-            selected_tf,
-            fib_entry_input,
-            fib_sl_input,
-            fib_tp_input,
+        res = scan_amd_fvg_live(
+            yf_ticker, display_name, selected_tf, atr_sl_input, rr_input
         )
         if res:
             scan_results.append(res)
-            if "مؤكد" in res["الإشارة"]:
+            if "مؤكد" in res["الحالة / الإشارة"]:
                 new_row = pd.DataFrame([{
                     "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "Coin": display_name,
                     "Timeframe": selected_tf,
-                    "Type": res["الإشارة"],
-                    "Entry_Price": res[f"مستوى الدخول ({fib_entry_input})"],
-                    "Stop_Loss": res[f"وقف الخسارة ({fib_sl_input})"],
-                    "Take_Profit": res[f"الهدف ({fib_tp_input})"],
+                    "Type": res["الحالة / الإشارة"],
+                    "Entry_Price": res["السعر الحالي"],
+                    "Stop_Loss": res[f"وقف الخسارة ({atr_sl_input} ATR)"],
+                    "Take_Profit": res[f"الهدف ({rr_input} R:R)"],
                     "Status": "مفتوحة",
                     "PnL": 0.0,
                 }])
@@ -389,20 +380,16 @@ if st.button("فحص فرص 0.23 المؤكدة الآن 🔄", use_container_wi
                 new_added += 1
 
     if new_added > 0:
-        save_trades(
-            df_history,
-            file_sha,
-            f"Add {new_added} Pure-Fib {fib_entry_input} signals",
-        )
-        st.success(f"تم رصد وحفظ {new_added} فرصة فيبوناتشي مؤكدة في GitHub!")
+        save_trades(df_history, file_sha, f"Add {new_added} AMD-FVG signals")
+        st.success(f"تم رصد وحفظ {new_added} فرصة AMD + FVG مؤكدة في GitHub!")
 
-    st.subheader("الأسعار ومستويات 0.23 اللحظية:")
+    st.subheader("حالة العملات ومناطق FVG اللحظية:")
     st.dataframe(pd.DataFrame(scan_results), use_container_width=True)
 
 if not bt_df.empty:
     st.divider()
     st.subheader(
-        f"📋 سجل الصفقات المحسوبة (Entry: {fib_entry_input} | SL: {fib_sl_input} | TP: {fib_tp_input})"
+        f"📋 سجل صفقات AMD + FVG المحسوبة (SL: {atr_sl_input} ATR | R:R: 1:{rr_input})"
     )
     st.dataframe(
         bt_df.sort_values(by="الوقت", ascending=False), use_container_width=True
