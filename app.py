@@ -8,11 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 st.set_page_config(page_title="RSI Trendline Breakout - Spot", layout="centered")
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
-# 1. الإعدادات الافتراضية الجديدة: فريم 4h افتراضي، R:R = 1.50، وبدون فلتر
 tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=4)
 rr_ratio = st.number_input("نسبة العائد للمخاطرة (R:R):", 1.0, 6.0, 1.50, 0.1)
 
-# 25 عملة رقمية ذات مشاريع تقنية حقيقية وقوية التذبذب (متوفرة على Kraken)
 SYMBOLS = [
     "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD",
     "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD",
@@ -30,8 +28,10 @@ def get_data(syms, timeframe):
             d = ex.fetch_ohlcv(s, timeframe=timeframe, limit=300)
             if d and len(d) > 60:
                 df = pd.DataFrame(d, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                # توقيت المغرب (UTC+1)
                 df['t'] = pd.to_datetime(df['t'], unit='ms') + timedelta(hours=1)
+                tr = pd.concat([df['h']-df['l'], (df['h']-df['c'].shift()).abs(), (df['l']-df['c'].shift()).abs()], axis=1).max(axis=1)
+                df['atr'] = tr.rolling(14).mean()
+                df['vol_ma'] = df['v'].rolling(10).mean()
                 delta = df['c'].diff()
                 gain = delta.clip(lower=0).rolling(14).mean()
                 loss = (-delta.clip(upper=0)).rolling(14).mean()
@@ -48,29 +48,27 @@ def get_data(syms, timeframe):
     return res
 
 def scan_rsi_trendline_breakout(df, rr):
-    h, l, c, t, rsi = df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['rsi'].values
+    h, l, c, v, t = df['h'].values, df['l'].values, df['c'].values, df['v'].values, df['t'].values
+    rsi, atr, vma = df['rsi'].values, df['atr'].values, df['vol_ma'].values
     sigs = []
     last_sig_idx = -8
 
     for i in range(40, len(df) - 1):
-        if i - last_sig_idx < 6 or np.isnan(rsi[i]): continue
+        if i - last_sig_idx < 6 or np.isnan(rsi[i]) or np.isnan(atr[i]): continue
 
-        # 1. التحقق من تشبع بيعي حديث (Oversold Zone) قبل كسر الترند
-        recent_rsi = rsi[i-25:i]
-        if np.min(recent_rsi) > 38: continue
+        # 1. تشبع بيعي حديث + تأكيد حجم التداول لمنع الاختراق الكاذب
+        if np.min(rsi[i-25:i]) > 38: continue
+        if not np.isnan(vma[i]) and v[i] < (vma[i] * 0.85): continue
 
         # 2. رسم خط ترند هابط على RSI وعلى السعر
-        win_rsi = rsi[i-25:i]
-        win_high = h[i-25:i]
-        
+        win_rsi, win_high = rsi[i-25:i], h[i-25:i]
         p1_rel = int(np.argmax(win_rsi[:12]))
         p2_rel = 12 + int(np.argmax(win_rsi[12:-1]))
         
         r1, r2 = win_rsi[p1_rel], win_rsi[p2_rel]
         h1, h2 = win_high[p1_rel], win_high[p2_rel]
 
-        if r2 >= r1 or h2 >= h1 or (p2_rel - p1_rel) < 4:
-            continue
+        if r2 >= r1 or h2 >= h1 or (p2_rel - p1_rel) < 4: continue
 
         idx1, idx2 = (i - 25) + p1_rel, (i - 25) + p2_rel
         rsi_slope = (r2 - r1) / (idx2 - idx1)
@@ -80,14 +78,11 @@ def scan_rsi_trendline_breakout(df, rr):
         rsi_trend_prev = r1 + rsi_slope * (i - 1 - idx1)
         price_trend_now = h1 + price_slope * (i - idx1)
 
-        # 3. الاختراق المزدوج (RSI + السعر) صعوداً
-        rsi_breakout = (rsi[i] > rsi_trend_now) and (rsi[i-1] <= rsi_trend_prev)
-        price_breakout = c[i] > price_trend_now
-
-        if rsi_breakout and price_breakout:
+        # 3. الاختراق المزدوج + وقف خسارة ديناميكي محمي بـ ATR
+        if (rsi[i] > rsi_trend_now) and (rsi[i-1] <= rsi_trend_prev) and (c[i] > price_trend_now):
             entry = float(c[i])
             recent_swing_low = float(np.min(l[idx1:i+1]))
-            sl = recent_swing_low * 0.997
+            sl = recent_swing_low - (0.4 * float(atr[i]))
             risk = entry - sl
             if risk <= 0: continue
 
@@ -149,10 +144,29 @@ if st.button("🔄 تحديث اختراقات RSI الآن", use_container_widt
     st.cache_data.clear()
     st.rerun()
 
+# جدول الربح الصافي لكل يوم على حدة
+st.subheader(f"📅 الربح الصافي لكل يوم على حدة (آخر {period_label})")
+if not df_t.empty:
+    df_closed = df_t[df_t['الحالة'] != 'مفتوحة ⏳'].copy()
+    if not df_closed.empty:
+        df_closed['اليوم'] = df_closed['الوقت (المغرب)'].str[:10]
+        daily_pnl = df_closed.groupby('اليوم', as_index=False).agg(
+            عدد_الصفقات=('الربح ($)', 'count'),
+            الناجحة=('الحالة', lambda x: (x == 'ناجحة').sum()),
+            الخاسرة=('الحالة', lambda x: (x == 'خاسرة').sum()),
+            الربح_الصافي=('الربح ($)', 'sum')
+        ).sort_values('اليوم', ascending=False)
+        daily_pnl['الربح_الصافي'] = daily_pnl['الربح_الصافي'].round(2)
+        st.dataframe(daily_pnl, use_container_width=True, hide_index=True)
+    else:
+        st.info("لا توجد صفقات مغلقة لحساب التوزيع اليومي بعد.")
+else:
+    st.info("لا توجد صفقات مسجلة لحساب التوزيع اليومي.")
+
 st.subheader("🎯 توصيات RSI Trendline Breakout اللحظية (Spot)")
 for coin, pat_lbl, tm, ent, sl, tp in recs:
     dec = 4 if ent < 10 else 2
-    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm})</b><br>🔹 دخول (Breakout): <code>{ent:.{dec}f}</code> | 🎯 هدف (1.5R): <code>{tp:.{dec}f}</code> | 🛑 وقف (تحت القاع): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm})</b><br>🔹 دخول (Breakout): <code>{ent:.{dec}f}</code> | 🎯 هدف: <code>{tp:.{dec}f}</code> | 🛑 وقف (محمي بـ ATR): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
 if not recs: st.info("لا يوجد كسر ترند RSI صاعد في آخر شمعتين حالياً.")
 
 st.subheader(f"📋 سجل صفقات آخر {period_label} (100$ للصفقة)")
