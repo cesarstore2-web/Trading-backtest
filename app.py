@@ -224,18 +224,18 @@ def scan_coin(yf_ticker, display_name, interval):
 # --- 6. واجهة التطبيق ---
 st.title("📊 ماسح تقاطع EMA 2 × WMA 20")
 st.caption(
-    "حجم الصفقة الافتراضي: 100$ | وقف الخسارة: 2.30 ATR | الهدف: 0.9 R:R"
+    "تقاطع EMA 2 مع WMA 20 | وقف الخسارة: 2.30 ATR | الهدف: 0.9 R:R"
 )
 
 COINS_MAP = {
-    "XRPUSDT": "XRP-USD",
     "XLMUSDT": "XLM-USD",
     "ZECUSDT": "ZEC-USD",
-    "BTCUSDT": "BTC-USD",
-    "ETHUSDT": "ETH-USD",
+    "XRPUSDT": "XRP-USD",
+    "HBARUSDT": "HBAR-USD",
     "ADAUSDT": "ADA-USD",
     "LTCUSDT": "LTC-USD",
-    "HBARUSDT": "HBAR-USD",
+    "BTCUSDT": "BTC-USD",
+    "ETHUSDT": "ETH-USD",
     "PAXGUSDT": "PAXG-USD",
 }
 
