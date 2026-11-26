@@ -22,28 +22,50 @@ VOLATILE_COINS = {
 }
 
 # واجهة المستخدم
-timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=4)
+timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=0)
 
-# نافذة R:R بشريط تمرير وأزرار (+/-) مطابقة للصورة
-rr_ratio = st.slider(
+# نافذة أرقام لنسبة العائد للمخاطرة (R:R)
+rr_ratio = st.number_input(
     "نسبة العائد للمخاطرة (R:R):",
-    min_value=0.50,
-    max_value=5.00,
+    min_value=0.10,
+    max_value=10.00,
     value=1.50,
     step=0.10,
     format="%.2f"
 )
 
-trade_amount = st.number_input("حجم الصفقة الواحدة ($):", min_value=10.0, max_value=10000.0, value=100.0, step=10.0)
+# نافذة أرقام للحد الأدنى لحجم جسم الشمعة (%)
+min_body_pct = st.number_input(
+    "الحد الأدنى لحجم جسم الشمعة (%):",
+    min_value=0.05,
+    max_value=5.00,
+    value=0.35,
+    step=0.05,
+    format="%.2f"
+)
 
-# مربع تفعيل EMA الاختياري
-use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA)", value=False)
+# نافذة أرقام لحجم الصفقة
+trade_amount = st.number_input(
+    "حجم الصفقة الواحدة ($):",
+    min_value=10.0,
+    max_value=10000.0,
+    value=100.0,
+    step=10.0
+)
+
+# فلاتر الجودة الإضافية
+col1, col2 = st.columns(2)
+with col1:
+    use_momentum = st.checkbox("فلتر زخم الشمعة (جسم > 60%)", value=True)
+with col2:
+    use_ema = st.checkbox("فلتر الاتجاه العام (EMA)", value=False)
+
 if use_ema:
     ema_period = st.number_input("قيمة المتوسط المتحرك (EMA):", min_value=10, max_value=500, value=100, step=10)
 else:
     ema_period = 100
 
-st.caption(f"حالة الاتصال بالسوق: متصل بـ {len(VOLATILE_COINS)} عملة رقمية | التوقيت: المغرب (UTC+1)")
+st.caption(f"متصل بـ {len(VOLATILE_COINS)} عملة | يشمل خصم عمولة السبوت (0.1%) | التوقيت: المغرب (UTC+1)")
 st.divider()
 
 # دالة جلب البيانات الحقيقية من yfinance
@@ -69,8 +91,8 @@ def fetch_yf_data(ticker, tf):
         
     return df
 
-# دالة محاكاة الاستراتيجية (بقيود مخفضة لالتقاط معظم الشموع)
-def backtest_coin(df, tf, rr_ratio, use_ema, ema_period, amount):
+# دالة محاكاة الاستراتيجية المفلترة
+def backtest_coin(df, tf, rr_ratio, min_body_pct, use_momentum, use_ema, ema_period, amount):
     candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     
     if use_ema:
@@ -87,18 +109,33 @@ def backtest_coin(df, tf, rr_ratio, use_ema, ema_period, amount):
     losses = 0
     open_trades = 0
     net_profit = 0.0
+    fee_rate = 0.001 # عمولة 0.1% دخول وخروج (إجمالي 0.2% للصفقة)
     
-    for i in range(start_idx, len(df) - 1):
+    i = start_idx
+    while i < len(df) - 1:
         prev_candle = df.iloc[i - 1]
         entry_candle = df.iloc[i]
         
         prev_open = float(prev_candle['Open'])
         prev_close = float(prev_candle['Close'])
-        body_size = prev_close - prev_open
+        prev_high = float(prev_candle['High'])
+        prev_low = float(prev_candle['Low'])
         
-        # قيود مخفضة جداً: أي شمعة صاعدة جسمها أكبر من 0.05% (تجنب الدوجي الصفرية فقط)
-        if body_size > 0 and (body_size / prev_open) >= 0.0005:
+        body_size = prev_close - prev_open
+        total_range = prev_high - prev_low
+        
+        # 1. فلتر الحد الأدنى لحجم الجسم
+        if body_size > 0 and (body_size / prev_open) >= (min_body_pct / 100.0):
+            
+            # 2. فلتر الزخم: جسم الشمعة يمثل 60% على الأقل من طولها الكلي
+            if use_momentum and total_range > 0:
+                if (body_size / total_range) < 0.60:
+                    i += 1
+                    continue
+                    
+            # 3. فلتر الاتجاه العام EMA
             if use_ema and prev_close < float(prev_candle['EMA']):
+                i += 1
                 continue
                 
             entry_price = prev_open
@@ -112,46 +149,53 @@ def backtest_coin(df, tf, rr_ratio, use_ema, ema_period, amount):
                     future_candle = df.iloc[j]
                     if float(future_candle['Low']) <= stop_loss:
                         losses += 1
-                        net_profit -= amount * ((entry_price - stop_loss) / entry_price)
+                        gross_loss = amount * ((entry_price - stop_loss) / entry_price)
+                        fees = amount * (fee_rate * 2)
+                        net_profit -= (gross_loss + fees)
                         trade_closed = True
+                        i = j
                         break
                     elif float(future_candle['High']) >= take_profit:
                         wins += 1
-                        net_profit += amount * ((take_profit - entry_price) / entry_price)
+                        gross_win = amount * ((take_profit - entry_price) / entry_price)
+                        fees = amount * (fee_rate * 2)
+                        net_profit += (gross_win - fees)
                         trade_closed = True
+                        i = j
                         break
                         
                 if not trade_closed:
                     open_trades += 1
+                    break
+        i += 1
                     
     return wins, losses, open_trades, net_profit
 
-# تشغيل التحليل على جميع العملات
+# تشغيل التحليل
 total_wins = 0
 total_losses = 0
 total_open = 0
 total_profit = 0.0
 details = []
 
-with st.spinner("جاري سحب البيانات الحقيقية وتحليل الصفقات..."):
+with st.spinner("جاري انتقاء أفضل الفرص وتحليل الصفقات..."):
     for ticker, name in VOLATILE_COINS.items():
         try:
             df = fetch_yf_data(ticker, timeframe)
             if not df.empty:
-                w, l, o, p = backtest_coin(df, timeframe, rr_ratio, use_ema, ema_period, trade_amount)
+                w, l, o, p = backtest_coin(df, timeframe, rr_ratio, min_body_pct, use_momentum, use_ema, ema_period, trade_amount)
                 total_wins += w
                 total_losses += l
                 total_open += o
                 total_profit += p
-                details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح ($)": round(p, 2)})
+                details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
         except Exception:
             pass
 
-# حساب نسبة النجاح
 closed_trades = total_wins + total_losses
 win_rate = (total_wins / closed_trades * 100) if closed_trades > 0 else 0.0
 
-# عرض النتائج بنفس تصميم صورتك
+# عرض النتائج
 ema_status = f" | EMA {ema_period}" if use_ema else ""
 st.markdown(f"**الربح الصافي سبوت (7 أيام | {timeframe}{ema_status})**")
 st.title(f"$ {total_profit:.2f}")
