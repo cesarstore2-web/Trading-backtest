@@ -4,7 +4,10 @@ import pandas as pd
 import numpy as np
 
 # إعدادات الصفحة
-st.set_page_config(page_title="ماسح موجات إليوت الشرائية", layout="centered")
+st.set_page_config(page_title="استراتيجية موجات إليوت - الموجة 2", layout="centered")
+
+# رأس مال كل صفقة ثابت في الخفاء (100 دولار)
+TRADE_AMOUNT = 100.0
 
 # رموز العملات الرقمية عالية التذبذب
 VOLATILE_COINS = {
@@ -22,8 +25,17 @@ VOLATILE_COINS = {
     "DOT-USD": "Polkadot"
 }
 
-# واجهة المستخدم
+# واجهة المستخدم (نظيفة بدون حقل رأس المال)
 timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
+
+entry_mode = st.selectbox(
+    "طريقة الدخول في الموجة 2:",
+    [
+        "دخول مؤكد (نهاية الموجة 2 وبداية 3)",
+        "دخول مبكر داخل الموجة 2 (مستوى فيبوناتشي 61.8%)"
+    ],
+    index=0
+)
 
 rr_ratio = st.number_input(
     "نسبة العائد للمخاطرة (R:R):",
@@ -35,30 +47,16 @@ rr_ratio = st.number_input(
 )
 
 wave_sensitivity = st.number_input(
-    "حساسية اكتشاف القمم والقيعان (عدد الشموع):",
+    "حساسية اكتشاف الموجة 1 (عدد الشموع):",
     min_value=2,
     max_value=10,
     value=3,
     step=1
 )
 
-trade_amount = st.number_input(
-    "حجم الصفقة الواحدة ($):",
-    min_value=10.0,
-    max_value=10000.0,
-    value=100.0,
-    step=10.0
-)
-
-col1, col2 = st.columns(2)
-with col1:
-    trade_w2 = st.checkbox("دخول نهاية الموجة 2 (بداية 3)", value=True)
-with col2:
-    trade_w4 = st.checkbox("دخول نهاية الموجة 4 (بداية 5)", value=True)
-
 use_ema = st.checkbox("فلتر الاتجاه العام (EMA 100)", value=False)
 
-st.caption(f"الاستراتيجية: موجات إليوت الشرائية وقوانين فيبوناتشي | عمولة السبوت 0.1%")
+st.caption(f"الاستراتيجية: اقتناص الموجة 2 التصحيحية للانطلاق مع الموجة 3 | عمولة السبوت 0.1%")
 st.divider()
 
 # جلب البيانات الحقيقية من yfinance
@@ -84,97 +82,88 @@ def fetch_yf_data(ticker, tf):
         
     return df
 
-# استخراج نقاط الارتكاز (القمم والقيعان الموجية) دون نظرة مستقبلية (No Lookahead Bias)
+# استخراج نقاط الارتكاز المؤكدة (قاع 0 -> قمة 1 -> قاع 2)
 def get_confirmed_pivots(df, current_idx, order):
     pivots = []
-    # نتوقف عند current_idx - order لضمان أن القمة أو القاع قد تأكد فعلياً وقت التداول
-    search_start = max(order, current_idx - 80)
+    search_start = max(order, current_idx - 60)
     search_end = current_idx - order
     
     highs = df['High'].values
     lows = df['Low'].values
     
     for k in range(search_start, search_end):
-        # فحص قمة محلية
         if highs[k] == np.max(highs[k - order : k + order + 1]):
-            if not pivots or pivots[-1][1] == 'L':
+            if not pivots or pivots[-1] == 'L':
                 pivots.append((k, 'H', float(highs[k])))
-            elif pivots[-1][1] == 'H' and float(highs[k]) > pivots[-1][2]:
+            elif pivots[-1] == 'H' and float(highs[k]) > pivots[-1]:
                 pivots[-1] = (k, 'H', float(highs[k]))
                 
-        # فحص قاع محلي
         elif lows[k] == np.min(lows[k - order : k + order + 1]):
-            if not pivots or pivots[-1][1] == 'H':
+            if not pivots or pivots[-1] == 'H':
                 pivots.append((k, 'L', float(lows[k])))
-            elif pivots[-1][1] == 'L' and float(lows[k]) < pivots[-1][2]:
+            elif pivots[-1] == 'L' and float(lows[k]) < pivots[-1]:
                 pivots[-1] = (k, 'L', float(lows[k]))
                 
     return pivots
 
-# فحص شروط موجات إليوت الشرائية
-def check_elliott_wave(df, i, order, enable_w2, enable_w4):
+# فحص شروط الموجة 2 (قاع 0 -> قمة 1 -> تصحيح فيبوناتشي 2)
+def check_wave2_entry(df, i, order, mode):
     pivots = get_confirmed_pivots(df, i, order)
     curr_candle = df.iloc[i]
     prev_candle = df.iloc[i - 1]
     
     curr_close = float(curr_candle['Close'])
     curr_open = float(curr_candle['Open'])
-    
-    # شرط التأكيد: شمعة حالية خضراء تغلق فوق قمة الشمعة السابقة
-    if curr_close <= curr_open or curr_close <= float(prev_candle['High']):
-        return None, 0.0
+    curr_low = float(curr_candle['Low'])
 
-    # الحالة الأولى: صيد بداية الموجة 3 (بعد اكتمال القاع 0 -> القمة 1 -> القاع 2)
-    if enable_w2 and len(pivots) >= 3:
-        p0, p1, p2 = pivots[-3], pivots[-2], pivots[-1]
-        if p0[1] == 'L' and p1[1] == 'H' and p2[1] == 'L':
-            w0_price, w1_price, w2_price = p0[2], p1[2], p2[2]
-            wave1_len = w1_price - w0_price
-            
-            if wave1_len > 0:
-                retrace = (w1_price - w2_price) / wave1_len
-                # قانون إليوت: الموجة 2 تصحح بين 38.2% و 78.6% ولا تكسر قاع الموجة 1 أبداً
-                if 0.382 <= retrace <= 0.786 and w2_price > w0_price and curr_close > w2_price:
-                    return "موجة إليوت (بداية الموجة 3)", w0_price
+    # الوضع الأول: الدخول المؤكد عند اكتمال قاع الموجة 2 وبداية الموجة 3
+    if "مؤكد" in mode:
+        if len(pivots) >= 3:
+            p0, p1, p2 = pivots[-3], pivots[-2], pivots[-1]
+            if p0 == 'L' and p1 == 'H' and p2 == 'L':
+                w0_price, w1_price, w2_price = p0, p1, p2
+                wave1_len = w1_price - w0_price
+                
+                if wave1_len > 0:
+                    retrace = (w1_price - w2_price) / wave1_len
+                    # تصحيح الموجة 2 بين 38.2% و 78.6% دون كسر قاع الموجة 1
+                    if 0.382 <= retrace <= 0.786 and w2_price > w0_price:
+                        if curr_close > curr_open and curr_close > float(prev_candle['High']) and curr_close > w2_price:
+                            return curr_close, w0_price
 
-    # الحالة الثانية: صيد بداية الموجة 5 (بعد اكتمال 0 -> 1 -> 2 -> 3 -> 4)
-    if enable_w4 and len(pivots) >= 5:
-        p0, p1, p2, p3, p4 = pivots[-5], pivots[-4], pivots[-3], pivots[-2], pivots[-1]
-        if p0[1] == 'L' and p1[1] == 'H' and p2[1] == 'L' and p3[1] == 'H' and p4[1] == 'L':
-            w0, w1, w2, w3, w4 = p0[2], p1[2], p2[2], p3[2], p4[2]
-            wave1_len = w1 - w0
-            wave3_len = w3 - w2
-            
-            # قوانين إليوت الصارمة للموجة 3 و 4:
-            # 1. الموجة 3 تتجاوز قمة 1 وليست الأقصر
-            # 2. الموجة 4 تصحح بين 23.6% و 50% من الموجة 3
-            # 3. قاع الموجة 4 لا يتداخل مع قمة الموجة 1 (w4 > w1)
-            if wave3_len > 0 and w3 > w1 and wave3_len >= wave1_len:
-                retrace_w4 = (w3 - w4) / wave3_len
-                if 0.236 <= retrace_w4 <= 0.50 and w4 > w1 and curr_close > w4:
-                    return "موجة إليوت (بداية الموجة 5)", w1
+    # الوضع الثاني: الدخول المبكر داخل الموجة 2 عند ملامسة مستوى فيبوناتشي 61.8%
+    else:
+        if len(pivots) >= 2:
+            p0, p1 = pivots[-2], pivots[-1]
+            if p0 == 'L' and p1 == 'H':
+                w0_price, w1_price = p0, p1
+                wave1_len = w1_price - w0_price
+                
+                if wave1_len > 0:
+                    fib_618 = w1_price - (wave1_len * 0.618)
+                    if curr_low <= fib_618 and curr_low > w0_price and float(prev_candle['Low']) > fib_618:
+                        return fib_618, w0_price
 
     return None, 0.0
 
-# محاكاة الصفقات على آخر 7 أيام
-def backtest_elliott(df, tf, rr_ratio, order, enable_w2, enable_w4, use_ema, amount):
+# محاكاة الصفقات على آخر 7 أيام برأس مال ثابت 100$
+def backtest_wave2(df, tf, rr_ratio, order, mode, use_ema, amount=TRADE_AMOUNT):
     candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     
     if use_ema:
         df['EMA'] = df['Close'].ewm(span=100, adjust=False).mean()
         start_idx = max(100, len(df) - candles_7d[tf])
     else:
-        start_idx = max(30, len(df) - candles_7d[tf])
+        start_idx = max(25, len(df) - candles_7d[tf])
         
     if len(df) <= start_idx + 1:
-        return 0, 0, 0, 0.0, []
+        return 0, 0, 0, 0.0
 
     wins = 0
     losses = 0
     open_trades = 0
     net_profit = 0.0
     fee_rate = 0.001
-    wave_signals = []
 
     i = start_idx
     while i < len(df) - 1:
@@ -184,16 +173,13 @@ def backtest_elliott(df, tf, rr_ratio, order, enable_w2, enable_w4, use_ema, amo
             i += 1
             continue
             
-        wave_name, stop_loss = check_elliott_wave(df, i, order, enable_w2, enable_w4)
+        entry_price, stop_loss = check_wave2_entry(df, i, order, mode)
         
-        if wave_name is not None:
-            entry_price = float(curr_candle['Close'])
+        if entry_price is not None:
             risk = entry_price - stop_loss
             
-            # استبعاد الصفقات ذات المخاطرة الصغيرة جداً لتغطية الرسوم
             if risk > 0 and (risk / entry_price) >= 0.0025:
                 take_profit = entry_price + (risk * rr_ratio)
-                wave_signals.append(wave_name)
                 
                 trade_closed = False
                 for j in range(i + 1, len(df)):
@@ -218,7 +204,7 @@ def backtest_elliott(df, tf, rr_ratio, order, enable_w2, enable_w4, use_ema, amo
                     break
         i += 1
 
-    return wins, losses, open_trades, net_profit, wave_signals
+    return wins, losses, open_trades, net_profit
 
 # تشغيل التحليل على جميع العملات
 total_wins = 0
@@ -226,21 +212,19 @@ total_losses = 0
 total_open = 0
 total_profit = 0.0
 details = []
-all_waves = []
 
-with st.spinner("جاري ترقيم موجات إليوت وحساب نسب فيبوناتشي..."):
+with st.spinner("جاري فحص تصحيحات الموجة 2 ونسب فيبوناتشي..."):
     for ticker, name in VOLATILE_COINS.items():
         try:
             df = fetch_yf_data(ticker, timeframe)
             if not df.empty:
-                w, l, o, p, waves = backtest_elliott(
-                    df, timeframe, rr_ratio, int(wave_sensitivity), trade_w2, trade_w4, use_ema, trade_amount
+                w, l, o, p = backtest_wave2(
+                    df, timeframe, rr_ratio, int(wave_sensitivity), entry_mode, use_ema
                 )
                 total_wins += w
                 total_losses += l
                 total_open += o
                 total_profit += p
-                all_waves.extend(waves)
                 if (w + l + o) > 0:
                     details.append({
                         "العملة": name,
@@ -256,7 +240,7 @@ closed_trades = total_wins + total_losses
 win_rate = (total_wins / closed_trades * 100) if closed_trades > 0 else 0.0
 
 # عرض النتائج
-st.markdown(f"**الربح الصافي سبوت - موجات إليوت (7 أيام | {timeframe})**")
+st.markdown(f"**الربح الصافي سبوت - الموجة 2 (7 أيام | {timeframe})**")
 st.title(f"$ {total_profit:.2f}")
 
 st.markdown("**نسبة النجاح**")
@@ -265,12 +249,6 @@ st.title(f"{win_rate:.1f}%")
 st.info(f"↑ مغلقة: {closed_trades} | مفتوحة: {total_open}")
 st.success(f"✅ {total_wins} ناجحة")
 st.error(f"❌ {total_losses} خاسرة")
-
-if all_waves:
-    st.subheader("توزيع الموجات المكتشفة")
-    wave_series = pd.Series(all_waves).value_counts().reset_index()
-    wave_series.columns = ["نقطة الدخول الموجية", "عدد الصفقات"]
-    st.dataframe(wave_series, use_container_width=True, hide_index=True)
 
 if details:
     with st.expander("عرض تفاصيل الصفقات لكل عملة"):
