@@ -1,10 +1,9 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 
 # إعدادات الصفحة
-st.set_page_config(page_title="استراتيجية موجات إليوت - الموجة 2", layout="centered")
+st.set_page_config(page_title="استراتيجية تقاطع 3 متوسطات", layout="centered")
 
 # رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
@@ -25,17 +24,21 @@ VOLATILE_COINS = {
     "DOT-USD": "Polkadot"
 }
 
-# واجهة المستخدم (نظيفة بدون حقل رأس المال)
-timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
+# واجهة المستخدم
+col_tf, col_type = st.columns(2)
+with col_tf:
+    timeframe = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
+with col_type:
+    ma_type = st.selectbox("نوع المتوسطات:", ["EMA", "SMA"], index=0)
 
-entry_mode = st.selectbox(
-    "طريقة الدخول في الموجة 2:",
-    [
-        "دخول مؤكد (نهاية الموجة 2 وبداية 3)",
-        "دخول مبكر داخل الموجة 2 (مستوى فيبوناتشي 61.8%)"
-    ],
-    index=0
-)
+# نوافذ تعديل المتوسطات الثلاثة
+c1, c2, c3 = st.columns(3)
+with c1:
+    fast_len = st.number_input("السريع (1):", min_value=2, max_value=100, value=9, step=1)
+with c2:
+    med_len = st.number_input("المتوسط (2):", min_value=5, max_value=200, value=21, step=1)
+with c3:
+    slow_len = st.number_input("البطيء (3):", min_value=10, max_value=500, value=55, step=5)
 
 rr_ratio = st.number_input(
     "نسبة العائد للمخاطرة (R:R):",
@@ -46,17 +49,7 @@ rr_ratio = st.number_input(
     format="%.2f"
 )
 
-wave_sensitivity = st.number_input(
-    "حساسية اكتشاف الموجة 1 (عدد الشموع):",
-    min_value=2,
-    max_value=10,
-    value=3,
-    step=1
-)
-
-use_ema = st.checkbox("فلتر الاتجاه العام (EMA 100)", value=False)
-
-st.caption(f"الاستراتيجية: اقتناص الموجة 2 التصحيحية للانطلاق مع الموجة 3 | عمولة السبوت 0.1%")
+st.caption(f"الاستراتيجية: تقاطع {ma_type} ({fast_len} / {med_len} / {slow_len}) | عمولة السبوت 0.1%")
 st.divider()
 
 # جلب البيانات الحقيقية من yfinance
@@ -82,83 +75,29 @@ def fetch_yf_data(ticker, tf):
         
     return df
 
-# استخراج نقاط الارتكاز المؤكدة (قاع 0 -> قمة 1 -> قاع 2)
-def get_confirmed_pivots(df, current_idx, order):
-    pivots = []
-    search_start = max(order, current_idx - 60)
-    search_end = current_idx - order
-    
-    highs = df['High'].values
-    lows = df['Low'].values
-    
-    for k in range(search_start, search_end):
-        if highs[k] == np.max(highs[k - order : k + order + 1]):
-            if not pivots or pivots[-1] == 'L':
-                pivots.append((k, 'H', float(highs[k])))
-            elif pivots[-1] == 'H' and float(highs[k]) > pivots[-1]:
-                pivots[-1] = (k, 'H', float(highs[k]))
-                
-        elif lows[k] == np.min(lows[k - order : k + order + 1]):
-            if not pivots or pivots[-1] == 'H':
-                pivots.append((k, 'L', float(lows[k])))
-            elif pivots[-1] == 'L' and float(lows[k]) < pivots[-1]:
-                pivots[-1] = (k, 'L', float(lows[k]))
-                
-    return pivots
-
-# فحص شروط الموجة 2 (قاع 0 -> قمة 1 -> تصحيح فيبوناتشي 2)
-def check_wave2_entry(df, i, order, mode):
-    pivots = get_confirmed_pivots(df, i, order)
-    curr_candle = df.iloc[i]
-    prev_candle = df.iloc[i - 1]
-    
-    curr_close = float(curr_candle['Close'])
-    curr_open = float(curr_candle['Open'])
-    curr_low = float(curr_candle['Low'])
-
-    # الوضع الأول: الدخول المؤكد عند اكتمال قاع الموجة 2 وبداية الموجة 3
-    if "مؤكد" in mode:
-        if len(pivots) >= 3:
-            p0, p1, p2 = pivots[-3], pivots[-2], pivots[-1]
-            if p0 == 'L' and p1 == 'H' and p2 == 'L':
-                w0_price, w1_price, w2_price = p0, p1, p2
-                wave1_len = w1_price - w0_price
-                
-                if wave1_len > 0:
-                    retrace = (w1_price - w2_price) / wave1_len
-                    # تصحيح الموجة 2 بين 38.2% و 78.6% دون كسر قاع الموجة 1
-                    if 0.382 <= retrace <= 0.786 and w2_price > w0_price:
-                        if curr_close > curr_open and curr_close > float(prev_candle['High']) and curr_close > w2_price:
-                            return curr_close, w0_price
-
-    # الوضع الثاني: الدخول المبكر داخل الموجة 2 عند ملامسة مستوى فيبوناتشي 61.8%
-    else:
-        if len(pivots) >= 2:
-            p0, p1 = pivots[-2], pivots[-1]
-            if p0 == 'L' and p1 == 'H':
-                w0_price, w1_price = p0, p1
-                wave1_len = w1_price - w0_price
-                
-                if wave1_len > 0:
-                    fib_618 = w1_price - (wave1_len * 0.618)
-                    if curr_low <= fib_618 and curr_low > w0_price and float(prev_candle['Low']) > fib_618:
-                        return fib_618, w0_price
-
-    return None, 0.0
-
-# محاكاة الصفقات على آخر 7 أيام برأس مال ثابت 100$
-def backtest_wave2(df, tf, rr_ratio, order, mode, use_ema, amount=TRADE_AMOUNT):
-    candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
-    
-    if use_ema:
-        df['EMA'] = df['Close'].ewm(span=100, adjust=False).mean()
-        start_idx = max(100, len(df) - candles_7d[tf])
-    else:
-        start_idx = max(25, len(df) - candles_7d[tf])
-        
-    if len(df) <= start_idx + 1:
+# حساب المتوسطات ومحاكاة الصفقات على آخر 7 أيام
+def backtest_triple_ma(df, tf, ma_type, fast, med, slow, rr_ratio, amount=TRADE_AMOUNT):
+    # التأكد من ترتيب المتوسطات منطقياً
+    if not (fast < med < slow):
         return 0, 0, 0, 0.0
 
+    candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
+    
+    if len(df) < slow + 10:
+        return 0, 0, 0, 0.0
+
+    # حساب المتوسطات حسب النوع المختار (EMA أو SMA)
+    if ma_type == "EMA":
+        df['Fast'] = df['Close'].ewm(span=fast, adjust=False).mean()
+        df['Med'] = df['Close'].ewm(span=med, adjust=False).mean()
+        df['Slow'] = df['Close'].ewm(span=slow, adjust=False).mean()
+    else:
+        df['Fast'] = df['Close'].rolling(window=fast).mean()
+        df['Med'] = df['Close'].rolling(window=med).mean()
+        df['Slow'] = df['Close'].rolling(window=slow).mean()
+
+    start_idx = max(slow + 1, len(df) - candles_7d[tf])
+    
     wins = 0
     losses = 0
     open_trades = 0
@@ -167,17 +106,27 @@ def backtest_wave2(df, tf, rr_ratio, order, mode, use_ema, amount=TRADE_AMOUNT):
 
     i = start_idx
     while i < len(df) - 1:
-        curr_candle = df.iloc[i]
+        prev_row = df.iloc[i - 1]
+        curr_row = df.iloc[i]
         
-        if use_ema and float(curr_candle['Close']) < float(curr_candle['EMA']):
+        # التحقق من عدم وجود قيم فارغة
+        if pd.isna(prev_row['Slow']) or pd.isna(curr_row['Slow']):
             i += 1
             continue
-            
-        entry_price, stop_loss = check_wave2_entry(df, i, order, mode)
+
+        # شرط الدخول الشرائي:
+        # 1. المتوسط السريع والمتوسط فوق البطيء (اتجاه صاعد عام)
+        # 2. تقاطع المتوسط السريع صعوداً فوق المتوسط المتوسط في الشمعة الحالية
+        bullish_alignment = (curr_row['Fast'] > curr_row['Med']) and (curr_row['Med'] > curr_row['Slow'])
+        crossover_happened = (prev_row['Fast'] <= prev_row['Med']) or (prev_row['Med'] <= prev_row['Slow'])
         
-        if entry_price is not None:
+        if bullish_alignment and crossover_happened and float(curr_row['Close']) > float(curr_row['Open']):
+            entry_price = float(curr_row['Close'])
+            # وقف الخسارة أسفل المتوسط البطيء أو قاع الشمعة السابقة
+            stop_loss = min(float(curr_row['Slow']), float(prev_row['Low']))
             risk = entry_price - stop_loss
             
+            # استبعاد الصفقات ذات المخاطرة الضيقة جداً لتغطية الرسوم
             if risk > 0 and (risk / entry_price) >= 0.0025:
                 take_profit = entry_price + (risk * rr_ratio)
                 
@@ -206,6 +155,10 @@ def backtest_wave2(df, tf, rr_ratio, order, mode, use_ema, amount=TRADE_AMOUNT):
 
     return wins, losses, open_trades, net_profit
 
+# تنبيه في حال أدخل المستخدم أرقاماً غير مرتبة
+if not (fast_len < med_len < slow_len):
+    st.warning("⚠️ يرجى التأكد أن: المتوسط السريع < المتوسط المتوسط < المتوسط البطيء")
+
 # تشغيل التحليل على جميع العملات
 total_wins = 0
 total_losses = 0
@@ -213,13 +166,13 @@ total_open = 0
 total_profit = 0.0
 details = []
 
-with st.spinner("جاري فحص تصحيحات الموجة 2 ونسب فيبوناتشي..."):
+with st.spinner("جاري فحص تقاطعات المتوسطات الثلاثة..."):
     for ticker, name in VOLATILE_COINS.items():
         try:
             df = fetch_yf_data(ticker, timeframe)
             if not df.empty:
-                w, l, o, p = backtest_wave2(
-                    df, timeframe, rr_ratio, int(wave_sensitivity), entry_mode, use_ema
+                w, l, o, p = backtest_triple_ma(
+                    df, timeframe, ma_type, int(fast_len), int(med_len), int(slow_len), rr_ratio
                 )
                 total_wins += w
                 total_losses += l
@@ -240,7 +193,7 @@ closed_trades = total_wins + total_losses
 win_rate = (total_wins / closed_trades * 100) if closed_trades > 0 else 0.0
 
 # عرض النتائج
-st.markdown(f"**الربح الصافي سبوت - الموجة 2 (7 أيام | {timeframe})**")
+st.markdown(f"**الربح الصافي سبوت - {ma_type} {int(fast_len)}/{int(med_len)}/{int(slow_len)} (7 أيام | {timeframe})**")
 st.title(f"$ {total_profit:.2f}")
 
 st.markdown("**نسبة النجاح**")
