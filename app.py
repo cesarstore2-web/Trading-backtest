@@ -5,7 +5,7 @@ import pandas as pd
 # إعدادات الصفحة
 st.set_page_config(page_title="ماسح استراتيجية جسم الشمعة", layout="centered")
 
-# رموز العملات الرقمية النقية عالية التذبذب بصيغة Yahoo Finance
+# رموز العملات الرقمية عالية التذبذب بصيغة Yahoo Finance
 VOLATILE_COINS = {
     "SOL-USD": "Solana",
     "AVAX-USD": "Avalanche",
@@ -23,17 +23,27 @@ VOLATILE_COINS = {
 
 # واجهة المستخدم
 timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=4)
-rr_ratio = st.number_input("نسبة العائد للمخاطرة (R:R):", min_value=0.5, max_value=10.0, value=1.50, step=0.1)
+
+# نافذة R:R بشريط تمرير وأزرار (+/-) مطابقة للصورة
+rr_ratio = st.slider(
+    "نسبة العائد للمخاطرة (R:R):",
+    min_value=0.50,
+    max_value=5.00,
+    value=1.50,
+    step=0.10,
+    format="%.2f"
+)
+
 trade_amount = st.number_input("حجم الصفقة الواحدة ($):", min_value=10.0, max_value=10000.0, value=100.0, step=10.0)
 
-# مربع تفعيل EMA الاختياري مع إمكانية تحديد طول المتوسط عند التفعيل
+# مربع تفعيل EMA الاختياري
 use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA)", value=False)
 if use_ema:
     ema_period = st.number_input("قيمة المتوسط المتحرك (EMA):", min_value=10, max_value=500, value=100, step=10)
 else:
-    ema_period = 100 # قيمة افتراضية لا تُستخدم عند إلغاء التفعيل
+    ema_period = 100
 
-st.caption(f"حالة الاتصال بالسوق: متصل بـ {len(VOLATILE_COINS)} عملة رقمية عبر Yahoo Finance | التوقيت: المغرب (UTC+1)")
+st.caption(f"حالة الاتصال بالسوق: متصل بـ {len(VOLATILE_COINS)} عملة رقمية | التوقيت: المغرب (UTC+1)")
 st.divider()
 
 # دالة جلب البيانات الحقيقية من yfinance
@@ -59,12 +69,10 @@ def fetch_yf_data(ticker, tf):
         
     return df
 
-# دالة محاكاة الاستراتيجية
+# دالة محاكاة الاستراتيجية (بقيود مخفضة لالتقاط معظم الشموع)
 def backtest_coin(df, tf, rr_ratio, use_ema, ema_period, amount):
-    # تحديد نقطة البداية لآخر 7 أيام حسب الفريم
     candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     
-    # حساب EMA فقط إذا قام المستخدم بتفعيل المربع
     if use_ema:
         if len(df) < ema_period + 5:
             return 0, 0, 0, 0.0
@@ -88,9 +96,8 @@ def backtest_coin(df, tf, rr_ratio, use_ema, ema_period, amount):
         prev_close = float(prev_candle['Close'])
         body_size = prev_close - prev_open
         
-        # فلتر: شمعة صاعدة سابقة بحجم جسم لا يقل عن 0.3%
-        if body_size > 0 and (body_size / prev_open) >= 0.003:
-            # تطبيق فلتر EMA فقط إذا كان مربع التفعيل محدداً
+        # قيود مخفضة جداً: أي شمعة صاعدة جسمها أكبر من 0.05% (تجنب الدوجي الصفرية فقط)
+        if body_size > 0 and (body_size / prev_open) >= 0.0005:
             if use_ema and prev_close < float(prev_candle['EMA']):
                 continue
                 
@@ -144,15 +151,15 @@ with st.spinner("جاري سحب البيانات الحقيقية وتحليل 
 closed_trades = total_wins + total_losses
 win_rate = (total_wins / closed_trades * 100) if closed_trades > 0 else 0.0
 
-# عرض النتائج
-ema_status = f" | فلتر EMA {ema_period}" if use_ema else ""
-st.markdown(f"**الربح الصافي سبوت (آخر 7 أيام | {timeframe}{ema_status})**")
+# عرض النتائج بنفس تصميم صورتك
+ema_status = f" | EMA {ema_period}" if use_ema else ""
+st.markdown(f"**الربح الصافي سبوت (7 أيام | {timeframe}{ema_status})**")
 st.title(f"$ {total_profit:.2f}")
 
 st.markdown("**نسبة النجاح**")
 st.title(f"{win_rate:.1f}%")
 
-st.info(f"مغلقة: {closed_trades} | مفتوحة: {total_open}")
+st.info(f"↑ مغلقة: {closed_trades} | مفتوحة: {total_open}")
 st.success(f"✅ {total_wins} ناجحة")
 st.error(f"❌ {total_losses} خاسرة")
 
