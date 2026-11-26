@@ -1,9 +1,10 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 # إعدادات الصفحة
-st.set_page_config(page_title="استراتيجية تقاطع 3 متوسطات", layout="centered")
+st.set_page_config(page_title="استراتيجية تقاطع المتوسطات + ATR", layout="centered")
 
 # رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
@@ -24,79 +25,153 @@ VOLATILE_COINS = {
     "DOT-USD": "Polkadot"
 }
 
-# واجهة المستخدم
-col_tf, col_type = st.columns(2)
-with col_tf:
-    timeframe = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
-with col_type:
-    ma_type = st.selectbox("نوع المتوسطات:", ["EMA", "SMA"], index=0)
+# اختيار الإطار الزمني
+timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
 
-# نوافذ تعديل المتوسطات الثلاثة
-c1, c2, c3 = st.columns(3)
+st.markdown("**إعدادات المتوسطات (Moving Averages)**")
+ma_options = ["EMA", "SMA", "WMA", "RMA"]
+
+# المتوسط السريع (Fast MA)
+c1, c2 = st.columns(2)
 with c1:
-    fast_len = st.number_input("السريع (1):", min_value=2, max_value=100, value=9, step=1)
+    fast_type = st.selectbox("Fast MA Type", ma_options, index=0) # EMA
 with c2:
-    med_len = st.number_input("المتوسط (2):", min_value=5, max_value=200, value=21, step=1)
+    fast_len = st.number_input("Fast MA Length", min_value=1, max_value=200, value=2, step=1)
+
+# المتوسط المتوسط (Medium MA)
+c3, c4 = st.columns(2)
 with c3:
-    slow_len = st.number_input("البطيء (3):", min_value=10, max_value=500, value=55, step=5)
+    med_type = st.selectbox("Medium MA Type", ma_options, index=2) # WMA
+with c4:
+    med_len = st.number_input("Medium MA Length", min_value=2, max_value=300, value=20, step=1)
 
-rr_ratio = st.number_input(
-    "نسبة العائد للمخاطرة (R:R):",
-    min_value=0.50,
-    max_value=10.00,
-    value=2.00,
-    step=0.10,
-    format="%.2f"
-)
+# المتوسط البطيء (Slow MA)
+c5, c6 = st.columns(2)
+with c5:
+    slow_type = st.selectbox("Slow MA Type (Trend)", ma_options, index=3) # RMA
+with c6:
+    slow_len = st.number_input("Slow MA Length", min_value=5, max_value=500, value=50, step=5)
 
-st.caption(f"الاستراتيجية: تقاطع {ma_type} ({fast_len} / {med_len} / {slow_len}) | عمولة السبوت 0.1%")
+st.markdown("**إدارة المخاطر (RISK MANAGEMENT - ATR / RR)**")
+r1, r2, r3 = st.columns(3)
+with r1:
+    atr_len = st.number_input("ATR Length", min_value=2, max_value=100, value=14, step=1)
+with r2:
+    atr_mult = st.number_input("ATR Multiplier (SL)", min_value=0.1, max_value=10.0, value=2.5, step=0.1, format="%.1f")
+with r3:
+    rr_ratio = st.number_input("Risk-to-Reward (1:X)", min_value=0.1, max_value=10.0, value=1.5, step=0.1, format="%.1f")
+
+st.markdown("**فلاتر الاتجاه العام (Multi-Timeframe Trend Filter)**")
+f1, f2 = st.columns(2)
+with f1:
+    use_trend_1h = st.checkbox("تفعيل اتجاه 1 ساعة (1H)", value=False)
+with f2:
+    use_trend_1d = st.checkbox("تفعيل اتجاه 1 يوم (1D)", value=False)
+
+if use_trend_1h or use_trend_1d:
+    trend_ema_len = st.number_input("طول متوسط الاتجاه العام (EMA):", min_value=10, max_value=200, value=50, step=10)
+else:
+    trend_ema_len = 50
+
+st.caption(f"الاستراتيجية: {fast_type}({fast_len}) × {med_type}({med_len}) فوق {slow_type}({slow_len}) | SL: {atr_mult}x ATR | عمولة 0.1%")
 st.divider()
 
-# جلب البيانات الحقيقية من yfinance
+# دالة حساب أنواع المتوسطات الأربعة بدقة
+def calc_ma(series, length, ma_type):
+    if ma_type == "EMA":
+        return series.ewm(span=length, adjust=False).mean()
+    elif ma_type == "SMA":
+        return series.rolling(window=length).mean()
+    elif ma_type == "WMA":
+        weights = np.arange(1, length + 1)
+        return series.rolling(window=length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+    elif ma_type == "RMA":
+        return series.ewm(alpha=1.0 / length, adjust=False).mean()
+    return series
+
+# دالة حساب مؤشر ATR
+def calc_atr(df, length):
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0 / length, adjust=False).mean()
+
+# جلب البيانات الحقيقية للفريم الأساسي وفريمات الاتجاه (1h و 1d)
 @st.cache_data(ttl=300)
-def fetch_yf_data(ticker, tf):
+def fetch_all_timeframes(ticker, tf):
+    # 1. الفريم الأساسي
     yf_interval = "1h" if tf == "4h" else tf
-    df = yf.download(ticker, period="30d", interval=yf_interval, progress=False)
-    
-    if df.empty:
-        return pd.DataFrame()
-        
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
+    df_main = yf.download(ticker, period="30d", interval=yf_interval, progress=False)
+    if df_main.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    if isinstance(df_main.columns, pd.MultiIndex):
+        df_main.columns = df_main.columns.get_level_values(0)
     if tf == "4h":
-        df = df.resample('4h').agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
+        df_main = df_main.resample('4h').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
         }).dropna()
-        
+
+    # 2. فريم الساعة (1h) للاتجاه العام
+    df_1h = yf.download(ticker, period="30d", interval="1h", progress=False)
+    if not df_1h.empty and isinstance(df_1h.columns, pd.MultiIndex):
+        df_1h.columns = df_1h.columns.get_level_values(0)
+
+    # 3. فريم اليوم (1d) للاتجاه العام
+    df_1d = yf.download(ticker, period="1y", interval="1d", progress=False)
+    if not df_1d.empty and isinstance(df_1d.columns, pd.MultiIndex):
+        df_1d.columns = df_1d.columns.get_level_values(0)
+
+    return df_main, df_1h, df_1d
+
+# دمج حالة الاتجاه العام (1H و 1D) مع الفريم الأساسي بدقة زمنية
+def attach_trend_filters(df_main, df_1h, df_1d, ema_len, check_1h, check_1d):
+    df = df_main.copy()
+    df['Bull_1H'] = True
+    df['Bull_1D'] = True
+
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    if check_1h and not df_1h.empty:
+        d1h = df_1h.copy()
+        if d1h.index.tz is not None:
+            d1h.index = d1h.index.tz_localize(None)
+        d1h['EMA_1H'] = d1h['Close'].ewm(span=ema_len, adjust=False).mean()
+        # نستخدم الشمعة المغلقة السابقة (shift(1)) لتجنب النظرة المستقبلية
+        d1h['Bull_1H'] = (d1h['Close'] > d1h['EMA_1H']).shift(1).fillna(False)
+        merged_1h = pd.merge_asof(
+            df.sort_index(), d1h[['Bull_1H']].sort_index(), left_index=True, right_index=True, direction='backward'
+        )
+        df['Bull_1H'] = merged_1h['Bull_1H'].fillna(False)
+
+    if check_1d and not df_1d.empty:
+        d1d = df_1d.copy()
+        if d1d.index.tz is not None:
+            d1d.index = d1d.index.tz_localize(None)
+        d1d['EMA_1D'] = d1d['Close'].ewm(span=ema_len, adjust=False).mean()
+        d1d['Bull_1D'] = (d1d['Close'] > d1d['EMA_1D']).shift(1).fillna(False)
+        merged_1d = pd.merge_asof(
+            df.sort_index(), d1d[['Bull_1D']].sort_index(), left_index=True, right_index=True, direction='backward'
+        )
+        df['Bull_1D'] = merged_1d['Bull_1D'].fillna(False)
+
     return df
 
-# حساب المتوسطات ومحاكاة الصفقات على آخر 7 أيام
-def backtest_triple_ma(df, tf, ma_type, fast, med, slow, rr_ratio, amount=TRADE_AMOUNT):
-    # التأكد من ترتيب المتوسطات منطقياً
-    if not (fast < med < slow):
-        return 0, 0, 0, 0.0
-
+# محاكاة الاستراتيجية على آخر 7 أيام
+def backtest_strategy(df, tf, f_type, f_len, m_type, m_len, s_type, s_len, a_len, a_mult, rr, amount=TRADE_AMOUNT):
     candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
+    max_len = max(f_len, m_len, s_len, a_len)
     
-    if len(df) < slow + 10:
+    if len(df) < max_len + 10:
         return 0, 0, 0, 0.0
 
-    # حساب المتوسطات حسب النوع المختار (EMA أو SMA)
-    if ma_type == "EMA":
-        df['Fast'] = df['Close'].ewm(span=fast, adjust=False).mean()
-        df['Med'] = df['Close'].ewm(span=med, adjust=False).mean()
-        df['Slow'] = df['Close'].ewm(span=slow, adjust=False).mean()
-    else:
-        df['Fast'] = df['Close'].rolling(window=fast).mean()
-        df['Med'] = df['Close'].rolling(window=med).mean()
-        df['Slow'] = df['Close'].rolling(window=slow).mean()
+    df['Fast'] = calc_ma(df['Close'], f_len, f_type)
+    df['Med'] = calc_ma(df['Close'], m_len, m_type)
+    df['Slow'] = calc_ma(df['Close'], s_len, s_type)
+    df['ATR'] = calc_atr(df, a_len)
 
-    start_idx = max(slow + 1, len(df) - candles_7d[tf])
+    start_idx = max(max_len + 1, len(df) - candles_7d[tf])
     
     wins = 0
     losses = 0
@@ -109,33 +184,34 @@ def backtest_triple_ma(df, tf, ma_type, fast, med, slow, rr_ratio, amount=TRADE_
         prev_row = df.iloc[i - 1]
         curr_row = df.iloc[i]
         
-        # التحقق من عدم وجود قيم فارغة
-        if pd.isna(prev_row['Slow']) or pd.isna(curr_row['Slow']):
+        if pd.isna(prev_row['Slow']) or pd.isna(curr_row['Slow']) or pd.isna(curr_row['ATR']):
             i += 1
             continue
 
-        # شرط الدخول الشرائي:
-        # 1. المتوسط السريع والمتوسط فوق البطيء (اتجاه صاعد عام)
-        # 2. تقاطع المتوسط السريع صعوداً فوق المتوسط المتوسط في الشمعة الحالية
-        bullish_alignment = (curr_row['Fast'] > curr_row['Med']) and (curr_row['Med'] > curr_row['Slow'])
-        crossover_happened = (prev_row['Fast'] <= prev_row['Med']) or (prev_row['Med'] <= prev_row['Slow'])
+        # التحقق من مربعي تفعيل الاتجاه العام (1H و 1D)
+        if not bool(curr_row['Bull_1H']) or not bool(curr_row['Bull_1D']):
+            i += 1
+            continue
+
+        # شرط التقاطع الشرائي
+        crossover = (prev_row['Fast'] <= prev_row['Med']) and (curr_row['Fast'] > curr_row['Med'])
+        above_slow = (curr_row['Fast'] > curr_row['Slow']) and (curr_row['Med'] > curr_row['Slow'])
         
-        if bullish_alignment and crossover_happened and float(curr_row['Close']) > float(curr_row['Open']):
+        if crossover and above_slow:
             entry_price = float(curr_row['Close'])
-            # وقف الخسارة أسفل المتوسط البطيء أو قاع الشمعة السابقة
-            stop_loss = min(float(curr_row['Slow']), float(prev_row['Low']))
-            risk = entry_price - stop_loss
+            atr_val = float(curr_row['ATR'])
+            sl_distance = atr_val * a_mult
             
-            # استبعاد الصفقات ذات المخاطرة الضيقة جداً لتغطية الرسوم
-            if risk > 0 and (risk / entry_price) >= 0.0025:
-                take_profit = entry_price + (risk * rr_ratio)
+            if sl_distance > 0:
+                stop_loss = entry_price - sl_distance
+                take_profit = entry_price + (sl_distance * rr)
                 
                 trade_closed = False
                 for j in range(i + 1, len(df)):
                     future_candle = df.iloc[j]
                     if float(future_candle['Low']) <= stop_loss:
                         losses += 1
-                        gross_loss = amount * (risk / entry_price)
+                        gross_loss = amount * (sl_distance / entry_price)
                         net_profit -= (gross_loss + amount * (fee_rate * 2))
                         trade_closed = True
                         i = j
@@ -155,24 +231,27 @@ def backtest_triple_ma(df, tf, ma_type, fast, med, slow, rr_ratio, amount=TRADE_
 
     return wins, losses, open_trades, net_profit
 
-# تنبيه في حال أدخل المستخدم أرقاماً غير مرتبة
-if not (fast_len < med_len < slow_len):
-    st.warning("⚠️ يرجى التأكد أن: المتوسط السريع < المتوسط المتوسط < المتوسط البطيء")
-
-# تشغيل التحليل على جميع العملات
+# تشغيل التحليل
 total_wins = 0
 total_losses = 0
 total_open = 0
 total_profit = 0.0
 details = []
 
-with st.spinner("جاري فحص تقاطعات المتوسطات الثلاثة..."):
+with st.spinner("جاري فحص تقاطعات المتوسطات ومطابقة اتجاه 1H و 1D..."):
     for ticker, name in VOLATILE_COINS.items():
         try:
-            df = fetch_yf_data(ticker, timeframe)
-            if not df.empty:
-                w, l, o, p = backtest_triple_ma(
-                    df, timeframe, ma_type, int(fast_len), int(med_len), int(slow_len), rr_ratio
+            df_main, df_1h, df_1d = fetch_all_timeframes(ticker, timeframe)
+            if not df_main.empty:
+                df_filtered = attach_trend_filters(
+                    df_main, df_1h, df_1d, int(trend_ema_len), use_trend_1h, use_trend_1d
+                )
+                w, l, o, p = backtest_strategy(
+                    df_filtered, timeframe,
+                    fast_type, int(fast_len),
+                    med_type, int(med_len),
+                    slow_type, int(slow_len),
+                    int(atr_len), float(atr_mult), float(rr_ratio)
                 )
                 total_wins += w
                 total_losses += l
@@ -182,27 +261,3 @@ with st.spinner("جاري فحص تقاطعات المتوسطات الثلاث�
                     details.append({
                         "العملة": name,
                         "ناجحة": w,
-                        "خاسرة": l,
-                        "مفتوحة": o,
-                        "الربح ($)": round(p, 2)
-                    })
-        except Exception:
-            pass
-
-closed_trades = total_wins + total_losses
-win_rate = (total_wins / closed_trades * 100) if closed_trades > 0 else 0.0
-
-# عرض النتائج
-st.markdown(f"**الربح الصافي سبوت - {ma_type} {int(fast_len)}/{int(med_len)}/{int(slow_len)} (7 أيام | {timeframe})**")
-st.title(f"$ {total_profit:.2f}")
-
-st.markdown("**نسبة النجاح**")
-st.title(f"{win_rate:.1f}%")
-
-st.info(f"↑ مغلقة: {closed_trades} | مفتوحة: {total_open}")
-st.success(f"✅ {total_wins} ناجحة")
-st.error(f"❌ {total_losses} خاسرة")
-
-if details:
-    with st.expander("عرض تفاصيل الصفقات لكل عملة"):
-        st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
