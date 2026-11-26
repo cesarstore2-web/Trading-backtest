@@ -1,178 +1,161 @@
 import streamlit as st
-import ccxt
+import yfinance as yf
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="Quant Momentum - Spot", layout="centered")
-st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
+# إعدادات الصفحة
+st.set_page_config(page_title="ماسح استراتيجية جسم الشمعة", layout="centered")
 
-# 1. إعدادات الواجهة
-tf = st.selectbox("الإطار الزمني:", ["15m", "30m", "1h", "4h"], index=3)
-trail_mult = st.number_input("معامل الوقف المتحرك (ATR Trailing Stop):", 1.5, 5.0, 2.5, 0.1)
-btc_filter = st.checkbox("تفعيل فلتر قيادة البيتكوين (BTC > EMA 200)", value=True)
+# رموز العملات الرقمية النقية عالية التذبذب بصيغة Yahoo Finance
+VOLATILE_COINS = {
+    "SOL-USD": "Solana",
+    "AVAX-USD": "Avalanche",
+    "NEAR-USD": "NEAR Protocol",
+    "SUI20947-USD": "Sui",
+    "APT21794-USD": "Aptos",
+    "INJ-USD": "Injective",
+    "SEI-USD": "Sei",
+    "TIA-USD": "Celestia",
+    "FET-USD": "Artificial Superintelligence",
+    "RENDER-USD": "Render",
+    "ARB11841-USD": "Arbitrum",
+    "DOT-USD": "Polkadot"
+}
 
-SYMBOLS = [
-    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "ADA/USD",
-    "DOT/USD", "LINK/USD", "ATOM/USD", "NEAR/USD", "ALGO/USD",
-    "SUI/USD", "APT/USD", "SEI/USD", "INJ/USD", "TIA/USD",
-    "RENDER/USD", "FET/USD", "ARB/USD", "OP/USD", "POL/USD",
-    "FIL/USD", "ICP/USD", "STX/USD", "RUNE/USD", "GRT/USD"
-]
-POS_USD = 100.0
+# واجهة المستخدم
+timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=4)
+rr_ratio = st.number_input("نسبة العائد للمخاطرة (R:R):", min_value=0.5, max_value=10.0, value=1.50, step=0.1)
+trade_amount = st.number_input("حجم الصفقة الواحدة ($):", min_value=10.0, max_value=10000.0, value=100.0, step=10.0)
 
-@st.cache_data(ttl=60, show_spinner=False)
-def get_data(syms, timeframe):
-    ex = ccxt.kraken({'enableRateLimit': False})
-    def fetch(s):
+# مربع تفعيل EMA الاختياري مع إمكانية تحديد طول المتوسط عند التفعيل
+use_ema = st.checkbox("تفعيل فلتر الاتجاه العام (EMA)", value=False)
+if use_ema:
+    ema_period = st.number_input("قيمة المتوسط المتحرك (EMA):", min_value=10, max_value=500, value=100, step=10)
+else:
+    ema_period = 100 # قيمة افتراضية لا تُستخدم عند إلغاء التفعيل
+
+st.caption(f"حالة الاتصال بالسوق: متصل بـ {len(VOLATILE_COINS)} عملة رقمية عبر Yahoo Finance | التوقيت: المغرب (UTC+1)")
+st.divider()
+
+# دالة جلب البيانات الحقيقية من yfinance
+@st.cache_data(ttl=300)
+def fetch_yf_data(ticker, tf):
+    yf_interval = "1h" if tf == "4h" else tf
+    df = yf.download(ticker, period="30d", interval=yf_interval, progress=False)
+    
+    if df.empty:
+        return pd.DataFrame()
+        
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+        
+    if tf == "4h":
+        df = df.resample('4h').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
+        
+    return df
+
+# دالة محاكاة الاستراتيجية
+def backtest_coin(df, tf, rr_ratio, use_ema, ema_period, amount):
+    # تحديد نقطة البداية لآخر 7 أيام حسب الفريم
+    candles_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
+    
+    # حساب EMA فقط إذا قام المستخدم بتفعيل المربع
+    if use_ema:
+        if len(df) < ema_period + 5:
+            return 0, 0, 0, 0.0
+        df['EMA'] = df['Close'].ewm(span=ema_period, adjust=False).mean()
+        start_idx = max(ema_period, len(df) - candles_7d[tf])
+    else:
+        if len(df) < 5:
+            return 0, 0, 0, 0.0
+        start_idx = max(1, len(df) - candles_7d[tf])
+    
+    wins = 0
+    losses = 0
+    open_trades = 0
+    net_profit = 0.0
+    
+    for i in range(start_idx, len(df) - 1):
+        prev_candle = df.iloc[i - 1]
+        entry_candle = df.iloc[i]
+        
+        prev_open = float(prev_candle['Open'])
+        prev_close = float(prev_candle['Close'])
+        body_size = prev_close - prev_open
+        
+        # فلتر: شمعة صاعدة سابقة بحجم جسم لا يقل عن 0.3%
+        if body_size > 0 and (body_size / prev_open) >= 0.003:
+            # تطبيق فلتر EMA فقط إذا كان مربع التفعيل محدداً
+            if use_ema and prev_close < float(prev_candle['EMA']):
+                continue
+                
+            entry_price = prev_open
+            take_profit = prev_close
+            stop_loss = entry_price - (body_size / rr_ratio)
+            
+            # تفعيل الصفقة إذا لامس السعر افتتاح الشمعة السابقة
+            if float(entry_candle['Low']) <= entry_price:
+                trade_closed = False
+                for j in range(i, len(df)):
+                    future_candle = df.iloc[j]
+                    if float(future_candle['Low']) <= stop_loss:
+                        losses += 1
+                        net_profit -= amount * ((entry_price - stop_loss) / entry_price)
+                        trade_closed = True
+                        break
+                    elif float(future_candle['High']) >= take_profit:
+                        wins += 1
+                        net_profit += amount * ((take_profit - entry_price) / entry_price)
+                        trade_closed = True
+                        break
+                        
+                if not trade_closed:
+                    open_trades += 1
+                    
+    return wins, losses, open_trades, net_profit
+
+# تشغيل التحليل على جميع العملات
+total_wins = 0
+total_losses = 0
+total_open = 0
+total_profit = 0.0
+details = []
+
+with st.spinner("جاري سحب البيانات الحقيقية وتحليل الصفقات..."):
+    for ticker, name in VOLATILE_COINS.items():
         try:
-            d = ex.fetch_ohlcv(s, timeframe=timeframe, limit=300)
-            if d and len(d) > 205:
-                df = pd.DataFrame(d, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-                df['t'] = pd.to_datetime(df['t'], unit='ms') + timedelta(hours=1)
-                tr = pd.concat([df['h']-df['l'], (df['h']-df['c'].shift()).abs(), (df['l']-df['c'].shift()).abs()], axis=1).max(axis=1)
-                df['atr'] = tr.rolling(14).mean()
-                df['ema50'] = df['c'].ewm(span=50, adjust=False).mean()
-                df['ema200'] = df['c'].ewm(span=200, adjust=False).mean()
-                df['roc'] = ((df['c'] - df['c'].shift(18)) / df['c'].shift(18)) * 100
-                return s, df
+            df = fetch_yf_data(ticker, timeframe)
+            if not df.empty:
+                w, l, o, p = backtest_coin(df, timeframe, rr_ratio, use_ema, ema_period, trade_amount)
+                total_wins += w
+                total_losses += l
+                total_open += o
+                total_profit += p
+                details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح ($)": round(p, 2)})
         except Exception:
             pass
-        return s, None
-    res = {}
-    with ThreadPoolExecutor(max_workers=15) as p:
-        for s, df in p.map(fetch, syms):
-            if df is not None: res[s] = df
-    return res
 
-data = get_data(SYMBOLS, tf)
+# حساب نسبة النجاح
+closed_trades = total_wins + total_losses
+win_rate = (total_wins / closed_trades * 100) if closed_trades > 0 else 0.0
 
-# 2. فحص نظام السوق (Market Regime) عبر البيتكوين
-btc_bullish = True
-btc_status = "غير متوفر"
-if "BTC/USD" in data:
-    btc_df = data["BTC/USD"]
-    last_btc_c = float(btc_df['c'].iloc[-1])
-    last_btc_e200 = float(btc_df['ema200'].iloc[-1])
-    btc_bullish = last_btc_c > last_btc_e200
-    btc_status = f"صاعد 🟢 ({last_btc_c:.0f} > {last_btc_e200:.0f})" if btc_bullish else f"هابط 🔴 ({last_btc_c:.0f} < {last_btc_e200:.0f})"
+# عرض النتائج
+ema_status = f" | فلتر EMA {ema_period}" if use_ema else ""
+st.markdown(f"**الربح الصافي سبوت (آخر 7 أيام | {timeframe}{ema_status})**")
+st.title(f"$ {total_profit:.2f}")
 
-st.info(f"حالة نظام السوق (BTC EMA 200): **{btc_status}** | متصل بـ {len(data)} عملة")
+st.markdown("**نسبة النجاح**")
+st.title(f"{win_rate:.1f}%")
 
-# 3. تشغيل استراتيجية الزخم الكمي والوقف المتحرك
-trades, recs, momentum_rank = [], [], []
-hours_back = 168 if tf == "4h" else 24
-period_label = "7 أيام" if tf == "4h" else "24 ساعة"
-now_ma = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
-cut = now_ma - timedelta(hours=hours_back)
+st.info(f"مغلقة: {closed_trades} | مفتوحة: {total_open}")
+st.success(f"✅ {total_wins} ناجحة")
+st.error(f"❌ {total_losses} خاسرة")
 
-for sym, df in data.items():
-    coin = sym.replace('/USD', '')
-    c, h, l, t = df['c'].values, df['h'].values, df['l'].values, df['t'].values
-    e50, e200, roc, atr = df['ema50'].values, df['ema200'].values, df['roc'].values, df['atr'].values
-
-    # ترتيب أقوى العملات زخماً الآن
-    if not np.isnan(roc[-1]):
-        momentum_rank.append((coin, float(roc[-1]), float(c[-1]), float(atr[-1]), float(e50[-1]), float(e200[-1])))
-
-    in_trade = False
-    entry_p, entry_t, highest_p, entry_atr = 0.0, None, 0.0, 0.0
-
-    for i in range(200, len(df)):
-        if np.isnan(atr[i]) or np.isnan(roc[i]): continue
-
-        # التحقق من فلتر البيتكوين في نفس اللحظة الزمنية
-        market_ok = True
-        if btc_filter and "BTC/USD" in data and i < len(data["BTC/USD"]):
-            market_ok = data["BTC/USD"]['c'].iloc[i] > data["BTC/USD"]['ema200'].iloc[i]
-
-        if not in_trade:
-            # شرط الدخول الكمي: السعر فوق EMA50 و EMA200 + زخم إيجابي قوي (> 2.5%) + نظام السوق صاعد
-            if market_ok and c[i] > e50[i] and c[i] > e200[i] and roc[i] > 2.5 and roc[i-1] <= 2.5:
-                in_trade = True
-                entry_p = float(c[i])
-                entry_t = pd.Timestamp(t[i])
-                highest_p = float(h[i])
-                entry_atr = float(atr[i])
-
-                if i >= len(df) - 3:
-                    sl_init = entry_p - (trail_mult * entry_atr)
-                    tp_est = entry_p + (trail_mult * 1.5 * entry_atr)
-                    recs.append((coin, f"زخم +{roc[i]:.1f}%", entry_t.strftime('%Y-%m-%d %H:%M'), entry_p, sl_init, tp_est))
-        else:
-            if h[i] > highest_p:
-                highest_p = float(h[i])
-            trailing_sl = highest_p - (trail_mult * float(atr[i]))
-
-            # الخروج بالوقف المتحرك لحجز الأرباح أو انعكاس نظام السوق
-            if l[i] <= trailing_sl or (btc_filter and not market_ok):
-                exit_p = max(trailing_sl, float(l[i])) if l[i] <= trailing_sl else float(c[i])
-                pnl = POS_USD * ((exit_p - entry_p) / entry_p)
-                out = "ناجحة" if pnl > 0 else "خاسرة"
-                if entry_t >= cut:
-                    trades.append([entry_t.strftime('%Y-%m-%d %H:%M'), coin, "Quant Momentum", f"خرج عند {exit_p:.2f}", out, round(pnl, 2)])
-                in_trade = False
-
-    # إذا بقيت الصفقة مفتوحة حتى اللحظة الحالية
-    if in_trade and entry_t >= cut:
-        curr_pnl = POS_USD * ((float(c[-1]) - entry_p) / entry_p)
-        trades.append([entry_t.strftime('%Y-%m-%d %H:%M'), coin, "Quant Momentum", "ملاحقة بالوقف المتحرك", "مفتوحة ⏳", round(curr_pnl, 2)])
-
-df_t = pd.DataFrame(trades, columns=['الوقت (المغرب)', 'العملة', 'الاستراتيجية', 'التفاصيل', 'الحالة', 'الربح ($)'])
-if not df_t.empty:
-    df_t = df_t.sort_values('الوقت (المغرب)', ascending=False).reset_index(drop=True)
-    cl = df_t[df_t['الحالة'] != 'مفتوحة ⏳']
-    w, l, op = len(cl[cl['الحالة']=='ناجحة']), len(cl[cl['الحالة']=='خاسرة']), len(df_t[df_t['الحالة']=='مفتوحة ⏳'])
-    wr = (w / len(cl) * 100) if len(cl) > 0 else 0.0
-    net = cl['الربح ($)'].sum()
-else:
-    w, l, op, wr, net = 0, 0, 0, 0.0, 0.0
-
-# 4. عرض الإحصائيات والنتائج
-st.markdown("---")
-c1, c2 = st.columns(2)
-c1.metric(f"الربح الصافي سبوت ({period_label} | {tf})", f"{net:.2f} $")
-c2.metric("نسبة النجاح (Quant)", f"{wr:.1f}%", f"مغلقة: {w+l} | مفتوحة: {op}")
-
-cw, cl_c, co = st.columns(3)
-cw.markdown(f"<div style='background:#00c85326;border:1px solid #00c853;padding:10px;border-radius:8px;text-align:center;color:#00e676;'><b>✅ {w} ناجحة</b></div>", unsafe_allow_html=True)
-cl_c.markdown(f"<div style='background:#ff4b4b26;border:1px solid #ff4b4b;padding:10px;border-radius:8px;text-align:center;color:#ff5252;'><b>❌ {l} خاسرة</b></div>", unsafe_allow_html=True)
-co.markdown(f"<div style='background:#ffc10726;border:1px solid #ffc107;padding:10px;border-radius:8px;text-align:center;color:#ffd54f;'><b>⏳ {op} مفتوحة</b></div>", unsafe_allow_html=True)
-
-if st.button("🔄 تحديث المسح الكمي الآن", use_container_width=True):
-    st.cache_data.clear()
-    st.rerun()
-
-# جدول الربح الصافي لكل يوم على حدة
-st.subheader(f"📅 الربح الصافي لكل يوم على حدة (آخر {period_label})")
-if not df_t.empty:
-    df_closed = df_t[df_t['الحالة'] != 'مفتوحة ⏳'].copy()
-    if not df_closed.empty:
-        df_closed['اليوم'] = df_closed['الوقت (المغرب)'].str[:10]
-        daily_pnl = df_closed.groupby('اليوم', as_index=False).agg(
-            عدد_الصفقات=('الربح ($)', 'count'),
-            الناجحة=('الحالة', lambda x: (x == 'ناجحة').sum()),
-            الخاسرة=('الحالة', lambda x: (x == 'خاسرة').sum()),
-            الربح_الصافي=('الربح ($)', 'sum')
-        ).sort_values('اليوم', ascending=False)
-        daily_pnl['الربح_الصافي'] = daily_pnl['الربح_الصافي'].round(2)
-        st.dataframe(daily_pnl, use_container_width=True, hide_index=True)
-    else:
-        st.info("لا توجد صفقات مغلقة لحساب التوزيع اليومي بعد.")
-
-# عرض أقوى 3 عملات زخماً في السوق حالياً
-st.subheader("🏆 أقوى 3 عملات زخماً في السوق الآن (Momentum Leaders)")
-momentum_rank.sort(key=lambda x: x[1], reverse=True)
-top3 = [x for x in momentum_rank if x[2] > x[4] and x[2] > x[5]][:3]
-if top3 and (not btc_filter or btc_bullish):
-    for coin, r_val, pr, a_val, _, _ in top3:
-        dec = 4 if pr < 10 else 2
-        sl_v = pr - (trail_mult * a_val)
-        st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🚀 {coin} | قوة الزخم: +{r_val:.2f}%</b><br>🔹 السعر الحالي: <code>{pr:.{dec}f}</code> | 🛑 الوقف المتحرك المقترح: <code>{sl_v:.{dec}f}</code></div>", unsafe_allow_html=True)
-else:
-    st.info("نظام السوق متوقف حالياً (البيتكوين تحت EMA 200 أو لا توجد عملات بزخم صاعد قوي).")
-
-st.subheader(f"📋 سجل صفقات آخر {period_label} (100$ للصفقة)")
-if not df_t.empty: st.dataframe(df_t, use_container_width=True)
-else: st.info(f"لا توجد صفقات مسجلة في آخر {period_label}.")
+if details:
+    with st.expander("عرض تفاصيل الصفقات لكل عملة"):
+        st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
