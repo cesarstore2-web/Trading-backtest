@@ -1,4 +1,5 @@
+cat <<EOF > requirements.txt
 streamlit
-ccxt
+yfinance
 pandas
-numpy
+EOF
