@@ -3,10 +3,15 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="استراتيجية ضغط الشراء ومناطق الطلب", layout="centered")
+st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", layout="centered")
+
+# رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
-VOLATILE_COINS = {
+# قائمة العملات الرقمية النقية (مشاريع بنية تحتية وطبقة أولى حلال)
+HALAL_COINS = {
+    "BTC-USD": "Bitcoin",
+    "ETH-USD": "Ethereum",
     "SOL-USD": "Solana",
     "AVAX-USD": "Avalanche",
     "NEAR-USD": "NEAR Protocol",
@@ -15,39 +20,55 @@ VOLATILE_COINS = {
     "INJ-USD": "Injective",
     "SEI-USD": "Sei",
     "TIA-USD": "Celestia",
-    "FET-USD": "ASI",
     "RENDER-USD": "Render",
     "ARB11841-USD": "Arbitrum",
-    "DOT-USD": "Polkadot"
+    "DOT-USD": "Polkadot",
+    "LINK-USD": "Chainlink",
+    "ADA-USD": "Cardano",
+    "HBAR-USD": "Hedera"
 }
 
-timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
+# القيم الافتراضية المطابقة للصورة
+timeframe = "1h"
+min_buy_ratio = 80
+zone_lookback = 100
+atr_len = 13
+atr_mult = 2.3
+rr_ratio = 2.3
+use_demand = False
+use_support = True
 
-st.markdown("**إعدادات ضغط الشراء والدعوم (Order Flow & Zones)**")
-c1, c2 = st.columns(2)
-with c1:
-    min_buy_ratio = st.number_input("نسبة سيطرة الشراء (%):", min_value=51, max_value=95, value=62, step=2)
-with c2:
-    zone_lookback = st.number_input("نطاق البحث عن الدعوم والطلب:", min_value=15, max_value=100, value=30, step=5)
+# مربع إظهار أو إخفاء الإعدادات (مخفية افتراضياً)
+show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
-st.markdown("**إدارة المخاطر (ATR / RR)**")
-r1, r2, r3 = st.columns(3)
-with r1:
-    atr_len = st.number_input("ATR Length", 2, 100, 14, 1)
-with r2:
-    atr_mult = st.number_input("ATR Multiplier (SL)", 0.1, 10.0, 2.0, 0.1, format="%.1f")
-with r3:
-    rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 1.5, 0.1, format="%.1f")
+if show_settings:
+    timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
+    
+    st.markdown("**إعدادات ضغط الشراء والدعوم**")
+    c1, c2 = st.columns(2)
+    with c1:
+        min_buy_ratio = st.number_input("نسبة سيطرة الشراء (%):", min_value=51, max_value=95, value=80, step=1)
+    with c2:
+        zone_lookback = st.number_input("نطاق البحث عن الدعوم والطلب:", min_value=15, max_value=200, value=100, step=5)
 
-st.markdown("**مصدر مناطق الدخول**")
-z1, z2 = st.columns(2)
-with z1:
-    use_demand = st.checkbox("مناطق الطلب (Demand Zones)", value=True)
-with z2:
-    use_support = st.checkbox("مستويات الدعم (Support Levels)", value=True)
+    st.markdown("**إدارة المخاطر (ATR / RR)**")
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        atr_len = st.number_input("ATR Length", 2, 100, 13, 1)
+    with r2:
+        atr_mult = st.number_input("ATR Multiplier (SL)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
+    with r3:
+        rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
 
-st.caption(f"الاستراتيجية: طلبات الشراء > {min_buy_ratio}% عند الدعوم/مناطق الطلب | SL: {atr_mult}x ATR | عمولة 0.1%")
-st.divider()
+    st.markdown("**مصدر مناطق الدخول**")
+    z1, z2 = st.columns(2)
+    with z1:
+        use_demand = st.checkbox("مناطق الطلب (Demand Zones)", value=False)
+    with z2:
+        use_support = st.checkbox("مستويات الدعم (Support Levels)", value=True)
+    st.divider()
+
+st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: 7 أيام")
 
 def calc_atr(df, length):
     hl = df['High'] - df['Low']
@@ -68,12 +89,10 @@ def fetch_data(ticker, tf):
         df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
     return df
 
-# فحص وجود السعر داخل منطقة طلب أو عند مستوى دعم
 def check_zone_touch(window_df, curr_candle, enable_demand, enable_support):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
     
-    # 1. فحص مناطق الطلب (Demand Zones): قاعدة شمعة انطلاقة قوية سابقة
     if enable_demand:
         for k in range(len(window_df) - 2):
             c = window_df.iloc[k]
@@ -81,19 +100,16 @@ def check_zone_touch(window_df, curr_candle, enable_demand, enable_support):
             c_body = abs(float(c['Close']) - float(c['Open']))
             next_body = float(next_c['Close']) - float(next_c['Open'])
             
-            # شمعة انطلاق خضراء قوية تزيد عن ضعف الشمعة التي سبقتها
             if next_body > 0 and next_body > (c_body * 1.8):
                 zone_top = max(float(c['Open']), float(c['Close']))
                 zone_bottom = float(c['Low'])
-                # هل السعر الحالي عاد لاختبار منطقة الطلب دون كسرها بإغلاق؟
                 if curr_low <= zone_top and curr_close >= zone_bottom:
                     return True, "منطقة طلب"
 
-    # 2. فحص الدعوم (Support Levels): قيعان تاريخية ارتد منها السعر
     if enable_support:
         lows = window_df['Low'].values
         support_level = np.min(lows)
-        tolerance = support_level * 0.005 # هامش 0.5% حول الدعم
+        tolerance = support_level * 0.005
         if curr_low <= (support_level + tolerance) and curr_close >= support_level:
             return True, "مستوى دعم"
 
@@ -126,13 +142,11 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_su
         vol = float(c_row['Volume'])
         candle_range = high_p - low_p
 
-        # 1. حساب نسبة طلبات الشراء مقابل طلبات البيع في الشمعة
         if candle_range > 0 and vol > 0:
             buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0
         else:
             buy_pressure_ratio = 50.0
 
-        # شرط أن طلبات الشراء أكبر من طلبات البيع بالنسبة المطلوبة + شمعة خضراء + سيولة نشطة
         strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
 
         if strong_buying:
@@ -169,8 +183,8 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_su
 
 tot_w, tot_l, tot_o, tot_p, details, all_zones = 0, 0, 0, 0.0, [], []
 
-with st.spinner("جاري تحليل ضغط الشراء ومناطق الطلب والدعوم..."):
-    for ticker, name in VOLATILE_COINS.items():
+with st.spinner("جاري حساب الربح الصافي لآخر 7 أيام..."):
+    for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
@@ -184,14 +198,14 @@ with st.spinner("جاري تحليل ضغط الشراء ومناطق الطلب
                 tot_p += p
                 all_zones.extend(z_list)
                 if (w + l + o) > 0:
-                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح ($)": round(p, 2)})
+                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
         except Exception:
             pass
 
 closed_t = tot_w + tot_l
 win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
 
-st.markdown(f"**الربح الصافي سبوت - ضغط الشراء والطلب (7 أيام | {timeframe})**")
+st.markdown(f"**الربح الصافي سبوت لمدة 7 أيام ({timeframe})**")
 st.title(f"$ {tot_p:.2f}")
 st.markdown("**نسبة النجاح**")
 st.title(f"{win_r:.1f}%")
@@ -206,5 +220,5 @@ if all_zones:
     st.dataframe(z_df, use_container_width=True, hide_index=True)
 
 if details:
-    with st.expander("عرض تفاصيل الصفقات لكل عملة"):
+    with st.expander("عرض تفاصيل الصفقات والربح الصافي لكل عملة"):
         st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
