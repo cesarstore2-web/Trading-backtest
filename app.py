@@ -9,9 +9,9 @@ st.set_page_config(page_title="W.D. Gann Strategy - Spot", layout="centered")
 st.markdown("<style>.stApp{direction:rtl;text-align:right;}</style>", unsafe_allow_html=True)
 
 tf = st.selectbox("الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=4)
-gann_deg = st.selectbox("زاوية هدف مربع جان (Square of 9):", ["90° (ربع دورة - سريع)", "135° (متوسط)", "180° (نصف دورة - بعيد)"], index=0)
+gann_deg = st.selectbox("زاوية هدف مربع جان (Square of 9):", ["45° (هدف قريب وسريع)", "90° (ربع دورة - متوازن)", "135° (هدف متوسط)"], index=0)
 
-deg_map = {"90° (ربع دورة - سريع)": 0.50, "135° (متوسط)": 0.75, "180° (نصف دورة - بعيد)": 1.00}
+deg_map = {"45° (هدف قريب وسريع)": 0.25, "90° (ربع دورة - متوازن)": 0.50, "135° (هدف متوسط)": 0.75}
 deg_step = deg_map[gann_deg]
 
 SYMBOLS = [
@@ -34,7 +34,7 @@ def get_data(syms, timeframe):
                 df['t'] = pd.to_datetime(df['t'], unit='ms') + timedelta(hours=1)
                 tr = pd.concat([df['h']-df['l'], (df['h']-df['c'].shift()).abs(), (df['l']-df['c'].shift()).abs()], axis=1).max(axis=1)
                 df['atr'] = tr.rolling(14).mean()
-                df['vol_ma'] = df['v'].rolling(10).mean()
+                df['ema50'] = df['c'].ewm(span=50, adjust=False).mean()
                 return s, df
         except Exception:
             pass
@@ -45,47 +45,56 @@ def get_data(syms, timeframe):
             if df is not None: res[s] = df
     return res
 
+# توحيد مقياس السعر ليعمل مربع التسعة لجان بدقة على كل العملات الرخيصة والغالية
+def gann_sq9_level(price, step):
+    scale = 1.0
+    p = price
+    while p < 100.0:
+        p *= 10.0
+        scale *= 10.0
+    while p > 1000.0:
+        p /= 10.0
+        scale /= 10.0
+    target_scaled = (np.sqrt(p) + step) ** 2
+    return target_scaled / scale
+
 def scan_gann_strategy(df, step_val):
-    o, h, l, c, v, t, atr, vma = df['o'].values, df['h'].values, df['l'].values, df['c'].values, df['v'].values, df['t'].values, df['atr'].values, df['vol_ma'].values
+    o, h, l, c, t, atr, ema = df['o'].values, df['h'].values, df['l'].values, df['c'].values, df['t'].values, df['atr'].values, df['ema50'].values
     sigs = []
     last_low_price = -1.0
 
-    for i in range(40, len(df) - 1):
+    for i in range(55, len(df) - 1):
         if np.isnan(atr[i]) or atr[i] == 0: continue
 
-        # 1. تحديد قاع الارتكاز الهندسي (Gann Pivot Low) في آخر 30 شمعة
-        win_low = l[i-30:i]
+        # 1. قاع الارتكاز الهندسي (Gann Pivot Low) في آخر 25 شمعة
+        win_low = l[i-25:i]
         rel_idx = int(np.argmin(win_low))
-        p_idx = (i - 30) + rel_idx
+        p_idx = (i - 25) + rel_idx
         p_low = float(l[p_idx])
 
         bars_elapsed = i - p_idx
-        if not (3 <= bars_elapsed <= 18): continue
+        if not (2 <= bars_elapsed <= 14): continue
         if abs(p_low - last_low_price) / p_low < 0.002: continue
 
-        # 2. حساب مستويات مربع التسعة لجان (Square of 9) من قاع الارتكاز
-        sqrt_low = np.sqrt(p_low)
-        gann_45_confirm = (sqrt_low + 0.25) ** 2   # زاوية 45 درجة للتأكيد
-        gann_target = (sqrt_low + step_val) ** 2    # زاوية الهدف المختارة (90 / 135 / 180)
+        # 2. حساب زاوية جان الزمنية السعرية (Gann 1x1 Angle)
+        gann_1x1_now = p_low + (bars_elapsed * 0.35 * float(atr[p_idx]))
+        gann_1x1_prev = p_low + ((bars_elapsed - 1) * 0.35 * float(atr[p_idx]))
 
-        # 3. حساب زاوية جان الزمنية السعرية (Gann 1x1 Angle = 1 وحدة ATR لكل شمعة زمنية)
-        gann_1x1_line = p_low + (bars_elapsed * 0.45 * float(atr[p_idx]))
-        gann_1x1_prev = p_low + ((bars_elapsed - 1) * 0.45 * float(atr[p_idx]))
+        # 3. اختراق زاوية 1x1 صعوداً مع زخم إيجابي
+        broke_1x1 = (c[i] > gann_1x1_now) and (c[i-1] <= gann_1x1_prev)
+        bull_candle = (c[i] > o[i]) and (c[i] > ema[i])
 
-        # 4. شروط الدخول الدقيقة: اختراق زاوية 1x1 + تجاوز مستوى 45 درجة + شمعة خضراء بسيولة
-        broke_1x1 = (c[i] > gann_1x1_line) and (c[i-1] <= gann_1x1_prev or c[i] >= gann_45_confirm)
-        bull_candle = (c[i] > o[i]) and (c[i] > c[i-1])
-        vol_ok = True if np.isnan(vma[i]) else (v[i] >= vma[i] * 0.8)
-
-        if broke_1x1 and bull_candle and vol_ok:
+        if broke_1x1 and bull_candle:
             entry = float(c[i])
-            sl = p_low - (0.3 * float(atr[i])) # الستوب أسفل قاع دورة جان
-            tp = float(gann_target)
+            # حساب هدف مربع التسعة بالمقياس الموحد الصحيح
+            gann_target = gann_sq9_level(p_low, step_val)
+            # ضمان أن الهدف واقعي ومتناسب مع تذبذب العملة
+            tp = max(gann_target, entry + (1.6 * float(atr[i])))
+            sl = p_low - (0.35 * float(atr[i]))
 
-            # التأكد من أن الهدف أعلى من الدخول وأن نسبة العائد للمخاطرة منطقية
-            if tp > entry * 1.005 and (tp - entry) >= (entry - sl) * 1.1:
+            if tp > entry > sl:
                 last_low_price = p_low
-                lbl = f"جان Sq9 ({gann_deg[:4]}) + 1x1"
+                lbl = f"جان Sq9 ({gann_deg[:3]}) + 1x1"
                 sigs.append((i, pd.Timestamp(t[i]), lbl, entry, sl, tp))
 
     return sigs
@@ -141,7 +150,6 @@ if st.button("🔄 تحديث مستويات جان الآن", use_container_wid
     st.cache_data.clear()
     st.rerun()
 
-# جدول الربح الصافي لكل يوم على حدة
 st.subheader(f"📅 الربح الصافي لكل يوم على حدة (آخر {period_label})")
 if not df_t.empty:
     df_closed = df_t[df_t['الحالة'] != 'مفتوحة ⏳'].copy()
@@ -163,7 +171,7 @@ else:
 st.subheader("🎯 توصيات مربع وزوايا جان اللحظية (Spot)")
 for coin, pat_lbl, tm, ent, sl, tp in recs:
     dec = 4 if ent < 10 else 2
-    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm})</b><br>🔹 دخول (1x1): <code>{ent:.{dec}f}</code> | 🎯 هدف ({gann_deg[:4]}): <code>{tp:.{dec}f}</code> | 🛑 وقف (قاع جان): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='background:#00c85326;border-right:5px solid #00e676;padding:12px;border-radius:8px;margin-bottom:8px;'><b style='color:#00e676;font-size:1.1rem;'>🟢 {coin} | {pat_lbl} ({tm})</b><br>🔹 دخول (1x1): <code>{ent:.{dec}f}</code> | 🎯 هدف ({gann_deg[:3]}): <code>{tp:.{dec}f}</code> | 🛑 وقف (قاع جان): <code>{sl:.{dec}f}</code></div>", unsafe_allow_html=True)
 if not recs: st.info("لا توجد إشارة اختراق لزاوية جان في آخر شمعتين حالياً.")
 
 st.subheader(f"📋 سجل صفقات جان آخر {period_label} (100$ للصفقة)")
