@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="استراتيجية تقاطع المتوسطات + ATR", layout="centered")
+st.set_page_config(page_title="استراتيجية تقاطع متوسطين + ATR", layout="centered")
 TRADE_AMOUNT = 100.0
 
 VOLATILE_COINS = {
@@ -23,7 +23,7 @@ VOLATILE_COINS = {
 
 timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
 
-st.markdown("**إعدادات المتوسطات (Moving Averages)**")
+st.markdown("**إعدادات المتوسطين (Moving Averages)**")
 ma_options = ["EMA", "SMA", "WMA", "RMA"]
 
 c1, c2 = st.columns(2)
@@ -34,15 +34,9 @@ with c2:
 
 c3, c4 = st.columns(2)
 with c3:
-    med_type = st.selectbox("Medium MA Type", ma_options, index=2)
+    slow_type = st.selectbox("Slow MA Type", ma_options, index=2)
 with c4:
-    med_len = st.number_input("Medium MA Length", 2, 300, 20, 1)
-
-c5, c6 = st.columns(2)
-with c5:
-    slow_type = st.selectbox("Slow MA Type (Trend)", ma_options, index=3)
-with c6:
-    slow_len = st.number_input("Slow MA Length", 5, 500, 50, 5)
+    slow_len = st.number_input("Slow MA Length", 2, 300, 20, 1)
 
 st.markdown("**إدارة المخاطر (ATR / RR)**")
 r1, r2, r3 = st.columns(3)
@@ -53,16 +47,14 @@ with r2:
 with r3:
     rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 1.5, 0.1, format="%.1f")
 
-st.markdown("**فلاتر الاتجاه العام (1H / 1D)**")
+st.markdown("**فلاتر الاتجاه العام (مبنية على تقاطع نفس المتوسطين)**")
 f1, f2 = st.columns(2)
 with f1:
     use_trend_1h = st.checkbox("تفعيل اتجاه 1 ساعة (1H)", value=False)
 with f2:
     use_trend_1d = st.checkbox("تفعيل اتجاه 1 يوم (1D)", value=False)
 
-trend_ema_len = st.number_input("طول متوسط الاتجاه العام (EMA):", 10, 200, 50, 10) if (use_trend_1h or use_trend_1d) else 50
-
-st.caption(f"{fast_type}({fast_len}) × {med_type}({med_len}) فوق {slow_type}({slow_len}) | SL: {atr_mult}x ATR | عمولة 0.1%")
+st.caption(f"التقاطع: {fast_type}({fast_len}) × {slow_type}({slow_len}) | SL: {atr_mult}x ATR | عمولة 0.1%")
 st.divider()
 
 def calc_ma(series, length, ma_type):
@@ -105,7 +97,7 @@ def fetch_all(ticker, tf):
 
     return df_m, df_1h, df_1d
 
-def apply_trends(df_m, df_1h, df_1d, ema_len, c_1h, c_1d):
+def apply_trends(df_m, df_1h, df_1d, f_t, f_l, s_t, s_l, c_1h, c_1d):
     df = df_m.copy()
     df['Bull_1H'] = True
     df['Bull_1D'] = True
@@ -116,26 +108,31 @@ def apply_trends(df_m, df_1h, df_1d, ema_len, c_1h, c_1d):
         d1 = df_1h.copy()
         if d1.index.tz is not None:
             d1.index = d1.index.tz_localize(None)
-        d1['Bull_1H'] = (d1['Close'] > d1['Close'].ewm(span=ema_len, adjust=False).mean()).shift(1).fillna(False)
+        f_1h = calc_ma(d1['Close'], f_l, f_t)
+        s_1h = calc_ma(d1['Close'], s_l, s_t)
+        # الاتجاه صاعد على 1H إذا كان السريع فوق البطيء في الشمعة المغلقة السابقة
+        d1['Bull_1H'] = (f_1h > s_1h).shift(1).fillna(False)
         df['Bull_1H'] = pd.merge_asof(df.sort_index(), d1[['Bull_1H']].sort_index(), left_index=True, right_index=True, direction='backward')['Bull_1H'].fillna(False)
 
     if c_1d and not df_1d.empty:
         d2 = df_1d.copy()
         if d2.index.tz is not None:
             d2.index = d2.index.tz_localize(None)
-        d2['Bull_1D'] = (d2['Close'] > d2['Close'].ewm(span=ema_len, adjust=False).mean()).shift(1).fillna(False)
+        f_1d = calc_ma(d2['Close'], f_l, f_t)
+        s_1d = calc_ma(d2['Close'], s_l, s_t)
+        # الاتجاه صاعد على 1D إذا كان السريع فوق البطيء في اليوم السابق المغلق
+        d2['Bull_1D'] = (f_1d > s_1d).shift(1).fillna(False)
         df['Bull_1D'] = pd.merge_asof(df.sort_index(), d2[['Bull_1D']].sort_index(), left_index=True, right_index=True, direction='backward')['Bull_1D'].fillna(False)
 
     return df
 
-def run_backtest(df, tf, f_t, f_l, m_t, m_l, s_t, s_l, a_l, a_m, rr):
+def run_backtest(df, tf, f_t, f_l, s_t, s_l, a_l, a_m, rr):
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
-    m_len = max(f_l, m_l, s_l, a_l)
+    m_len = max(f_l, s_l, a_l)
     if len(df) < m_len + 10:
         return 0, 0, 0, 0.0
 
     df['Fast'] = calc_ma(df['Close'], f_l, f_t)
-    df['Med'] = calc_ma(df['Close'], m_l, m_t)
     df['Slow'] = calc_ma(df['Close'], s_l, s_t)
     df['ATR'] = calc_atr(df, a_l)
 
@@ -153,10 +150,10 @@ def run_backtest(df, tf, f_t, f_l, m_t, m_l, s_t, s_l, a_l, a_m, rr):
             i += 1
             continue
 
-        cross = (p_row['Fast'] <= p_row['Med']) and (c_row['Fast'] > c_row['Med'])
-        above = (c_row['Fast'] > c_row['Slow']) and (c_row['Med'] > c_row['Slow'])
+        # شرط الدخول: تقاطع المتوسط السريع فوق البطيء فقط
+        cross = (p_row['Fast'] <= p_row['Slow']) and (c_row['Fast'] > c_row['Slow'])
 
-        if cross and above:
+        if cross:
             entry = float(c_row['Close'])
             sl_dist = float(c_row['ATR']) * a_m
             if sl_dist > 0:
@@ -185,13 +182,13 @@ def run_backtest(df, tf, f_t, f_l, m_t, m_l, s_t, s_l, a_l, a_m, rr):
 
 tot_w, tot_l, tot_o, tot_p, details = 0, 0, 0, 0.0, []
 
-with st.spinner("جاري فحص تقاطعات المتوسطات ومطابقة اتجاه 1H و 1D..."):
+with st.spinner("جاري فحص تقاطع المتوسطين ومطابقة اتجاه 1H و 1D..."):
     for ticker, name in VOLATILE_COINS.items():
         try:
             dm, d1h, d1d = fetch_all(ticker, timeframe)
             if not dm.empty:
-                df_f = apply_trends(dm, d1h, d1d, int(trend_ema_len), use_trend_1h, use_trend_1d)
-                w, l, o, p = run_backtest(df_f, timeframe, fast_type, int(fast_len), med_type, int(med_len), slow_type, int(slow_len), int(atr_len), float(atr_mult), float(rr_ratio))
+                df_f = apply_trends(dm, d1h, d1d, fast_type, int(fast_len), slow_type, int(slow_len), use_trend_1h, use_trend_1d)
+                w, l, o, p = run_backtest(df_f, timeframe, fast_type, int(fast_len), slow_type, int(slow_len), int(atr_len), float(atr_mult), float(rr_ratio))
                 tot_w += w
                 tot_l += l
                 tot_o += o
