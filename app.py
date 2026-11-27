@@ -5,10 +5,8 @@ import numpy as np
 
 st.set_page_config(page_title="ماسح ضغط الشراء والدعوم (Spot)", layout="centered")
 
-# رأس مال كل صفقة ثابت (100 دولار بدون رافعة مالية 1:1)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية بصيغة Binance Spot
 HALAL_COINS = {
     "BTCUSDT": "Bitcoin",
     "ETHUSDT": "Ethereum",
@@ -28,7 +26,6 @@ HALAL_COINS = {
     "HBARUSDT": "Hedera"
 }
 
-# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -36,8 +33,7 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# شريط علوي: زر التحديث + إظهار الإعدادات
-col_btn, col_chk = st.columns([1, 2])
+col_btn, col_chk = st.columns(2)
 with col_btn:
     if st.button("🔄 تحديث البيانات"):
         st.cache_data.clear()
@@ -46,14 +42,12 @@ with col_chk:
 
 if show_settings:
     timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
-    
     st.markdown("**إعدادات ضغط الشراء والدعوم**")
     c1, c2 = st.columns(2)
     with c1:
         min_buy_ratio = st.number_input("نسبة سيطرة الشراء (%):", min_value=51, max_value=95, value=80, step=1)
     with c2:
         zone_lookback = st.number_input("نطاق البحث عن الدعوم:", min_value=15, max_value=200, value=100, step=5)
-        
     st.markdown("**إدارة المخاطر (ATR / RR)**")
     r1, r2, r3 = st.columns(3)
     with r1:
@@ -75,14 +69,12 @@ def calc_atr(df, length):
 
 @st.cache_data(ttl=300)
 def fetch_data(symbol, tf):
-    # جلب 1000 شمعة (تكفي لأكثر من 40 يوماً على فريم الساعة) بسرعة فائقة مع مهلة 5 ثوانٍ
-    url = f"https://binance.com{symbol}&interval={tf}&limit=1000"
+    url = f"https://binance.vision{symbol}&interval={tf}&limit=1000"
     try:
         resp = requests.get(url, timeout=5)
         if resp.status_code != 200:
-            # رابط احتياطي في حال حظر الخادم الأمريكي لـ binance.com
-            url_us = f"https://binance.vision{symbol}&interval={tf}&limit=1000"
-            resp = requests.get(url_us, timeout=5)
+            url_alt = f"https://binance.com{symbol}&interval={tf}&limit=1000"
+            resp = requests.get(url_alt, timeout=5)
         if resp.status_code != 200:
             return pd.DataFrame()
         data = resp.json()
@@ -110,19 +102,15 @@ def check_live_signal(df, buy_pct_req, lookback, a_len, a_m, rr):
     df = df.copy()
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
-    
     c_row = df.iloc[-2]
     if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
         return None
-        
     high_p, low_p = float(c_row['High']), float(c_row['Low'])
     close_p, open_p = float(c_row['Close']), float(c_row['Open'])
     vol = float(c_row['Volume'])
     candle_range = high_p - low_p
-    
     buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
     strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
-    
     if strong_buying:
         window_df = df.iloc[-2 - lookback : -2]
         if check_zone_touch(window_df, c_row):
@@ -143,36 +131,30 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
     min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
         return 0, 0, 0, 0.0, {}
-        
     df = df.copy()
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
     start_i = max(min_bars, len(df) - target_bars)
     total_len = len(df)
     wins, losses, open_t, profit, fee = 0, 0, 0, 0.0, 0.001
-    
     weekly_stats = {
         1: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
         2: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
         3: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
         4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
     }
-    
     i = start_i
     while i < total_len - 1:
         c_row = df.iloc[i]
         if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
             i += 1
             continue
-            
         high_p, low_p = float(c_row['High']), float(c_row['Low'])
         close_p, open_p = float(c_row['Close']), float(c_row['Open'])
         vol = float(c_row['Volume'])
         candle_range = high_p - low_p
-        
         buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
         strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
-        
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
             if check_zone_touch(window_df, c_row):
@@ -219,7 +201,6 @@ agg_weekly = {
     4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
 }
 
-# شريط تقدم مرئي حتى لا تبقى الشاشة بيضاء
 progress_bar = st.progress(0, text="جاري جلب بيانات العملات...")
 coins_list = list(HALAL_COINS.items())
 
@@ -244,9 +225,20 @@ for idx, (symbol, name) in enumerate(coins_list):
         tot_p += p
         if (w + l + o) > 0:
             details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
-        
+
         _, _, _, _, w_stats = run_backtest(
             df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
             int(atr_len), float(atr_mult), float(rr_ratio), days=28
         )
         for wk in range(1, 5):
+            if wk in w_stats:
+                agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
+                agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
+                agg_weekly[wk]["open"] += w_stats[wk]["open"]
+                agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
+
+progress_bar.empty()
+
+st.subheader("🎯 فرص الشراء الحية الآن (Spot)")
+if live_signals:
+    st.success(f"تم رصد {len(live_signals)} فرصة شراء مطابقة للشروط على آخر شمعة مغلقة!")
