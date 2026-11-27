@@ -5,10 +5,8 @@ import numpy as np
 
 st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", layout="centered")
 
-# رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية
 HALAL_COINS = {
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
@@ -28,7 +26,6 @@ HALAL_COINS = {
     "HBAR-USD": "Hedera"
 }
 
-# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -36,13 +33,11 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# إعدادات فلتر EMA الافتراضية
 use_ema_filter = False
 ema_length = 200
 ema_mode = "اتجاه EMA صاعد (EMA Rising)"
 ema_slope_bars = 5
 
-# مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
@@ -93,7 +88,7 @@ def calc_atr(df, length):
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     return tr.ewm(alpha=1.0 / length, adjust=False).mean()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def fetch_data(ticker, tf):
     yf_int = "1h" if tf == "4h" else tf
     df = yf.download(ticker, period="30d", interval=yf_int, progress=False)
@@ -227,36 +222,42 @@ agg_weekly = {
     4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
 }
 
+empty_count = 0
 with st.spinner("جاري حساب الربح الصافي..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
-            if not df_m.empty:
-                w, l, o, p, _ = run_backtest(
-                    df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio),
-                    use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=7
-                )
-                tot_w += w
-                tot_l += l
-                tot_o += o
-                tot_p += p
-                if (w + l + o) > 0:
-                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
+            if df_m.empty:
+                empty_count += 1
+                continue
+            w, l, o, p, _ = run_backtest(
+                df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
+                int(atr_len), float(atr_mult), float(rr_ratio),
+                use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=7
+            )
+            tot_w += w
+            tot_l += l
+            tot_o += o
+            tot_p += p
+            if (w + l + o) > 0:
+                details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
 
-                _, _, _, _, w_stats = run_backtest(
-                    df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio),
-                    use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=28
-                )
-                for wk in range(1, 5):
-                    if wk in w_stats:
-                        agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
-                        agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
-                        agg_weekly[wk]["open"] += w_stats[wk]["open"]
-                        agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
+            _, _, _, _, w_stats = run_backtest(
+                df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
+                int(atr_len), float(atr_mult), float(rr_ratio),
+                use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=28
+            )
+            for wk in range(1, 5):
+                if wk in w_stats:
+                    agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
+                    agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
+                    agg_weekly[wk]["open"] += w_stats[wk]["open"]
+                    agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
         except Exception as e:
             st.warning(f"تنبيه في عملة {name}: {e}")
+
+if empty_count == len(HALAL_COINS):
+    st.error("⚠️ تعذر جلب البيانات من Yahoo Finance مؤقتاً. اضغط على الثلاث نقاط في الأعلى ثم اختر Clear cache وأعد المحاولة بعد دقيقة.")
 
 closed_t = tot_w + tot_l
 win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
