@@ -1,31 +1,34 @@
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 
 st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", layout="centered")
 
+# رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
+# قائمة العملات الرقمية النقية (رموز باينانس مقابل USDT)
 HALAL_COINS = {
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Ethereum",
-    "SOL-USD": "Solana",
-    "AVAX-USD": "Avalanche",
-    "NEAR-USD": "NEAR Protocol",
-    "SUI20947-USD": "Sui",
-    "APT21794-USD": "Aptos",
-    "INJ-USD": "Injective",
-    "SEI-USD": "Sei",
-    "TIA-USD": "Celestia",
-    "RENDER-USD": "Render",
-    "ARB11841-USD": "Arbitrum",
-    "DOT-USD": "Polkadot",
-    "LINK-USD": "Chainlink",
-    "ADA-USD": "Cardano",
-    "HBAR-USD": "Hedera"
+    "BTCUSDT": "Bitcoin",
+    "ETHUSDT": "Ethereum",
+    "SOLUSDT": "Solana",
+    "AVAXUSDT": "Avalanche",
+    "NEARUSDT": "NEAR Protocol",
+    "SUIUSDT": "Sui",
+    "APTUSDT": "Aptos",
+    "INJUSDT": "Injective",
+    "SEIUSDT": "Sei",
+    "TIAUSDT": "Celestia",
+    "RENDERUSDT": "Render",
+    "ARBUSDT": "Arbitrum",
+    "DOTUSDT": "Polkadot",
+    "LINKUSDT": "Chainlink",
+    "ADAUSDT": "Cardano",
+    "HBARUSDT": "Hedera"
 }
 
+# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -33,11 +36,13 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
+# إعدادات فلتر EMA الافتراضية
 use_ema_filter = False
 ema_length = 200
 ema_mode = "اتجاه EMA صاعد (EMA Rising)"
 ema_slope_bars = 5
 
+# مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
@@ -88,17 +93,30 @@ def calc_atr(df, length):
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     return tr.ewm(alpha=1.0 / length, adjust=False).mean()
 
-@st.cache_data(ttl=3600)
-def fetch_data(ticker, tf):
-    yf_int = "1h" if tf == "4h" else tf
-    df = yf.download(ticker, period="30d", interval=yf_int, progress=False)
-    if df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    if tf == "4h":
-        df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-    return df
+@st.cache_data(ttl=600)
+def fetch_data(symbol, tf):
+    # جلب بيانات 30 يوماً (720 شمعة على فريم الساعة، أو 1000 شمعة كحد أقصى للطلب الواحد)
+    limit = 1000 if tf in ["5m", "15m", "30m"] else 750
+    urls = [
+        f"https://binance.com{symbol}&interval={tf}&limit={limit}",
+        f"https://binance.vision{symbol}&interval={tf}&limit={limit}"
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    df = pd.DataFrame(data, columns=[
+                        'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume',
+                        'Close_time', 'Quote_vol', 'Trades', 'Taker_buy_base', 'Taker_buy_quote', 'Ignore'
+                    ])
+                    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+                        df[col] = df[col].astype(float)
+                    return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        except Exception:
+            continue
+    return pd.DataFrame()
 
 def check_zone_touch(window_df, curr_candle):
     curr_low = float(curr_candle['Low'])
@@ -222,14 +240,10 @@ agg_weekly = {
     4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
 }
 
-empty_count = 0
-with st.spinner("جاري حساب الربح الصافي..."):
+with st.spinner("جاري جلب البيانات وحساب الربح الصافي..."):
     for ticker, name in HALAL_COINS.items():
-        try:
-            df_m = fetch_data(ticker, timeframe)
-            if df_m.empty:
-                empty_count += 1
-                continue
+        df_m = fetch_data(ticker, timeframe)
+        if not df_m.empty:
             w, l, o, p, _ = run_backtest(
                 df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
                 int(atr_len), float(atr_mult), float(rr_ratio),
@@ -245,20 +259,3 @@ with st.spinner("جاري حساب الربح الصافي..."):
             _, _, _, _, w_stats = run_backtest(
                 df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
                 int(atr_len), float(atr_mult), float(rr_ratio),
-                use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=28
-            )
-            for wk in range(1, 5):
-                if wk in w_stats:
-                    agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
-                    agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
-                    agg_weekly[wk]["open"] += w_stats[wk]["open"]
-                    agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
-        except Exception as e:
-            st.warning(f"تنبيه في عملة {name}: {e}")
-
-if empty_count == len(HALAL_COINS):
-    st.error("⚠️ تعذر جلب البيانات من Yahoo Finance مؤقتاً. اضغط على الثلاث نقاط في الأعلى ثم اختر Clear cache وأعد المحاولة بعد دقيقة.")
-
-closed_t = tot_w + tot_l
-win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
-
