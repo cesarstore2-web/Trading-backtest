@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 # إعدادات الصفحة
-st.set_page_config(page_title="متتبع التداول الفوري - RSI", layout="centered")
+st.set_page_config(page_title="متتبع التداول الفوري - RSI (1h)", layout="centered")
 
 # تنسيق الواجهة باللغة العربية (RTL) وتصميم الصناديق
 st.markdown("""
@@ -60,29 +60,31 @@ def calculate_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# جلب البيانات وتطبيق الاستراتيجية
-@st.cache_data(ttl=900) # تحديث البيانات كل 15 دقيقة
+# جلب البيانات وتطبيق الاستراتيجية على الإطار الزمني 1 ساعة
+@st.cache_data(ttl=900) # تحديث البيانات تلقائياً كل 15 دقيقة
 def run_scanner(trade_amount=100.0):
     trades_history = []
     current_opportunities = []
 
     for symbol in COINS:
         try:
-            # جلب بيانات 45 يوماً لضمان دقة حساب RSI قبل بداية الشهر الحالي
+            # جلب بيانات 45 يوماً على فريم 1 ساعة (1h)
             df = yf.download(symbol, period="45d", interval="1h", progress=False)
             if df.empty or len(df) < 20:
                 continue
             
+            # توحيد أسماء الأعمدة
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            df['RSI'] = calculate_rsi(df['Close'])
+            df['RSI'] = calculate_rsi(df['Close'], period=14)
             df['Prev_RSI'] = df['RSI'].shift(1)
             df['Is_Green'] = df['Close'] > df['Open'] # شمعة صاعدة
 
-            # شرط الشراء: RSI يخترق 20 صعوداً + شمعة صاعدة
+            # شرط الشراء: RSI يخترق مستوى 20 صعوداً + شمعة صاعدة
             df['Buy_Signal'] = (df['Prev_RSI'] <= 20) & (df['RSI'] > 20) & df['Is_Green']
-            # شرط البيع: RSI يخترق 80 صعوداً + شمعة صاعدة
+            
+            # شرط البيع: RSI يخترق مستوى 80 صعوداً + شمعة صاعدة
             df['Sell_Signal'] = (df['Prev_RSI'] <= 80) & (df['RSI'] > 80) & df['Is_Green']
 
             # فحص الفرص الحالية (في الشمعة الحالية أو السابقة)
@@ -97,7 +99,7 @@ def run_scanner(trade_amount=100.0):
                     "الوقت": str(df.index[-1])[:16]
                 })
 
-            # محاكاة الصفقات التاريخية (سبوت)
+            # محاكاة الصفقات التاريخية (تداول فوري Spot)
             in_position = False
             buy_price = 0.0
             buy_time = None
@@ -127,7 +129,7 @@ def run_scanner(trade_amount=100.0):
 
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-# تشغيل الفحص
+# تشغيل الفحص بحجم صفقة افتراضي 100 دولار
 trades_df, opps_df = run_scanner(trade_amount=100.0)
 
 # تصفية الصفقات حسب الشهر الحالي والأسبوع الحالي
@@ -171,7 +173,7 @@ if st.checkbox("📋 إظهار تفاصيل الصفقات"):
     else:
         st.info("لم يتم تسجيل صفقات مكتملة خلال الشهر الحالي.")
 
-if st.checkbox("📅 إظهار سجل الشهر الحالي (4 أسابيع)"):
+if st.checkbox("📅 إظهار سجل 4 أسابيع (الشهر الحالي)"):
     if not current_month_trades.empty:
         total_month = current_month_trades['الربح ($)'].sum()
         st.metric("إجمالي ربح الشهر الحالي (بحجم صفقة 100$)", f"{total_month:.2f}$")
@@ -189,7 +191,8 @@ if st.checkbox("📅 إظهار سجل الشهر الحالي (4 أسابيع)"
 
 if st.checkbox("⚙️ إظهار إعدادات الاستراتيجية"):
     st.markdown("""
-    - **نوع التداول:** فوري (Spot) بدون رافعة مالية.
+    - **الإطار الزمني:** 1 ساعة (`1h`).
+    - **نوع التداول:** فوري (`Spot`) بدون رافعة مالية.
     - **شرط الشراء:** اختراق RSI لمستوى `20` صعوداً مع إغلاق شمعة صاعدة.
     - **شرط البيع:** اختراق RSI لمستوى `80` صعوداً مع إغلاق شمعة صاعدة.
     - **حجم الصفقة الافتراضي للحساب:** `100$` لكل صفقة.
