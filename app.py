@@ -28,17 +28,15 @@ HALAL_COINS = {
     "HBAR-USD": "Hedera"
 }
 
-# القيم الافتراضية المطابقة للصورة
+# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
 atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
-use_demand = False
-use_support = True
 
-# مربع إظهار أو إخفاء الإعدادات (مخفية افتراضياً)
+# مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
@@ -49,7 +47,7 @@ if show_settings:
     with c1:
         min_buy_ratio = st.number_input("نسبة سيطرة الشراء (%):", min_value=51, max_value=95, value=80, step=1)
     with c2:
-        zone_lookback = st.number_input("نطاق البحث عن الدعوم والطلب:", min_value=15, max_value=200, value=100, step=5)
+        zone_lookback = st.number_input("نطاق البحث عن الدعوم:", min_value=15, max_value=200, value=100, step=5)
 
     st.markdown("**إدارة المخاطر (ATR / RR)**")
     r1, r2, r3 = st.columns(3)
@@ -59,16 +57,9 @@ if show_settings:
         atr_mult = st.number_input("ATR Multiplier (SL)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
     with r3:
         rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
-
-    st.markdown("**مصدر مناطق الدخول**")
-    z1, z2 = st.columns(2)
-    with z1:
-        use_demand = st.checkbox("مناطق الطلب (Demand Zones)", value=False)
-    with z2:
-        use_support = st.checkbox("مستويات الدعم (Support Levels)", value=True)
     st.divider()
 
-st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: 7 أيام")
+st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: الشهر الحالي (4 أسابيع)")
 
 def calc_atr(df, length):
     hl = df['High'] - df['Low']
@@ -80,7 +71,8 @@ def calc_atr(df, length):
 @st.cache_data(ttl=300)
 def fetch_data(ticker, tf):
     yf_int = "1h" if tf == "4h" else tf
-    df = yf.download(ticker, period="30d", interval=yf_int, progress=False)
+    # جلب 45 يوماً لضمان وجود بيانات كافية لحساب المؤشرات قبل بداية الشهر (28 يوماً)
+    df = yf.download(ticker, period="45d", interval=yf_int, progress=False)
     if df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -89,47 +81,45 @@ def fetch_data(ticker, tf):
         df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
     return df
 
-def check_zone_touch(window_df, curr_candle, enable_demand, enable_support):
+def check_support_touch(window_df, curr_candle):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
     
-    if enable_demand:
-        for k in range(len(window_df) - 2):
-            c = window_df.iloc[k]
-            next_c = window_df.iloc[k + 1]
-            c_body = abs(float(c['Close']) - float(c['Open']))
-            next_body = float(next_c['Close']) - float(next_c['Open'])
-            
-            if next_body > 0 and next_body > (c_body * 1.8):
-                zone_top = max(float(c['Open']), float(c['Close']))
-                zone_bottom = float(c['Low'])
-                if curr_low <= zone_top and curr_close >= zone_bottom:
-                    return True, "منطقة طلب"
+    lows = window_df['Low'].values
+    support_level = np.min(lows)
+    tolerance = support_level * 0.005
+    if curr_low <= (support_level + tolerance) and curr_close >= support_level:
+        return True
+    return False
 
-    if enable_support:
-        lows = window_df['Low'].values
-        support_level = np.min(lows)
-        tolerance = support_level * 0.005
-        if curr_low <= (support_level + tolerance) and curr_close >= support_level:
-            return True, "مستوى دعم"
-
-    return False, ""
-
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support):
+def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr):
+    # عدد الشموع في الأسبوع الواحد لكل فريم
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
+    bars_per_week = c_7d[tf]
+    bars_28d = bars_per_week * 4  # 4 أسابيع (الشهر)
+
     min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
-        return 0, 0, 0, 0.0, []
+        return 0, 0, 0, 0.0, {}
 
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
 
-    start_i = max(min_bars, len(df) - c_7d[tf])
+    start_i = max(min_bars, len(df) - bars_28d)
+    total_len = len(df)
+    
     wins, losses, open_t, profit, fee = 0, 0, 0, 0.0, 0.001
-    zone_hits = []
+    
+    # قاموس لتخزين نتائج كل أسبوع (من الأسبوع 1 الأقدم إلى الأسبوع 4 الأحدث)
+    weekly_stats = {
+        1: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+        2: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+        3: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+        4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+    }
 
     i = start_i
-    while i < len(df) - 1:
+    while i < total_len - 1:
         c_row = df.iloc[i]
         if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
             i += 1
@@ -151,52 +141,76 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_su
 
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
-            in_zone, zone_type = check_zone_touch(window_df, c_row, en_demand, en_support)
+            in_support = check_support_touch(window_df, c_row)
 
-            if in_zone:
+            if in_support:
+                # تحديد الأسبوع الذي دخلت فيه الصفقة (4 هو الأسبوع الحالي/الأخير، 1 هو الأقدم)
+                bars_from_end = total_len - i
+                week_idx = 4 - int((bars_from_end - 1) // bars_per_week)
+                week_idx = max(1, min(4, week_idx))
+
                 entry = close_p
                 sl_dist = float(c_row['ATR']) * a_m
                 if sl_dist > 0:
                     sl = entry - sl_dist
                     tp = entry + (sl_dist * rr)
-                    zone_hits.append(zone_type)
                     closed = False
-                    for j in range(i + 1, len(df)):
+                    for j in range(i + 1, total_len):
                         fut = df.iloc[j]
                         if float(fut['Low']) <= sl:
+                            loss_val = (TRADE_AMOUNT * (sl_dist / entry) + TRADE_AMOUNT * fee * 2)
                             losses += 1
-                            profit -= (TRADE_AMOUNT * (sl_dist / entry) + TRADE_AMOUNT * fee * 2)
+                            profit -= loss_val
+                            weekly_stats[week_idx]["losses"] += 1
+                            weekly_stats[week_idx]["profit"] -= loss_val
                             closed = True
                             i = j
                             break
                         elif float(fut['High']) >= tp:
+                            win_val = (TRADE_AMOUNT * ((tp - entry) / entry) - TRADE_AMOUNT * fee * 2)
                             wins += 1
-                            profit += (TRADE_AMOUNT * ((tp - entry) / entry) - TRADE_AMOUNT * fee * 2)
+                            profit += win_val
+                            weekly_stats[week_idx]["wins"] += 1
+                            weekly_stats[week_idx]["profit"] += win_val
                             closed = True
                             i = j
                             break
                     if not closed:
                         open_t += 1
+                        weekly_stats[week_idx]["open"] += 1
                         break
         i += 1
-    return wins, losses, open_t, profit, zone_hits
+    return wins, losses, open_t, profit, weekly_stats
 
-tot_w, tot_l, tot_o, tot_p, details, all_zones = 0, 0, 0, 0.0, [], []
+tot_w, tot_l, tot_o, tot_p, details = 0, 0, 0, 0.0, []
+agg_weekly = {
+    1: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+    2: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+    3: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+    4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+}
 
-with st.spinner("جاري حساب الربح الصافي لآخر 7 أيام..."):
+with st.spinner("جاري حساب الربح الصافي للشهر الحالي وتفاصيل الأسابيع..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
-                w, l, o, p, z_list = run_backtest(
+                w, l, o, p, w_stats = run_backtest(
                     df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support
+                    int(atr_len), float(atr_mult), float(rr_ratio)
                 )
                 tot_w += w
                 tot_l += l
                 tot_o += o
                 tot_p += p
-                all_zones.extend(z_list)
+                
+                for wk in range(1, 5):
+                    if wk in w_stats:
+                        agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
+                        agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
+                        agg_weekly[wk]["open"] += w_stats[wk]["open"]
+                        agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
+
                 if (w + l + o) > 0:
                     details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
         except Exception:
@@ -205,20 +219,43 @@ with st.spinner("جاري حساب الربح الصافي لآخر 7 أيام..
 closed_t = tot_w + tot_l
 win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
 
-st.markdown(f"**الربح الصافي سبوت لمدة 7 أيام ({timeframe})**")
+st.markdown(f"**إجمالي الربح الصافي سبوت للشهر الحالي ({timeframe})**")
 st.title(f"$ {tot_p:.2f}")
-st.markdown("**نسبة النجاح**")
+st.markdown("**نسبة النجاح الإجمالية**")
 st.title(f"{win_r:.1f}%")
 st.info(f"↑ مغلقة: {closed_t} | مفتوحة: {tot_o}")
 st.success(f"✅ {tot_w} ناجحة")
 st.error(f"❌ {tot_l} خاسرة")
 
-if all_zones:
-    st.subheader("توزيع الصفقات حسب المنطقة")
-    z_df = pd.Series(all_zones).value_counts().reset_index()
-    z_df.columns = ["نوع المنطقة", "عدد الصفقات"]
-    st.dataframe(z_df, use_container_width=True, hide_index=True)
+# بناء جدول الربح الصافي لكل أسبوع
+st.subheader("الربح الصافي لكل أسبوع خلال الشهر الحالي")
+week_labels = {
+    1: "الأسبوع الأول (قبل 3 أسابيع)",
+    2: "الأسبوع الثاني (قبل أسبوعين)",
+    3: "الأسبوع الثالث (الأسبوع الماضي)",
+    4: "الأسبوع الرابع (الأسبوع الحالي)"
+}
+
+weekly_rows = []
+for wk in range(1, 5):
+    w_wins = agg_weekly[wk]["wins"]
+    w_losses = agg_weekly[wk]["losses"]
+    w_open = agg_weekly[wk]["open"]
+    w_prof = agg_weekly[wk]["profit"]
+    w_closed = w_wins + w_losses
+    w_rate = f"{(w_wins / w_closed * 100):.1f}%" if w_closed > 0 else "0.0%"
+    
+    weekly_rows.append({
+        "الأسبوع": week_labels[wk],
+        "ناجحة ✅": w_wins,
+        "خاسرة ❌": w_losses,
+        "مفتوحة": w_open,
+        "نسبة النجاح": w_rate,
+        "الربح الصافي ($)": round(w_prof, 2)
+    })
+
+st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=True)
 
 if details:
-    with st.expander("عرض تفاصيل الصفقات والربح الصافي لكل عملة"):
+    with st.expander("عرض تفاصيل الصفقات والربح الصافي لكل عملة خلال الشهر"):
         st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
