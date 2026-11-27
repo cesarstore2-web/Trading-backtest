@@ -1,5 +1,5 @@
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 
@@ -8,24 +8,24 @@ st.set_page_config(page_title="ماسح ضغط الشراء والدعوم (Spot
 # رأس مال كل صفقة ثابت (100 دولار بدون رافعة مالية 1:1)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية (مشاريع بنية تحتية وطبقة أولى حلال)
+# قائمة العملات الرقمية النقية بصيغة Binance Spot
 HALAL_COINS = {
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Ethereum",
-    "SOL-USD": "Solana",
-    "AVAX-USD": "Avalanche",
-    "NEAR-USD": "NEAR Protocol",
-    "SUI20947-USD": "Sui",
-    "APT21794-USD": "Aptos",
-    "INJ-USD": "Injective",
-    "SEI-USD": "Sei",
-    "TIA-USD": "Celestia",
-    "RENDER-USD": "Render",
-    "ARB11841-USD": "Arbitrum",
-    "DOT-USD": "Polkadot",
-    "LINK-USD": "Chainlink",
-    "ADA-USD": "Cardano",
-    "HBAR-USD": "Hedera"
+    "BTCUSDT": "Bitcoin",
+    "ETHUSDT": "Ethereum",
+    "SOLUSDT": "Solana",
+    "AVAXUSDT": "Avalanche",
+    "NEARUSDT": "NEAR Protocol",
+    "SUIUSDT": "Sui",
+    "APTUSDT": "Aptos",
+    "INJUSDT": "Injective",
+    "SEIUSDT": "Sei",
+    "TIAUSDT": "Celestia",
+    "RENDERUSDT": "Render",
+    "ARBUSDT": "Arbitrum",
+    "DOTUSDT": "Polkadot",
+    "LINKUSDT": "Chainlink",
+    "ADAUSDT": "Cardano",
+    "HBARUSDT": "Hedera"
 }
 
 # القيم الافتراضية
@@ -36,8 +36,14 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# مربع إظهار أو إخفاء الإعدادات
-show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
+# شريط علوي: زر التحديث + إظهار الإعدادات
+col_btn, col_chk = st.columns([1, 2])
+with col_btn:
+    if st.button("🔄 تحديث البيانات"):
+        st.cache_data.clear()
+with col_chk:
+    show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
+
 if show_settings:
     timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
     
@@ -68,27 +74,35 @@ def calc_atr(df, length):
     return tr.ewm(alpha=1.0 / length, adjust=False).mean()
 
 @st.cache_data(ttl=300)
-def fetch_data(ticker, tf):
-    yf_int = "1h" if tf == "4h" else tf
-    df = yf.download(ticker, period="30d", interval=yf_int, progress=False)
-    if df.empty:
+def fetch_data(symbol, tf):
+    # جلب 1000 شمعة (تكفي لأكثر من 40 يوماً على فريم الساعة) بسرعة فائقة مع مهلة 5 ثوانٍ
+    url = f"https://binance.com{symbol}&interval={tf}&limit=1000"
+    try:
+        resp = requests.get(url, timeout=5)
+        if resp.status_code != 200:
+            # رابط احتياطي في حال حظر الخادم الأمريكي لـ binance.com
+            url_us = f"https://binance.vision{symbol}&interval={tf}&limit=1000"
+            resp = requests.get(url_us, timeout=5)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        data = resp.json()
+        df = pd.DataFrame(data, columns=[
+            'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume',
+            'Close_time', 'Quote_vol', 'Trades', 'Taker_buy_base', 'Taker_buy_quote', 'Ignore'
+        ])
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            df[col] = df[col].astype(float)
+        return df
+    except Exception:
         return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    if tf == "4h":
-        df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-    return df
 
 def check_zone_touch(window_df, curr_candle):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
-    
     lows = window_df['Low'].values
     support_level = np.min(lows)
     tolerance = support_level * 0.005
-    if curr_low <= (support_level + tolerance) and curr_close >= support_level:
-        return True
-    return False
+    return (curr_low <= (support_level + tolerance)) and (curr_close >= support_level)
 
 def check_live_signal(df, buy_pct_req, lookback, a_len, a_m, rr):
     if len(df) < max(lookback, a_len) + 5:
@@ -97,7 +111,6 @@ def check_live_signal(df, buy_pct_req, lookback, a_len, a_m, rr):
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
     
-    # فحص آخر شمعة مغلقة (index -2) لضمان ثبات الإشارة
     c_row = df.iloc[-2]
     if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
         return None
@@ -152,27 +165,19 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
             i += 1
             continue
             
-        high_p = float(c_row['High'])
-        low_p = float(c_row['Low'])
-        close_p = float(c_row['Close'])
-        open_p = float(c_row['Open'])
+        high_p, low_p = float(c_row['High']), float(c_row['Low'])
+        close_p, open_p = float(c_row['Close']), float(c_row['Open'])
         vol = float(c_row['Volume'])
         candle_range = high_p - low_p
         
-        if candle_range > 0 and vol > 0:
-            buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0
-        else:
-            buy_pressure_ratio = 50.0
-            
+        buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
         strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
         
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
-            in_zone = check_zone_touch(window_df, c_row)
-            if in_zone:
+            if check_zone_touch(window_df, c_row):
                 bars_from_end = total_len - i
-                week_idx = 4 - int((bars_from_end - 1) // bars_per_week)
-                week_idx = max(1, min(4, week_idx))
+                week_idx = max(1, min(4, 4 - int((bars_from_end - 1) // bars_per_week)))
                 entry = close_p
                 sl_dist = float(c_row['ATR']) * a_m
                 if sl_dist > 0:
@@ -214,39 +219,34 @@ agg_weekly = {
     4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
 }
 
-with st.spinner("جاري فحص السوق وحساب النتائج..."):
-    for ticker, name in HALAL_COINS.items():
-        try:
-            df_m = fetch_data(ticker, timeframe)
-            if not df_m.empty:
-                # 0. فحص الإشارات الحية الجاهزة للشراء الآن (Spot)
-                sig = check_live_signal(
-                    df_m, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio)
-                )
-                if sig:
-                    live_signals.append({"العملة": name, **sig})
+# شريط تقدم مرئي حتى لا تبقى الشاشة بيضاء
+progress_bar = st.progress(0, text="جاري جلب بيانات العملات...")
+coins_list = list(HALAL_COINS.items())
 
-                # 1. حساب آخر 7 أيام
-                w, l, o, p, _ = run_backtest(
-                    df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), days=7
-                )
-                tot_w += w
-                tot_l += l
-                tot_o += o
-                tot_p += p
-                if (w + l + o) > 0:
-                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
-                
-                # 2. حساب جدول الأسابيع للشهر
-                _, _, _, _, w_stats = run_backtest(
-                    df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), days=28
-                )
-                for wk in range(1, 5):
-                    if wk in w_stats:
-                        agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
-                        agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
-                        agg_weekly[wk]["open"] += w_stats[wk]["open"]
-                        agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
+for idx, (symbol, name) in enumerate(coins_list):
+    progress_bar.progress((idx + 1) / len(coins_list), text=f"جاري فحص {name}...")
+    df_m = fetch_data(symbol, timeframe)
+    if not df_m.empty:
+        sig = check_live_signal(
+            df_m, int(min_buy_ratio), int(zone_lookback),
+            int(atr_len), float(atr_mult), float(rr_ratio)
+        )
+        if sig:
+            live_signals.append({"العملة": name, **sig})
+
+        w, l, o, p, _ = run_backtest(
+            df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
+            int(atr_len), float(atr_mult), float(rr_ratio), days=7
+        )
+        tot_w += w
+        tot_l += l
+        tot_o += o
+        tot_p += p
+        if (w + l + o) > 0:
+            details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
+        
+        _, _, _, _, w_stats = run_backtest(
+            df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
+            int(atr_len), float(atr_mult), float(rr_ratio), days=28
+        )
+        for wk in range(1, 5):
