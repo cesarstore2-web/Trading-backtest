@@ -59,12 +59,11 @@ COINS = [
     "TIA-USD", "SUI-USD"
 ]
 
-# إعدادات الاستراتيجية لفريم 5 دقائق
+# إعدادات الاستراتيجية لفريم 5 دقائق (بدون وقف خسارة)
 TIMEFRAME = "5m"
 RSI_BUY_LEVEL = 20       # الشراء عند اختراق 20 صعوداً بشمعة صاعدة
 RSI_SELL_LEVEL = 50      # البيع عند اختراق 50 صعوداً بشمعة صاعدة
-TAKE_PROFIT_PCT = 0.025  # هدف ربح سريع +2.5% مناسب لفريم 5 دقائق
-STOP_LOSS_PCT = 0.015    # وقف خسارة -1.5% مناسب لفريم 5 دقائق
+TAKE_PROFIT_PCT = 0.025  # هدف ربح سريع +2.5%
 
 # دالة حساب مؤشر RSI
 def calculate_rsi(series, period=14):
@@ -83,7 +82,6 @@ def run_scanner(trade_amount=100.0):
 
     for symbol in COINS:
         try:
-            # سحب بيانات 35 يوماً على فريم 5 دقائق (الحد الأقصى في yfinance هو 60 يوماً)
             df = yf.download(symbol, period="35d", interval=TIMEFRAME, progress=False)
             if df.empty or len(df) < 20:
                 continue
@@ -110,12 +108,11 @@ def run_scanner(trade_amount=100.0):
                     "العملة": symbol.replace("-USD", ""),
                     "السعر الحالي": round(last_price, 4),
                     "هدف الربح (+2.5%)": round(last_price * (1 + TAKE_PROFIT_PCT), 4),
-                    "وقف الخسارة (-1.5%)": round(last_price * (1 - STOP_LOSS_PCT), 4),
                     "مؤشر RSI": round(last_rsi, 2),
                     "الوقت": str(df.index[-1])[:16]
                 })
 
-            # محاكاة الصفقات التاريخية (تداول فوري Spot)
+            # محاكاة الصفقات التاريخية (تداول فوري Spot بدون وقف خسارة)
             in_position = False
             buy_price = 0.0
             buy_time = None
@@ -123,7 +120,6 @@ def run_scanner(trade_amount=100.0):
             for idx, row in df.iterrows():
                 current_close = float(row['Close'])
                 current_high = float(row['High'])
-                current_low = float(row['Low'])
 
                 if not in_position and row['Buy_Signal']:
                     in_position = True
@@ -132,19 +128,14 @@ def run_scanner(trade_amount=100.0):
 
                 elif in_position:
                     tp_price = buy_price * (1 + TAKE_PROFIT_PCT)
-                    sl_price = buy_price * (1 - STOP_LOSS_PCT)
                     sell_reason = None
                     sell_price = 0.0
 
-                    # 1. التحقق من وقف الخسارة
-                    if current_low <= sl_price:
-                        sell_price = sl_price
-                        sell_reason = "وقف خسارة (-1.5%)"
-                    # 2. التحقق من هدف الربح
-                    elif current_high >= tp_price:
+                    # 1. التحقق من هدف الربح (+2.5%)
+                    if current_high >= tp_price:
                         sell_price = tp_price
                         sell_reason = "جني ربح (+2.5%)"
-                    # 3. التحقق من إشارة بيع RSI > 50 بشمعة صاعدة
+                    # 2. التحقق من إشارة بيع RSI > 50 بشمعة صاعدة
                     elif row['Sell_Signal']:
                         sell_price = current_close
                         sell_reason = "إشارة RSI > 50"
@@ -234,16 +225,28 @@ if st.checkbox("📅 إظهار سجل 4 أسابيع (الشهر الحالي)"
 if st.checkbox("⚙️ إظهار إعدادات الاستراتيجية"):
     st.markdown(f"""
     - **الإطار الزمني:** 5 دقائق (`{TIMEFRAME}`).
-    - **نوع التداول:** فوري (`Spot`) بدون رافعة مالية.
+    - **نوع التداول:** فوري (`Spot`) بدون رافعة مالية وبدون وقف خسارة.
     - **شرط الشراء:** اختراق RSI لمستوى `{RSI_BUY_LEVEL}` صعوداً مع شمعة صاعدة.
-    - **شروط البيع (أيهما أسبق):** اختراق RSI لمستوى `{RSI_SELL_LEVEL}` صعوداً بشمعة صاعدة، أو جني ربح **`+{TAKE_PROFIT_PCT*100:.1f}%`**، أو وقف خسارة **`-{STOP_LOSS_PCT*100:.1f}%`**.
+    - **شروط البيع (أيهما أسبق):** اختراق RSI لمستوى `{RSI_SELL_LEVEL}` صعوداً بشمعة صاعدة، أو جني ربح **`+{TAKE_PROFIT_PCT*100:.1f}%`**.
     - **حجم الصفقة للحساب:** `100$` لكل صفقة.
     """)
 
 # 3. شريط المعلومات المختصر
 st.markdown(f"""
     <div class="info-bar">
-        العملات: {len(COINS)} | الشراء: RSI > {RSI_BUY_LEVEL} | البيع: RSI > {RSI_SELL_LEVEL} | الفريم: {TIMEFRAME}
+        العملات: {len(COINS)} | الشراء: RSI > {RSI_BUY_LEVEL} | البيع: RSI > {RSI_SELL_LEVEL} أو +2.5% | الفريم: {TIMEFRAME}
     </div>
 """, unsafe_allow_html=True)
 
+# 4. قسم التوصيات المستقبلية (الفرص الحالية)
+st.markdown("### 🎯 التوصيات المستقبلية (الفرص الحالية)")
+
+if not opps_df.empty:
+    st.success(f"تم العثور على {len(opps_df)} فرصة مطابقة للشروط!")
+    st.dataframe(opps_df, use_container_width=True)
+else:
+    st.markdown("""
+        <div class="alert-box">
+            لا توجد فرص مطابقة للشروط في الشمعة الحالية أو السابقة.
+        </div>
+    """, unsafe_allow_html=True)
