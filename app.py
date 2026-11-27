@@ -1,225 +1,316 @@
-import streamlit as st
-import yfinance as yf
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Binance Spot Signal Scanner (1h, Long only) -> Telegram
+
+الاستخدام:
+    python scanner.py signals   # فحص آخر شموع الساعة المغلقة وإرسال التوصيات
+    python scanner.py report    # تقرير قصير: صافي الربح لكل أسبوع في الشهر الحالي
+
+المتغيرات البيئية (GitHub Secrets):
+    TELEGRAM_BOT_TOKEN   توكن البوت من BotFather
+    TELEGRAM_CHAT_ID     مثال: @my_channel أو -1001234567890
+"""
+
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
-import numpy as np
+import requests
 
-st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", layout="centered")
+# ───────────────────────── الإعدادات ─────────────────────────
+TRADE_AMOUNT = 100.0          # USDT لكل صفقة
+FEE_RATE = 0.001              # 0.1% عند الدخول و0.1% عند الخروج
+INTERVAL = "1h"
+HOUR_MS = 3_600_000
 
-TRADE_AMOUNT = 100.0
+BUY_PRESSURE_MIN = 80.0       # %
+VOLUME_SMA_LEN = 10
+VOLUME_FACTOR = 0.8
+SUPPORT_LOOKBACK = 100
+SUPPORT_TOLERANCE = 0.005     # 0.5%
+ATR_LEN = 13
+ATR_SL_MULT = 2.3
+ATR_TP_MULT = 2.3 * 2.3
 
-HALAL_COINS = {
-    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "SOL-USD": "Solana",
-    "AVAX-USD": "Avalanche", "NEAR-USD": "NEAR Protocol", "SUI20947-USD": "Sui",
-    "APT21794-USD": "Aptos", "INJ-USD": "Injective", "SEI-USD": "Sei",
-    "TIA-USD": "Celestia", "RENDER-USD": "Render", "ARB11841-USD": "Arbitrum",
-    "DOT-USD": "Polkadot", "LINK-USD": "Chainlink", "ADA-USD": "Cardano",
-    "HBAR-USD": "Hedera"
+SIGNAL_LOOKBACK_CANDLES = 2   # عدد الشموع المغلقة الأخيرة التي يفحصها وضع signals
+STATE_FILE = "state.json"
+
+HALAL_COINS = {   # نفس عملات تطبيق Streamlit (16 زوجاً)
+    "BTCUSDT": "Bitcoin",
+    "ETHUSDT": "Ethereum",
+    "SOLUSDT": "Solana",
+    "AVAXUSDT": "Avalanche",
+    "NEARUSDT": "NEAR Protocol",
+    "SUIUSDT": "Sui",
+    "APTUSDT": "Aptos",
+    "INJUSDT": "Injective",
+    "SEIUSDT": "Sei",
+    "TIAUSDT": "Celestia",
+    "RENDERUSDT": "Render",
+    "ARBUSDT": "Arbitrum",
+    "DOTUSDT": "Polkadot",
+    "LINKUSDT": "Chainlink",
+    "ADAUSDT": "Cardano",
+    "HBARUSDT": "Hedera",
 }
 
-timeframe = "1h"
-min_buy_ratio = 80
-zone_lookback = 100
-atr_len = 13
-atr_mult = 2.3
-rr_ratio = 2.3
+# data-api.binance.vision: نقطة بيانات السوق العامة (تعمل غالباً من خوادم GitHub)
+BASE_URLS = [
+    "https://data-api.binance.vision",
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+]
 
-# مكان مخصص في الأعلى لعرض الربح الصافي دائماً
-top_profit_placeholder = st.empty()
 
-# --- ترتيب المربعات حسب الأولوية ---
-show_weekly_summary = st.checkbox("🔥 إظهار ملخص الأداء للأسبوع الحالي", value=False)
-show_details = st.checkbox("📋 إظهار تفاصيل الصفقات", value=False)
-show_4weeks = st.checkbox("📅 إظهار سجل آخر 4 أسابيع", value=False)
-show_settings = st.checkbox("⚙️ إظهار إعدادات الاستراتيجية", value=False)
+# ───────────────────────── Binance ─────────────────────────
+def _get(path, params):
+    last_err = "unknown"
+    for base in BASE_URLS:
+        try:
+            r = requests.get(base + path, params=params, timeout=20)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 400:
+                # زوج غير موجود على Binance Spot: لا فائدة من تجربة بقية العناوين
+                raise RuntimeError(f"HTTP 400 (الزوج غير موجود على Spot): {r.text[:100]}")
+            last_err = f"{base} -> HTTP {r.status_code}: {r.text[:120]}"
+        except requests.RequestException as e:
+            last_err = f"{base} -> {e}"
+    raise RuntimeError(last_err)
 
-if show_settings:
-    st.divider()
-    timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
-    c1, c2 = st.columns(2)
-    with c1:
-        min_buy_ratio = st.number_input("نسبة سيطرة الشراء (%):", 51, 95, 80, 1)
-    with c2:
-        zone_lookback = st.number_input("نطاق البحث عن الدعوم:", 15, 200, 100, 5)
-    r1, r2, r3 = st.columns(3)
-    with r1:
-        atr_len = st.number_input("ATR Length", 2, 100, 13, 1)
-    with r2:
-        atr_mult = st.number_input("ATR Multiplier (SL)", 0.1, 10.0, 2.3, 0.1)
-    with r3:
-        rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1)
-    st.divider()
 
-st.caption(f"العملات: {len(HALAL_COINS)} | الشراء > {min_buy_ratio}% | الفريم: {timeframe}")
+def _to_df(raw):
+    df = pd.DataFrame(
+        raw,
+        columns=["open_time", "open", "high", "low", "close", "volume",
+                 "close_time", "qav", "trades", "tbb", "tbq", "ignore"],
+    )
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = df[c].astype(float)
+    df["open_time"] = df["open_time"].astype("int64")
+    df["close_time"] = df["close_time"].astype("int64")
+    return df[["open_time", "open", "high", "low", "close", "volume", "close_time"]]
 
-def calc_atr(df, length):
-    hl = df['High'] - df['Low']
-    hc = (df['High'] - df['Close'].shift()).abs()
-    lc = (df['Low'] - df['Close'].shift()).abs()
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    return tr.ewm(alpha=1.0 / length, adjust=False).mean()
 
-@st.cache_data(ttl=300)
-def fetch_data(ticker, tf):
-    yf_int = "1h" if tf == "4h" else tf
-    df = yf.download(ticker, period="45d", interval=yf_int, progress=False)
-    if df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    if tf == "4h":
-        df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+def _drop_unclosed(df):
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return df[df["close_time"] < now_ms].reset_index(drop=True)
+
+
+def fetch_recent(symbol, bars=500):
+    raw = _get("/api/v3/klines", {"symbol": symbol, "interval": INTERVAL, "limit": bars})
+    return _drop_unclosed(_to_df(raw))
+
+
+def fetch_since(symbol, start_ms):
+    rows, cursor = [], start_ms
+    while True:
+        raw = _get("/api/v3/klines", {"symbol": symbol, "interval": INTERVAL,
+                                      "startTime": cursor, "limit": 1000})
+        if not raw:
+            break
+        rows += raw
+        cursor = raw[-1][6] + 1
+        if len(raw) < 1000:
+            break
+    return _drop_unclosed(_to_df(rows))
+
+
+# ───────────────────────── الاستراتيجية ─────────────────────────
+def add_indicators(df):
+    df = df.copy()
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    # Wilder's smoothing: EMA بمعامل alpha = 1/13
+    df["atr"] = tr.ewm(alpha=1.0 / ATR_LEN, adjust=False).mean()
+
+    rng = df["high"] - df["low"]
+    df["buy_pressure"] = ((df["close"] - df["low"]) / rng.where(rng > 0)) * 100.0
+    df["vol_sma"] = df["volume"].rolling(VOLUME_SMA_LEN).mean()
+    # أقل قاع خلال آخر 100 شمعة سابقة للشمعة الحالية (بدون الحالية)
+    df["support"] = df["low"].shift(1).rolling(SUPPORT_LOOKBACK).min()
+
+    tol = df["support"] * SUPPORT_TOLERANCE
+    df["signal"] = (
+        (df["close"] > df["open"])
+        & (df["buy_pressure"] >= BUY_PRESSURE_MIN)
+        & (df["volume"] >= df["vol_sma"] * VOLUME_FACTOR)
+        & (df["low"] <= df["support"] + tol)
+        & (df["close"] >= df["support"])
+    ).fillna(False)
+
+    df["entry"] = df["close"]
+    df["sl"] = df["entry"] - df["atr"] * ATR_SL_MULT
+    df["tp"] = df["entry"] + df["atr"] * ATR_TP_MULT
     return df
 
-def check_zone_touch(window_df, curr_candle):
-    curr_low = float(curr_candle['Low'])
-    curr_close = float(curr_candle['Close'])
-    support_level = np.min(window_df['Low'].values)
-    tolerance = support_level * 0.005
-    return (curr_low <= (support_level + tolerance)) and (curr_close >= support_level)
 
-def check_live_signals(df, name, buy_pct_req, lookback, a_len, a_m, rr):
-    if len(df) < max(lookback, a_len) + 5:
-        return None
-    df = df.copy()
-    df['ATR'] = calc_atr(df, a_len)
-    df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
-    
-    for idx, status in [(-2, "مؤكدة (مغلقة)"), (-1, "قيد التشكّل")]:
-        c_row = df.iloc[idx]
-        if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
-            continue
-        high_p, low_p, close_p, open_p, vol = float(c_row['High']), float(c_row['Low']), float(c_row['Close']), float(c_row['Open']), float(c_row['Volume'])
-        c_range = high_p - low_p
-        buy_ratio = ((close_p - low_p) / c_range * 100.0) if (c_range > 0 and vol > 0) else 50.0
-        
-        if (buy_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8):
-            end_pos = len(df) + idx
-            if check_zone_touch(df.iloc[end_pos - lookback : end_pos], c_row):
-                sl_dist = float(c_row['ATR']) * a_m
-                if sl_dist > 0:
-                    return dict(العملة=name, الحالة=status, الشراء=f"{buy_ratio:.0f}%", الدخول=round(close_p, 4), SL=round(close_p - sl_dist, 4), TP=round(close_p + (sl_dist * rr), 4))
-    return None
+# ───────────────────────── Telegram ─────────────────────────
+def send_telegram(text):
+    token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+    if not token or not chat_id:
+        print("ERROR: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID غير مضبوطين")
+        sys.exit(1)
+    r = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+        timeout=20,
+    )
+    if r.status_code != 200:
+        print(f"Telegram error {r.status_code}: {r.text}")
+        sys.exit(1)
 
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
-    c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
-    bars_per_week = c_7d[tf]
-    target_bars = bars_per_week if days == 7 else bars_per_week * 4
-    min_bars = max(lookback, a_len) + 5
-    if len(df) < min_bars:
-        return 0, 0, 0, 0.0, {}
-        
-    df = df.copy()
-    df['ATR'] = calc_atr(df, a_len)
-    df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
-    start_i = max(min_bars, len(df) - target_bars)
-    total_len = len(df)
-    wins, losses, open_t, profit, fee = 0, 0, 0, 0.0, 0.001
-    weekly_stats = {w: dict(wins=0, losses=0, open=0, profit=0.0) for w in range(1, 5)}
-    
-    i = start_i
-    while i < total_len - 1:
-        c_row = df.iloc[i]
-        if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
-            i += 1
-            continue
-        high_p, low_p, close_p, open_p, vol = float(c_row['High']), float(c_row['Low']), float(c_row['Close']), float(c_row['Open']), float(c_row['Volume'])
-        c_range = high_p - low_p
-        buy_ratio = ((close_p - low_p) / c_range * 100.0) if (c_range > 0 and vol > 0) else 50.0
-        
-        if (buy_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8):
-            if check_zone_touch(df.iloc[i - lookback : i], c_row):
-                week_idx = max(1, min(4, 4 - int((total_len - i - 1) // bars_per_week)))
-                entry = close_p
-                sl_dist = float(c_row['ATR']) * a_m
-                if sl_dist > 0:
-                    sl, tp = entry - sl_dist, entry + (sl_dist * rr)
-                    closed = False
-                    for j in range(i + 1, total_len):
-                        fut = df.iloc[j]
-                        if float(fut['Low']) <= sl:
-                            loss_val = (TRADE_AMOUNT * (sl_dist / entry) + TRADE_AMOUNT * fee * 2)
-                            losses += 1
-                            profit -= loss_val
-                            weekly_stats[week_idx]["losses"] += 1
-                            weekly_stats[week_idx]["profit"] -= loss_val
-                            closed = True
-                            i = j
-                            break
-                        elif float(fut['High']) >= tp:
-                            win_val = (TRADE_AMOUNT * ((tp - entry) / entry) - TRADE_AMOUNT * fee * 2)
-                            wins += 1
-                            profit += win_val
-                            weekly_stats[week_idx]["wins"] += 1
-                            weekly_stats[week_idx]["profit"] += win_val
-                            closed = True
-                            i = j
-                            break
-                    if not closed:
-                        open_t += 1
-                        weekly_stats[week_idx]["open"] += 1
-                        break
-        i += 1
-    return wins, losses, open_t, profit, weekly_stats
 
-tot_w, tot_l, tot_o, tot_p = 0, 0, 0, 0.0
-details, live_signals = [], []
-agg_weekly = {w: dict(wins=0, losses=0, open=0, profit=0.0) for w in range(1, 5)}
+def fmt(v):
+    return f"{v:.8f}".rstrip("0").rstrip(".") if v < 1 else f"{v:.4f}".rstrip("0").rstrip(".")
 
-with st.spinner("جاري تحليل السوق..."):
-    for ticker, name in HALAL_COINS.items():
+
+# ───────────────────────── وضع التوصيات ─────────────────────────
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state[-1000:], f)
+
+
+def run_signals():
+    state = load_state()
+    sent = set(state)
+    for symbol, name in HALAL_COINS.items():
         try:
-            df_m = fetch_data(ticker, timeframe)
-            if not df_m.empty:
-                sig = check_live_signals(df_m, name, int(min_buy_ratio), int(zone_lookback), int(atr_len), float(atr_mult), float(rr_ratio))
-                if sig:
-                    live_signals.append(sig)
+            df = add_indicators(fetch_recent(symbol))
+        except Exception as e:
+            print(f"[{symbol}] تعذر الجلب: {e}")
+            continue
+        for _, row in df.tail(SIGNAL_LOOKBACK_CANDLES).iterrows():
+            if not row["signal"]:
+                continue
+            key = f"{symbol}|{int(row['open_time'])}"
+            if key in sent:
+                continue
+            msg = (
+                f"🟢 توصية شراء | {name}\n"
+                f"الزوج: {symbol}\n"
+                f"سعر الدخول: {fmt(row['entry'])}\n"
+                f"وقف الخسارة (SL): {fmt(row['sl'])}\n"
+                f"الهدف (TP): {fmt(row['tp'])}"
+            )
+            send_telegram(msg)
+            sent.add(key)
+            state.append(key)
+            print(f"أُرسلت: {key}")
+    save_state(state)
 
-                w, l, o, p, _ = run_backtest(df_m, timeframe, int(min_buy_ratio), int(zone_lookback), int(atr_len), float(atr_mult), float(rr_ratio), days=7)
-                tot_w += w
-                tot_l += l
-                tot_o += o
-                tot_p += p
-                if (w + l + o) > 0:
-                    details.append(dict(العملة=name, ناجحة=w, خاسرة=l, مفتوحة=o, الربح=round(p, 2)))
-                
-                _, _, _, _, w_stats = run_backtest(df_m, timeframe, int(min_buy_ratio), int(zone_lookback), int(atr_len), float(atr_mult), float(rr_ratio), days=28)
-                for wk in range(1, 5):
-                    if wk in w_stats:
-                        agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
-                        agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
-                        agg_weekly[wk]["open"] += w_stats[wk]["open"]
-                        agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
-        except Exception:
-            pass
 
-# --- عرض بطاقة الربح الصافي الدائمة في أعلى الصفحة ---
-p_color = "#16a34a" if tot_p >= 0 else "#dc2626"
-p_bg = "rgba(22, 163, 74, 0.14)" if tot_p >= 0 else "rgba(220, 38, 38, 0.14)"
-p_sign = "+" if tot_p > 0 else ""
+# ───────────────────────── وضع التقرير ─────────────────────────
+def week_start(dt):
+    """بداية الأسبوع: الأحد 00:00 UTC"""
+    d = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return d - timedelta(days=(d.weekday() + 1) % 7)
 
-top_profit_placeholder.markdown(
-    f"""
-    <div style="background-color:{p_bg}; border:2px solid {p_color}; border-radius:12px; padding:14px; text-align:center; margin-bottom:14px;">
-        <div style="font-size:15px; font-weight:bold; opacity:0.9;">💰 الربح الصافي للأسبوع الحالي</div>
-        <div style="font-size:32px; font-weight:900; color:{p_color}; direction:ltr; margin-top:4px;">{p_sign}{tot_p:.2f}$</div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
 
-# 1. التوصيات المستقبلية (الفرص الحالية)
-st.subheader("🎯 التوصيات المستقبلية (الفرص الحالية)")
-if live_signals:
-    st.dataframe(pd.DataFrame(live_signals), use_container_width=True, hide_index=True)
-else:
-    st.info("لا توجد فرص مطابقة للشروط في الشمعة الحالية أو السابقة.")
+def simulate(df, i):
+    """يحاكي صفقة دخلت عند إغلاق الشمعة i. يعيد (الحالة، سعر الخروج، فهرس شمعة الخروج)."""
+    sl, tp = df.at[i, "sl"], df.at[i, "tp"]
+    for j in range(i + 1, len(df)):
+        # إذا لمست الشمعة SL و TP معاً تُحسب خسارة (فحص SL أولاً)
+        if df.at[j, "low"] <= sl:
+            return "loss", sl, j
+        if df.at[j, "high"] >= tp:
+            return "win", tp, j
+    return "open", float(df["close"].iloc[-1]), len(df) - 1
 
-# 2. ملخص الأسبوع الحالي (يظهر عند تفعيل المربع الأول)
-if show_weekly_summary:
-    st.subheader("🔥 ملخص الأداء للأسبوع الحالي")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("ناجحة", tot_w)
-    c2.metric("خاسرة", tot_l)
-    c3.metric("مفتوحة", tot_o)
-    cw_closed = tot_w + tot_l
-    cw_winrate = (tot_w / cw_closed * 100) if cw_closed > 0 else 0.0
+
+def net_pnl(entry, exit_price):
+    qty = TRADE_AMOUNT / entry
+    gross = qty * exit_price - TRADE_AMOUNT
+    fees = TRADE_AMOUNT * FEE_RATE + qty * exit_price * FEE_RATE
+    return gross - fees
+
+
+def run_report():
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    fetch_from = int((month_start - timedelta(hours=400)).timestamp() * 1000)
+
+    trades, failed = [], []
+    for symbol in HALAL_COINS:
+        try:
+            df = add_indicators(fetch_since(symbol, fetch_from))
+        except Exception as e:
+            print(f"[{symbol}] تعذر الجلب: {e}")
+            failed.append(symbol)
+            continue
+        # مثل Streamlit: صفقة واحدة في كل زوج في وقت واحد.
+        # بعد إغلاق الصفقة يُستأنف الفحص من الشمعة التالية لشمعة الإغلاق،
+        # وإذا بقيت صفقة مفتوحة يتوقف الفحص على هذا الزوج.
+        last = len(df) - 1
+        blocked_until = -1
+        for i in df.index[df["signal"]]:
+            if i >= last or i <= blocked_until:
+                continue
+            entry_dt = datetime.fromtimestamp((df.at[i, "open_time"] + HOUR_MS) / 1000, tz=timezone.utc)
+            if entry_dt < month_start:
+                continue
+            status, exit_price, exit_idx = simulate(df, i)
+            trades.append({
+                "week": week_start(entry_dt),
+                "status": status,
+                "pnl": net_pnl(df.at[i, "entry"], exit_price),
+            })
+            if status == "open":
+                break
+            blocked_until = exit_idx
+
+    # الأسابيع (أحد → سبت) التي تغطي الشهر الحالي
+    weeks, w = [], week_start(month_start)
+    while w <= now:
+        weeks.append(w)
+        w += timedelta(days=7)
+
+    lines = [f"📊 تقرير {month_start.strftime('%Y-%m')} — صافي الربح بعد الرسوم "
+             f"({FEE_RATE*100:.1f}% دخول وخروج) | {TRADE_AMOUNT:.0f} USDT/صفقة", ""]
+    total_pnl = total_n = total_w = total_l = total_o = 0
+    for n, w in enumerate(weeks, 1):
+        wt = [t for t in trades if t["week"] == w]
+        wins = sum(t["status"] == "win" for t in wt)
+        losses = sum(t["status"] == "loss" for t in wt)
+        opens = sum(t["status"] == "open" for t in wt)
+        pnl = sum(t["pnl"] for t in wt)
+        end = w + timedelta(days=6)
+        lines.append(f"الأسبوع {n} ({w:%d/%m} → {end:%d/%m}): {len(wt)} صفقة | "
+                     f"✅ {wins} ❌ {losses} 🔓 {opens} | {pnl:+.2f} USDT")
+        total_pnl += pnl; total_n += len(wt)
+        total_w += wins; total_l += losses; total_o += opens
+
+    lines += ["", f"الإجمالي: {total_n} صفقة | ✅ {total_w} ❌ {total_l} 🔓 {total_o} | {total_pnl:+.2f} USDT"]
+    if failed:
+        lines.append(f"⚠️ تعذر جلب: {', '.join(failed)}")
+    send_telegram("\n".join(lines))
+    print("أُرسل التقرير")
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "signals"
+    if mode == "signals":
+        run_signals()
+    elif mode == "report":
+        run_report()
+    else:
+        print("الاستخدام: python scanner.py [signals|report]")
+        sys.exit(1)
