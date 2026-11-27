@@ -4,13 +4,14 @@ import pandas as pd
 import numpy as np
 
 # إعدادات الصفحة
-st.set_page_config(page_title="متتبع التداول الفوري - RSI (5m)", layout="centered")
+st.set_page_config(page_title="متتبع التداول الفوري المرن - RSI", layout="centered")
 
 # تنسيق الواجهة باللغة العربية (RTL)
 st.markdown("""
     <style>
     .main { direction: rtl; text-align: right; }
     div[data-testid="stCheckbox"] { direction: rtl; text-align: right; }
+    div[data-testid="stSelectbox"], div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
     .profit-box-green {
         background-color: #0d3b1e;
         border: 2px solid #28a745;
@@ -59,11 +60,34 @@ COINS = [
     "TIA-USD", "SUI-USD"
 ]
 
-# إعدادات الاستراتيجية لفريم 5 دقائق (بدون وقف خسارة)
-TIMEFRAME = "5m"
-RSI_BUY_LEVEL = 20       # الشراء عند اختراق 20 صعوداً بشمعة صاعدة
-RSI_SELL_LEVEL = 50      # البيع عند اختراق 50 صعوداً بشمعة صاعدة
-TAKE_PROFIT_PCT = 0.025  # هدف ربح سريع +2.5%
+# القيم الافتراضية في ذاكرة الجلسة (Session State)
+if 'rsi_buy' not in st.session_state:
+    st.session_state.rsi_buy = 15
+if 'rsi_sell' not in st.session_state:
+    st.session_state.rsi_sell = 50
+if 'tp_pct' not in st.session_state:
+    st.session_state.tp_pct = 2.5
+if 'rsi_period' not in st.session_state:
+    st.session_state.rsi_period = 14
+if 'trade_amount' not in st.session_state:
+    st.session_state.trade_amount = 100.0
+
+# نافذة الإطار الزمني في أعلى الواجهة لسهولة الوصول
+TIMEFRAME_OPTIONS = {
+    "5 دقائق (5m)": ("5m", "35d"),
+    "15 دقيقة (15m)": ("15m", "35d"),
+    "30 دقيقة (30m)": ("30m", "35d"),
+    "1 ساعة (1h)": ("1h", "45d"),
+    "4 ساعات (4h)": ("4h", "60d"),
+    "يومي (1d)": ("1d", "180d")
+}
+
+selected_tf_label = st.selectbox(
+    "⏱️ اختر الإطار الزمني للتداول:",
+    options=list(TIMEFRAME_OPTIONS.keys()),
+    index=0  # الافتراضي 5 دقائق
+)
+TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 
 # دالة حساب مؤشر RSI
 def calculate_rsi(series, period=14):
@@ -75,42 +99,45 @@ def calculate_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-@st.cache_data(ttl=180) # تحديث البيانات كل 3 دقائق
-def run_scanner(trade_amount=100.0):
+@st.cache_data(ttl=180)
+def run_scanner(timeframe, period_str, rsi_buy, rsi_sell, tp_pct, rsi_period, trade_amount):
     trades_history = []
     current_opportunities = []
+    tp_decimal = tp_pct / 100.0
 
     for symbol in COINS:
         try:
-            df = yf.download(symbol, period="35d", interval=TIMEFRAME, progress=False)
-            if df.empty or len(df) < 20:
+            df = yf.download(symbol, period=period_str, interval=timeframe, progress=False)
+            if df.empty or len(df) < rsi_period + 5:
                 continue
             
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            df['RSI'] = calculate_rsi(df['Close'], period=14)
+            df['RSI'] = calculate_rsi(df['Close'], period=rsi_period)
             df['Prev_RSI'] = df['RSI'].shift(1)
             df['Is_Green'] = df['Close'] > df['Open']
 
-            # شرط الشراء: اختراق RSI لمستوى 20 صعوداً + شمعة صاعدة
-            df['Buy_Signal'] = (df['Prev_RSI'] <= RSI_BUY_LEVEL) & (df['RSI'] > RSI_BUY_LEVEL) & df['Is_Green']
+            # شرط الشراء: اختراق مستوى الشراء صعوداً + شمعة صاعدة
+            df['Buy_Signal'] = (df['Prev_RSI'] <= rsi_buy) & (df['RSI'] > rsi_buy) & df['Is_Green']
             
-            # شرط البيع: اختراق RSI لمستوى 50 صعوداً + شمعة صاعدة
-            df['Sell_Signal'] = (df['Prev_RSI'] <= RSI_SELL_LEVEL) & (df['RSI'] > RSI_SELL_LEVEL) & df['Is_Green']
+            # شرط البيع: اختراق مستوى البيع صعوداً + شمعة صاعدة
+            df['Sell_Signal'] = (df['Prev_RSI'] <= rsi_sell) & (df['RSI'] > rsi_sell) & df['Is_Green']
 
             # فحص الفرص الحالية (في الشمعة الحالية أو السابقة)
             last_2 = df.tail(2)
             if last_2['Buy_Signal'].any():
                 last_price = float(df['Close'].iloc[-1])
                 last_rsi = float(df['RSI'].iloc[-1])
-                current_opportunities.append({
+                opp_data = {
                     "العملة": symbol.replace("-USD", ""),
                     "السعر الحالي": round(last_price, 4),
-                    "هدف الربح (+2.5%)": round(last_price * (1 + TAKE_PROFIT_PCT), 4),
                     "مؤشر RSI": round(last_rsi, 2),
                     "الوقت": str(df.index[-1])[:16]
-                })
+                }
+                if tp_pct > 0:
+                    opp_data[f"هدف الربح (+{tp_pct}%)"] = round(last_price * (1 + tp_decimal), 4)
+                current_opportunities.append(opp_data)
 
             # محاكاة الصفقات التاريخية (تداول فوري Spot بدون وقف خسارة)
             in_position = False
@@ -127,18 +154,17 @@ def run_scanner(trade_amount=100.0):
                     buy_time = idx
 
                 elif in_position:
-                    tp_price = buy_price * (1 + TAKE_PROFIT_PCT)
                     sell_reason = None
                     sell_price = 0.0
 
-                    # 1. التحقق من هدف الربح (+2.5%)
-                    if current_high >= tp_price:
-                        sell_price = tp_price
-                        sell_reason = "جني ربح (+2.5%)"
-                    # 2. التحقق من إشارة بيع RSI > 50 بشمعة صاعدة
+                    # 1. التحقق من هدف الربح (إذا كان مفعلاً أكبر من 0)
+                    if tp_pct > 0 and current_high >= buy_price * (1 + tp_decimal):
+                        sell_price = buy_price * (1 + tp_decimal)
+                        sell_reason = f"جني ربح (+{tp_pct}%)"
+                    # 2. التحقق من إشارة بيع RSI بشمعة صاعدة
                     elif row['Sell_Signal']:
                         sell_price = current_close
-                        sell_reason = "إشارة RSI > 50"
+                        sell_reason = f"إشارة RSI > {rsi_sell}"
 
                     if sell_reason:
                         profit_pct = (sell_price - buy_price) / buy_price
@@ -160,8 +186,16 @@ def run_scanner(trade_amount=100.0):
 
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-# تشغيل الفحص بحجم صفقة 100$
-trades_df, opps_df = run_scanner(trade_amount=100.0)
+# تشغيل الفحص بالإعدادات المختارة
+trades_df, opps_df = run_scanner(
+    TIMEFRAME,
+    DATA_PERIOD,
+    st.session_state.rsi_buy,
+    st.session_state.rsi_sell,
+    st.session_state.tp_pct,
+    st.session_state.rsi_period,
+    st.session_state.trade_amount
+)
 
 # تصفية الصفقات حسب الشهر الحالي والأسبوع الحالي
 weekly_profit = 0.0
@@ -210,7 +244,7 @@ if st.checkbox("📋 إظهار تفاصيل الصفقات"):
 if st.checkbox("📅 إظهار سجل 4 أسابيع (الشهر الحالي)"):
     if not current_month_trades.empty:
         total_month = current_month_trades['الربح ($)'].sum()
-        st.metric("إجمالي ربح الشهر الحالي (بحجم صفقة 100$)", f"{total_month:.2f}$")
+        st.metric(f"إجمالي ربح الشهر الحالي (بحجم صفقة {st.session_state.trade_amount}$)", f"{total_month:.2f}$")
         
         cm_copy = current_month_trades.copy()
         cm_copy['الأسبوع'] = "الأسبوع " + ((cm_copy['تاريخ البيع_dt'].dt.day - 1) // 7 + 1).astype(str)
@@ -222,31 +256,5 @@ if st.checkbox("📅 إظهار سجل 4 أسابيع (الشهر الحالي)"
     else:
         st.info("لا توجد صفقات مغلقة في الشهر الحالي حتى الآن.")
 
+# 3. نوافذ تغيير الإعدادات التفاعلية
 if st.checkbox("⚙️ إظهار إعدادات الاستراتيجية"):
-    st.markdown(f"""
-    - **الإطار الزمني:** 5 دقائق (`{TIMEFRAME}`).
-    - **نوع التداول:** فوري (`Spot`) بدون رافعة مالية وبدون وقف خسارة.
-    - **شرط الشراء:** اختراق RSI لمستوى `{RSI_BUY_LEVEL}` صعوداً مع شمعة صاعدة.
-    - **شروط البيع (أيهما أسبق):** اختراق RSI لمستوى `{RSI_SELL_LEVEL}` صعوداً بشمعة صاعدة، أو جني ربح **`+{TAKE_PROFIT_PCT*100:.1f}%`**.
-    - **حجم الصفقة للحساب:** `100$` لكل صفقة.
-    """)
-
-# 3. شريط المعلومات المختصر
-st.markdown(f"""
-    <div class="info-bar">
-        العملات: {len(COINS)} | الشراء: RSI > {RSI_BUY_LEVEL} | البيع: RSI > {RSI_SELL_LEVEL} أو +2.5% | الفريم: {TIMEFRAME}
-    </div>
-""", unsafe_allow_html=True)
-
-# 4. قسم التوصيات المستقبلية (الفرص الحالية)
-st.markdown("### 🎯 التوصيات المستقبلية (الفرص الحالية)")
-
-if not opps_df.empty:
-    st.success(f"تم العثور على {len(opps_df)} فرصة مطابقة للشروط!")
-    st.dataframe(opps_df, use_container_width=True)
-else:
-    st.markdown("""
-        <div class="alert-box">
-            لا توجد فرص مطابقة للشروط في الشمعة الحالية أو السابقة.
-        </div>
-    """, unsafe_allow_html=True)
