@@ -56,7 +56,6 @@ now_ma = datetime.now(MOROCCO_TZ)
 start_window, end_window = get_sunday_to_sunday_window(now_ma)
 month_weeks = get_current_month_weeks(now_ma)
 
-# القيم الافتراضية المعتمدة
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -182,7 +181,6 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
         buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
         strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
 
-        # التحسين 1: تأكيد الارتداد (إغلاق فوق قمة الشمعة السابقة لمنع الشراء أثناء الهبوط الحاد)
         if bounce_conf and close_p <= float(p_row['High']):
             i += 1
             continue
@@ -197,7 +195,7 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
                 if sl_dist > 0:
                     sl = entry - sl_dist
                     tp = entry + (sl_dist * rr)
-                    be_trigger = entry + sl_dist # نقطة تأمين الدخول عند ربح 1:1
+                    be_trigger = entry + sl_dist
                     be_activated = False
                     closed = False
 
@@ -208,14 +206,12 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
                         fut_low = float(fut['Low'])
                         fut_high = float(fut['High'])
 
-                        # التحسين 2: تفعيل تأمين الدخول إذا وصل السعر إلى ربح 1:1
                         if breakeven and not be_activated and fut_high >= be_trigger:
                             be_activated = True
-                            sl = entry * 1.002 # تغطية الدخول والعمولة
+                            sl = entry * 1.002
 
                         if fut_low <= sl:
                             if be_activated:
-                                # أغلقت الصفقة على نقطة الدخول بدون خسارة
                                 wins += 1
                             else:
                                 losses += 1
@@ -363,3 +359,7 @@ st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=Tru
 st.markdown(f"**إجمالي الربح الصافي للشهر الحالي:** **`$ {total_month_profit:.2f}`**")
 
 if details:
+    with st.expander("عرض تفاصيل صفقات الدورة الحالية لكل عملة"):
+        st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
+
+st.caption("تم التحديث بنجاح")
