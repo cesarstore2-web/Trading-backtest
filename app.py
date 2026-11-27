@@ -37,8 +37,10 @@ atr_mult = 2.3
 rr_ratio = 2.3
 
 # إعدادات فلتر EMA الافتراضية
-use_ema_filter = True
+use_ema_filter = False
 ema_length = 200
+ema_mode = "اتجاه EMA صاعد (EMA Rising)"
+ema_slope_bars = 5
 
 # مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
@@ -54,11 +56,22 @@ if show_settings:
         zone_lookback = st.number_input("نطاق البحث عن الدعوم:", min_value=15, max_value=200, value=100, step=5)
 
     st.markdown("**فلتر الاتجاه (EMA Filter)**")
-    e1, e2 = st.columns(2)
-    with e1:
-        use_ema_filter = st.checkbox("تفعيل فلتر EMA (الشراء فوق المتوسط)", value=True)
-    with e2:
-        ema_length = st.number_input("طول متوسط EMA:", min_value=10, max_value=500, value=200, step=10, disabled=not use_ema_filter)
+    use_ema_filter = st.checkbox("تفعيل فلتر EMA", value=False)
+    if use_ema_filter:
+        e1, e2 = st.columns(2)
+        with e1:
+            ema_length = st.number_input("طول متوسط EMA:", min_value=10, max_value=500, value=200, step=10)
+        with e2:
+            ema_mode = st.selectbox(
+                "نوع شرط EMA:",
+                [
+                    "اتجاه EMA صاعد (EMA Rising)",
+                    "السعر فوق EMA (Close > EMA)",
+                    "السعر تحت EMA (ارتداد من قاع)"
+                ]
+            )
+        if ema_mode == "اتجاه EMA صاعد (EMA Rising)":
+            ema_slope_bars = st.number_input("مقارنة EMA مع قبل (عدد الشموع):", min_value=1, max_value=50, value=5, step=1)
 
     st.markdown("**إدارة المخاطر (ATR / RR)**")
     r1, r2, r3 = st.columns(3)
@@ -104,12 +117,12 @@ def check_zone_touch(window_df, curr_candle):
 
     return False
 
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len, days=7):
+def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len, e_mode, e_slope, days=7):
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     bars_per_week = c_7d[tf]
     target_bars = bars_per_week if days == 7 else bars_per_week * 4
 
-    min_bars = max(lookback, a_len) + 5
+    min_bars = max(lookback, a_len, e_slope + 2) + 5
     if len(df) < min_bars:
         return 0, 0, 0, 0.0, {}
 
@@ -149,8 +162,16 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len,
         else:
             buy_pressure_ratio = 50.0
 
-        # التحقق من شرط فلتر EMA (إغلاق الشمعة فوق المتوسط المتحرك)
-        ema_condition = (close_p > ema_val) if en_ema else True
+        # التحقق من شرط فلتر EMA حسب النوع المختار
+        if not en_ema:
+            ema_condition = True
+        elif e_mode == "اتجاه EMA صاعد (EMA Rising)":
+            prev_ema = float(df.iloc[i - e_slope]['EMA'])
+            ema_condition = ema_val > prev_ema
+        elif e_mode == "السعر فوق EMA (Close > EMA)":
+            ema_condition = close_p > ema_val
+        else:  # السعر تحت EMA (ارتداد من قاع)
+            ema_condition = close_p < ema_val
 
         strong_buying = (
             (buy_pressure_ratio >= buy_pct_req)
@@ -217,7 +238,7 @@ with st.spinner("جاري حساب الربح الصافي..."):
                 w, l, o, p, _ = run_backtest(
                     df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
                     int(atr_len), float(atr_mult), float(rr_ratio),
-                    use_ema_filter, int(ema_length), days=7
+                    use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=7
                 )
                 tot_w += w
                 tot_l += l
@@ -229,7 +250,7 @@ with st.spinner("جاري حساب الربح الصافي..."):
                 _, _, _, _, w_stats = run_backtest(
                     df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
                     int(atr_len), float(atr_mult), float(rr_ratio),
-                    use_ema_filter, int(ema_length), days=28
+                    use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=28
                 )
                 for wk in range(1, 5):
                     if wk in w_stats:
@@ -241,37 +262,3 @@ with st.spinner("جاري حساب الربح الصافي..."):
             pass
 
 closed_t = tot_w + tot_l
-win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
-
-st.markdown(f"**الربح الصافي سبوت لمدة 7 أيام ({timeframe})**")
-st.title(f"$ {tot_p:.2f}")
-st.markdown("**نسبة النجاح**")
-st.title(f"{win_r:.1f}%")
-st.info(f"↑ مغلقة: {closed_t} | مفتوحة: {tot_o}")
-st.success(f"✅ {tot_w} ناجحة")
-st.error(f"❌ {tot_l} خاسرة")
-
-# جدول الربح الصافي لكل أسبوع على حدة لمدة الشهر الحالي
-st.subheader("الربح الصافي لكل أسبوع خلال الشهر الحالي")
-week_labels = {
-    1: "الأسبوع الأول",
-    2: "الأسبوع الثاني",
-    3: "الأسبوع الثالث",
-    4: "الأسبوع الرابع (الأخير)"
-}
-
-weekly_rows = []
-sum_w, sum_l, sum_o, sum_p = 0, 0, 0, 0.0
-
-for wk in range(1, 5):
-    w_wins = agg_weekly[wk]["wins"]
-    w_losses = agg_weekly[wk]["losses"]
-    w_open = agg_weekly[wk]["open"]
-    w_prof = agg_weekly[wk]["profit"]
-    
-    sum_w += w_wins
-    sum_l += w_losses
-    sum_o += w_open
-    sum_p += w_prof
-    
-    w_closed = w_wins + w_losses
