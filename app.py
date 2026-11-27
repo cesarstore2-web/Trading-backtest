@@ -28,7 +28,7 @@ HALAL_COINS = {
     "HBAR-USD": "Hedera"
 }
 
-# القيم الافتراضية المطابقة للصورة
+# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -36,7 +36,11 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# مربع إظهار أو إخفاء الإعدادات (مخفية افتراضياً)
+# إعدادات فلتر EMA الافتراضية
+use_ema_filter = True
+ema_length = 200
+
+# مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
@@ -49,6 +53,13 @@ if show_settings:
     with c2:
         zone_lookback = st.number_input("نطاق البحث عن الدعوم:", min_value=15, max_value=200, value=100, step=5)
 
+    st.markdown("**فلتر الاتجاه (EMA Filter)**")
+    e1, e2 = st.columns(2)
+    with e1:
+        use_ema_filter = st.checkbox("تفعيل فلتر EMA (الشراء فوق المتوسط)", value=True)
+    with e2:
+        ema_length = st.number_input("طول متوسط EMA:", min_value=10, max_value=500, value=200, step=10, disabled=not use_ema_filter)
+
     st.markdown("**إدارة المخاطر (ATR / RR)**")
     r1, r2, r3 = st.columns(3)
     with r1:
@@ -59,7 +70,8 @@ if show_settings:
         rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
     st.divider()
 
-st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: 7 أيام")
+ema_caption = f" | فلتر EMA {ema_length}" if use_ema_filter else ""
+st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم{ema_caption} | الفريم: {timeframe}")
 
 def calc_atr(df, length):
     hl = df['High'] - df['Low']
@@ -92,7 +104,7 @@ def check_zone_touch(window_df, curr_candle):
 
     return False
 
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
+def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len, days=7):
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     bars_per_week = c_7d[tf]
     target_bars = bars_per_week if days == 7 else bars_per_week * 4
@@ -104,6 +116,7 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
     df = df.copy()
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
+    df['EMA'] = df['Close'].ewm(span=ema_len, adjust=False).mean()
 
     start_i = max(min_bars, len(df) - target_bars)
     total_len = len(df)
@@ -119,7 +132,7 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
     i = start_i
     while i < total_len - 1:
         c_row = df.iloc[i]
-        if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
+        if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']) or pd.isna(c_row['EMA']):
             i += 1
             continue
 
@@ -128,6 +141,7 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
         close_p = float(c_row['Close'])
         open_p = float(c_row['Open'])
         vol = float(c_row['Volume'])
+        ema_val = float(c_row['EMA'])
         candle_range = high_p - low_p
 
         if candle_range > 0 and vol > 0:
@@ -135,7 +149,15 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
         else:
             buy_pressure_ratio = 50.0
 
-        strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
+        # التحقق من شرط فلتر EMA (إغلاق الشمعة فوق المتوسط المتحرك)
+        ema_condition = (close_p > ema_val) if en_ema else True
+
+        strong_buying = (
+            (buy_pressure_ratio >= buy_pct_req)
+            and (close_p > open_p)
+            and (vol >= float(c_row['Vol_MA']) * 0.8)
+            and ema_condition
+        )
 
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
@@ -187,15 +209,15 @@ agg_weekly = {
     4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
 }
 
-with st.spinner("جاري حساب الربح الصافي لآخر 7 أيام..."):
+with st.spinner("جاري حساب الربح الصافي..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
-                # 1. حساب آخر 7 أيام بالضبط كما في الكود الأصلي
                 w, l, o, p, _ = run_backtest(
                     df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), days=7
+                    int(atr_len), float(atr_mult), float(rr_ratio),
+                    use_ema_filter, int(ema_length), days=7
                 )
                 tot_w += w
                 tot_l += l
@@ -204,10 +226,10 @@ with st.spinner("جاري حساب الربح الصافي لآخر 7 أيام..
                 if (w + l + o) > 0:
                     details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
 
-                # 2. حساب جدول الأسابيع للشهر من نفس البيانات (30d)
                 _, _, _, _, w_stats = run_backtest(
                     df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), days=28
+                    int(atr_len), float(atr_mult), float(rr_ratio),
+                    use_ema_filter, int(ema_length), days=28
                 )
                 for wk in range(1, 5):
                     if wk in w_stats:
@@ -239,25 +261,17 @@ week_labels = {
 }
 
 weekly_rows = []
+sum_w, sum_l, sum_o, sum_p = 0, 0, 0, 0.0
+
 for wk in range(1, 5):
     w_wins = agg_weekly[wk]["wins"]
     w_losses = agg_weekly[wk]["losses"]
     w_open = agg_weekly[wk]["open"]
     w_prof = agg_weekly[wk]["profit"]
-    w_closed = w_wins + w_losses
-    w_rate = f"{(w_wins / w_closed * 100):.1f}%" if w_closed > 0 else "0.0%"
     
-    weekly_rows.append({
-        "الأسبوع": week_labels[wk],
-        "ناجحة ✅": w_wins,
-        "خاسرة ❌": w_losses,
-        "مفتوحة": w_open,
-        "نسبة النجاح": w_rate,
-        "الربح الصافي ($)": round(w_prof, 2)
-    })
-
-st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=True)
-
-if details:
-    with st.expander("عرض تفاصيل الصفقات والربح الصافي لكل عملة"):
-        st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
+    sum_w += w_wins
+    sum_l += w_losses
+    sum_o += w_open
+    sum_p += w_prof
+    
+    w_closed = w_wins + w_losses
