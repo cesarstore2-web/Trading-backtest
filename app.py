@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 
-st.set_page_config(page_title="ماسح ضغط الشراء والدعوم المطور", layout="centered")
+st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", layout="centered")
 
 TRADE_AMOUNT = 100.0
 MOROCCO_TZ = timezone.utc
@@ -56,7 +56,7 @@ now_ma = datetime.now(MOROCCO_TZ)
 start_window, end_window = get_sunday_to_sunday_window(now_ma)
 month_weeks = get_current_month_weeks(now_ma)
 
-# القيم الافتراضية المحسنة
+# القيم الافتراضية المعتمدة
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -65,8 +65,8 @@ atr_mult = 2.3
 rr_ratio = 2.3
 use_demand = False
 use_support = True
-use_trend_guard = True
-max_open_trades = 3
+use_bounce_confirm = True
+use_breakeven = True
 
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
@@ -88,12 +88,12 @@ if show_settings:
     with r3:
         rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
 
-    st.markdown("**فلاتر الحماية وإدارة المحفظة**")
+    st.markdown("**تحسينات حماية الأرباح**")
     p1, p2 = st.columns(2)
     with p1:
-        use_trend_guard = st.checkbox("درع الاتجاه العام (4H EMA 50)", value=True)
+        use_bounce_confirm = st.checkbox("تأكيد الارتداد (إغلاق فوق قمة السابقة)", value=True)
     with p2:
-        max_open_trades = st.number_input("أقصى صفقات مفتوحة معاً:", min_value=1, max_value=22, value=3, step=1)
+        use_breakeven = st.checkbox("تأمين الدخول عند ربح 1:1 (Break-Even)", value=True)
 
     st.markdown("**مصدر مناطق الدخول**")
     z1, z2 = st.columns(2)
@@ -103,7 +103,7 @@ if show_settings:
         use_support = st.checkbox("مستويات الدعم (Support Levels)", value=True)
     st.divider()
 
-st.caption(f"العملات: {len(HALAL_COINS)} عملة | أقصى صفقات متزامنة: {max_open_trades} | الدورة: {start_window.strftime('%m-%d %H:%M')} إلى {end_window.strftime('%m-%d %H:%M')} (UTC)")
+st.caption(f"العملات: {len(HALAL_COINS)} عملة نقية | الدورة: {start_window.strftime('%Y-%m-%d %H:%M')} إلى {end_window.strftime('%Y-%m-%d %H:%M')} (UTC)")
 
 def calc_atr(df, length):
     hl = df['High'] - df['Low']
@@ -127,23 +127,6 @@ def fetch_data(ticker, tf):
     if tf == "4h":
         df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
     return df
-
-@st.cache_data(ttl=300)
-def fetch_btc_regime():
-    df_btc = yf.download("BTC-USD", period="60d", interval="1h", progress=False)
-    if df_btc.empty:
-        return pd.DataFrame()
-    if isinstance(df_btc.columns, pd.MultiIndex):
-        df_btc.columns = df_btc.columns.get_level_values(0)
-    if df_btc.index.tz is None:
-        df_btc.index = df_btc.index.tz_localize(MOROCCO_TZ)
-    else:
-        df_btc.index = df_btc.index.tz_convert(MOROCCO_TZ)
-    df_4h = df_btc.resample('4h').agg({'Close': 'last'}).dropna()
-    df_4h['BTC_EMA50'] = df_4h['Close'].ewm(span=50, adjust=False).mean()
-    # السوق آمن للشراء إذا كان البيتكوين فوق EMA50 على 4 ساعات أو في حالة ارتداد واضح
-    df_4h['Market_Safe'] = (df_4h['Close'] >= df_4h['BTC_EMA50'] * 0.985).shift(1).fillna(True)
-    return df_4h[['Market_Safe']]
 def check_zone_touch(window_df, curr_candle, enable_demand, enable_support):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
@@ -169,41 +152,40 @@ def check_zone_touch(window_df, curr_candle, enable_demand, enable_support):
 
     return False, ""
 
-def generate_coin_signals(df, name, btc_df, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, trend_guard):
-    min_bars = max(lookback, a_len, 60)
+def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, bounce_conf, breakeven):
+    min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
-        return []
+        return 0, 0, 0, 0.0
 
-    df = df.copy()
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
-    # متوسط 200 ساعة (يعادل تقريباً 50 شمعة على فريم 4 ساعات) لتحديد اتجاه العملة
-    df['Coin_EMA'] = df['Close'].ewm(span=200, adjust=False).mean()
+    wins, losses, open_t, profit, fee = 0, 0, 0, 0.0, 0.001
 
-    if trend_guard and not btc_df.empty:
-        merged = pd.merge_asof(df.sort_index(), btc_df.sort_index(), left_index=True, right_index=True, direction='backward')
-        df['Market_Safe'] = merged['Market_Safe'].fillna(True)
-    else:
-        df['Market_Safe'] = True
-
-    signals = []
-    for i in range(min_bars, len(df) - 1):
-        c_row = df.iloc[i]
-        if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
+    i = min_bars
+    while i < len(df) - 1:
+        candle_time = df.index[i]
+        if candle_time < start_dt or candle_time > end_dt:
+            i += 1
             continue
 
-        # تطبيق درع الاتجاه العام (البيتكوين آمن + العملة ليست في انهيار حاد)
-        if trend_guard:
-            if not bool(c_row['Market_Safe']) or float(c_row['Close']) < float(c_row['Coin_EMA']) * 0.96:
-                continue
+        c_row = df.iloc[i]
+        p_row = df.iloc[i - 1]
+        if pd.isna(c_row['ATR']) or pd.isna(c_row['Vol_MA']):
+            i += 1
+            continue
 
         high_p, low_p = float(c_row['High']), float(c_row['Low'])
         close_p, open_p = float(c_row['Close']), float(c_row['Open'])
         vol = float(c_row['Volume'])
         candle_range = high_p - low_p
 
-        buy_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
-        strong_buying = (buy_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
+        buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
+        strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
+
+        # التحسين 1: تأكيد الارتداد (إغلاق فوق قمة الشمعة السابقة لمنع الشراء أثناء الهبوط الحاد)
+        if bounce_conf and close_p <= float(p_row['High']):
+            i += 1
+            continue
 
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
@@ -215,92 +197,53 @@ def generate_coin_signals(df, name, btc_df, buy_pct_req, lookback, a_len, a_m, r
                 if sl_dist > 0:
                     sl = entry - sl_dist
                     tp = entry + (sl_dist * rr)
-                    exit_time = df.index[-1]
-                    outcome = "open"
-                    pnl = 0.0
-                    fee = 0.001
+                    be_trigger = entry + sl_dist # نقطة تأمين الدخول عند ربح 1:1
+                    be_activated = False
+                    closed = False
 
                     for j in range(i + 1, len(df)):
+                        if df.index[j] > end_dt:
+                            break
                         fut = df.iloc[j]
-                        if float(fut['Low']) <= sl:
-                            outcome = "loss"
-                            pnl = -(TRADE_AMOUNT * (sl_dist / entry) + TRADE_AMOUNT * fee * 2)
-                            exit_time = df.index[j]
+                        fut_low = float(fut['Low'])
+                        fut_high = float(fut['High'])
+
+                        # التحسين 2: تفعيل تأمين الدخول إذا وصل السعر إلى ربح 1:1
+                        if breakeven and not be_activated and fut_high >= be_trigger:
+                            be_activated = True
+                            sl = entry * 1.002 # تغطية الدخول والعمولة
+
+                        if fut_low <= sl:
+                            if be_activated:
+                                # أغلقت الصفقة على نقطة الدخول بدون خسارة
+                                wins += 1
+                            else:
+                                losses += 1
+                                profit -= (TRADE_AMOUNT * (sl_dist / entry) + TRADE_AMOUNT * fee * 2)
+                            closed = True
+                            i = j
                             break
-                        elif float(fut['High']) >= tp:
-                            outcome = "win"
-                            pnl = (TRADE_AMOUNT * ((tp - entry) / entry) - TRADE_AMOUNT * fee * 2)
-                            exit_time = df.index[j]
+                        elif fut_high >= tp:
+                            wins += 1
+                            profit += (TRADE_AMOUNT * ((tp - entry) / entry) - TRADE_AMOUNT * fee * 2)
+                            closed = True
+                            i = j
                             break
+                    if not closed:
+                        open_t += 1
+                        break
+        i += 1
+    return wins, losses, open_t, profit
 
-                    signals.append({
-                        "coin": name,
-                        "entry_time": df.index[i],
-                        "exit_time": exit_time,
-                        "buy_ratio": buy_ratio,
-                        "outcome": outcome,
-                        "pnl": pnl
-                    })
-    return signals
-
-# محاكاة المحفظة بحد أقصى للصفقات المتزامنة لمنع التكدس وقت الهبوط
-def simulate_portfolio(all_signals, start_dt, end_dt, max_concurrent):
-    period_sigs = [s for s in all_signals if start_dt <= s["entry_time"] <= end_dt]
-    # ترتيب الإشارات زمنياً ثم حسب قوة ضغط الشراء
-    period_sigs.sort(key=lambda x: (x["entry_time"], -x["buy_ratio"]))
-
-    active_trades = []
-    wins, losses, open_t, net_profit = 0, 0, 0, 0.0
-    coin_breakdown = {}
-
-    for sig in period_sigs:
-        curr_t = sig["entry_time"]
-        # إزالة الصفقات التي أغلقت قبل وقت الإشارة الجديدة
-        active_trades = [t for t in active_trades if t["exit_time"] > curr_t]
-
-        # منع تكرار نفس العملة أو تجاوز الحد الأقصى للصفقات المفتوحة معاً
-        if len(active_trades) >= max_concurrent:
-            continue
-        if any(t["coin"] == sig["coin"] for t in active_trades):
-            continue
-
-        # قبول الصفقة
-        active_trades.append(sig)
-        c_name = sig["coin"]
-        if c_name not in coin_breakdown:
-            coin_breakdown[c_name] = {"العملة": c_name, "ناجحة": 0, "خاسرة": 0, "مفتوحة": 0, "الربح الصافي ($)": 0.0}
-
-        # إذا أغلقت الصفقة بعد نهاية الأسبوع الحالي تُحسب كمفتوحة في هذا الأسبوع
-        if sig["outcome"] == "open" or sig["exit_time"] > end_dt:
-            open_t += 1
-            coin_breakdown[c_name]["مفتوحة"] += 1
-        elif sig["outcome"] == "win":
-            wins += 1
-            net_profit += sig["pnl"]
-            coin_breakdown[c_name]["ناجحة"] += 1
-            coin_breakdown[c_name]["الربح الصافي ($)"] = round(coin_breakdown[c_name]["الربح الصافي ($)"] + sig["pnl"], 2)
-        elif sig["outcome"] == "loss":
-            losses += 1
-            net_profit += sig["pnl"]
-            coin_breakdown[c_name]["خاسرة"] += 1
-            coin_breakdown[c_name]["الربح الصافي ($)"] = round(coin_breakdown[c_name]["الربح الصافي ($)"] + sig["pnl"], 2)
-
-    return wins, losses, open_t, net_profit, list(coin_breakdown.values())
-
-def check_live_signals(df, name, btc_df, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, trend_guard):
-    min_bars = max(lookback, a_len, 60)
+def check_live_signals(df, name, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, bounce_conf):
+    min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
         return None, None
 
-    df = df.copy()
     df['ATR'] = calc_atr(df, a_len)
-    df['Coin_EMA'] = df['Close'].ewm(span=200, adjust=False).mean()
     last_candle = df.iloc[-1]
+    prev_candle = df.iloc[-2]
     window_df = df.iloc[-lookback - 1 : -1]
-
-    market_ok = True
-    if trend_guard and not btc_df.empty:
-        market_ok = bool(btc_df['Market_Safe'].iloc[-1]) and (float(last_candle['Close']) >= float(last_candle['Coin_EMA']) * 0.96)
 
     high_p, low_p = float(last_candle['High']), float(last_candle['Low'])
     close_p, open_p = float(last_candle['Close']), float(last_candle['Open'])
@@ -308,8 +251,9 @@ def check_live_signals(df, name, btc_df, buy_pct_req, lookback, a_len, a_m, rr, 
 
     buy_ratio = ((close_p - low_p) / candle_range * 100.0) if candle_range > 0 else 50.0
     in_zone, z_type = check_zone_touch(window_df, last_candle, en_demand, en_support)
+    bounce_ok = (close_p > float(prev_candle['High'])) if bounce_conf else True
 
-    if market_ok and in_zone and buy_ratio >= buy_pct_req and close_p > open_p:
+    if in_zone and buy_ratio >= buy_pct_req and close_p > open_p and bounce_ok:
         sl_dist = float(last_candle['ATR']) * a_m
         if sl_dist > 0:
             return {
@@ -318,12 +262,12 @@ def check_live_signals(df, name, btc_df, buy_pct_req, lookback, a_len, a_m, rr, 
                 "سعر الدخول": round(close_p, 4),
                 "الهدف (TP)": round(close_p + (sl_dist * rr), 4),
                 "وقف الخسارة (SL)": round(close_p - sl_dist, 4),
-                "قوة الشراء": f"{buy_ratio:.0f}%"
+                "نسبة الشراء": f"{buy_ratio:.0f}%"
             }, None
 
     support_lvl = float(np.min(window_df['Low'].values))
     dist_to_support = ((close_p - support_lvl) / support_lvl) * 100.0
-    if market_ok and 0 <= dist_to_support <= 1.5:
+    if 0 <= dist_to_support <= 1.5:
         sl_dist = float(last_candle['ATR']) * a_m
         return None, {
             "العملة": name,
@@ -334,35 +278,47 @@ def check_live_signals(df, name, btc_df, buy_pct_req, lookback, a_len, a_m, rr, 
         }
     return None, None
 
-# --- تنفيذ التحليل ---
-all_signals = []
+tot_w, tot_l, tot_o, tot_p, details = 0, 0, 0, 0.0, []
 live_buys, watchlist = [], []
+weekly_stats = {w_label: {"ناجحة": 0, "خاسرة": 0, "مفتوحة": 0, "الربح الصافي ($)": 0.0, "الفترة": f"{ws.strftime('%m-%d')} إلى {we.strftime('%m-%d')}"} for w_label, ws, we in month_weeks}
 
-with st.spinner("جاري تشغيل درع الاتجاه العام وتحليل المحفظة..."):
-    btc_regime = fetch_btc_regime()
+with st.spinner("جاري فحص العملات الـ 22 وتطبيق تحسينات تأكيد الارتداد..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
-                sigs = generate_coin_signals(
-                    df_m, name, btc_regime, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_trend_guard
+                w, l, o, p = run_backtest(
+                    df_m.copy(), start_window, end_window, int(min_buy_ratio), int(zone_lookback),
+                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_bounce_confirm, use_breakeven
                 )
-                all_signals.extend(sigs)
+                tot_w += w
+                tot_l += l
+                tot_o += o
+                tot_p += p
+                if (w + l + o) > 0:
+                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
 
                 sig, watch = check_live_signals(
-                    df_m, name, btc_regime, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_trend_guard
+                    df_m.copy(), name, int(min_buy_ratio), int(zone_lookback),
+                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_bounce_confirm
                 )
                 if sig:
                     live_buys.append(sig)
                 if watch:
                     watchlist.append(watch)
+
+                for w_label, ws, we in month_weeks:
+                    ww, wl, wo, wp = run_backtest(
+                        df_m.copy(), ws, we, int(min_buy_ratio), int(zone_lookback),
+                        int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_bounce_confirm, use_breakeven
+                    )
+                    weekly_stats[w_label]["ناجحة"] += ww
+                    weekly_stats[w_label]["خاسرة"] += wl
+                    weekly_stats[w_label]["مفتوحة"] += wo
+                    weekly_stats[w_label]["الربح الصافي ($)"] = round(weekly_stats[w_label]["الربح الصافي ($)"] + wp, 2)
         except Exception:
             pass
 
-# نتائج الدورة الأسبوعية الحالية
-tot_w, tot_l, tot_o, tot_p, details = simulate_portfolio(all_signals, start_window, end_window, int(max_open_trades))
 closed_t = tot_w + tot_l
 win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
 
@@ -377,5 +333,33 @@ st.error(f"❌ {tot_l} خاسرة")
 st.divider()
 st.subheader("🎯 التوصيات المستقبلية والإشارات الحية")
 if live_buys:
-    live_buys.sort(key=lambda x: x["قوة الشراء"], reverse=True)
-    st.success(f"أقوى إشارات الشراء الجاهزة الآن (بحد أقصى {max_open_trades} صفقات):")
+    st.success("إشارات شراء مؤكدة بالارتداد الآن:")
+    st.dataframe(pd.DataFrame(live_buys), use_container_width=True, hide_index=True)
+else:
+    st.caption("لا توجد إشارة دخول مكتملة في هذه اللحظة؛ راقب القائمة أدناه:")
+
+if watchlist:
+    st.markdown("**عملات تقترب من مناطق الشراء (قائمة المراقبة):**")
+    st.dataframe(pd.DataFrame(watchlist), use_container_width=True, hide_index=True)
+elif not live_buys:
+    st.info("جميع العملات تتحرك حالياً بعيداً عن مستويات الدعم الرئيسية.")
+
+st.divider()
+st.subheader(f"📊 السجل الأسبوعي للشهر الحالي ({now_ma.strftime('%B %Y')})")
+weekly_rows = []
+total_month_profit = 0.0
+for w_label, stats in weekly_stats.items():
+    total_month_profit += stats["الربح الصافي ($)"]
+    weekly_rows.append({
+        "الأسبوع": w_label,
+        "الفترة (UTC)": stats["الفترة"],
+        "ناجحة": stats["ناجحة"],
+        "خاسرة": stats["خاسرة"],
+        "مفتوحة": stats["مفتوحة"],
+        "الربح الصافي ($)": stats["الربح الصافي ($)"]
+    })
+
+st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=True)
+st.markdown(f"**إجمالي الربح الصافي للشهر الحالي:** **`$ {total_month_profit:.2f}`**")
+
+if details:
