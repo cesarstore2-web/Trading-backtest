@@ -28,7 +28,7 @@ HALAL_COINS = {
     "HBAR-USD": "Hedera"
 }
 
-# القيم الافتراضية
+# القيم الافتراضية المطابقة للصورة
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -36,7 +36,7 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# مربع إظهار أو إخفاء الإعدادات
+# مربع إظهار أو إخفاء الإعدادات (مخفية افتراضياً)
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
@@ -59,7 +59,7 @@ if show_settings:
         rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
     st.divider()
 
-st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: الشهر الحالي (4 أسابيع)")
+st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: 7 أيام")
 
 def calc_atr(df, length):
     hl = df['High'] - df['Low']
@@ -71,8 +71,7 @@ def calc_atr(df, length):
 @st.cache_data(ttl=300)
 def fetch_data(ticker, tf):
     yf_int = "1h" if tf == "4h" else tf
-    # جلب 45 يوماً لضمان وجود بيانات كافية لحساب المؤشرات قبل بداية الشهر (28 يوماً)
-    df = yf.download(ticker, period="45d", interval=yf_int, progress=False)
+    df = yf.download(ticker, period="30d", interval=yf_int, progress=False)
     if df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -81,7 +80,7 @@ def fetch_data(ticker, tf):
         df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
     return df
 
-def check_support_touch(window_df, curr_candle):
+def check_zone_touch(window_df, curr_candle):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
     
@@ -90,27 +89,26 @@ def check_support_touch(window_df, curr_candle):
     tolerance = support_level * 0.005
     if curr_low <= (support_level + tolerance) and curr_close >= support_level:
         return True
+
     return False
 
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr):
-    # عدد الشموع في الأسبوع الواحد لكل فريم
+def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, days=7):
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     bars_per_week = c_7d[tf]
-    bars_28d = bars_per_week * 4  # 4 أسابيع (الشهر)
+    target_bars = bars_per_week if days == 7 else bars_per_week * 4
 
     min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
         return 0, 0, 0, 0.0, {}
 
+    df = df.copy()
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
 
-    start_i = max(min_bars, len(df) - bars_28d)
+    start_i = max(min_bars, len(df) - target_bars)
     total_len = len(df)
-    
     wins, losses, open_t, profit, fee = 0, 0, 0, 0.0, 0.001
-    
-    # قاموس لتخزين نتائج كل أسبوع (من الأسبوع 1 الأقدم إلى الأسبوع 4 الأحدث)
+
     weekly_stats = {
         1: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
         2: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
@@ -141,10 +139,9 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr):
 
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
-            in_support = check_support_touch(window_df, c_row)
+            in_zone = check_zone_touch(window_df, c_row)
 
-            if in_support:
-                # تحديد الأسبوع الذي دخلت فيه الصفقة (4 هو الأسبوع الحالي/الأخير، 1 هو الأقدم)
+            if in_zone:
                 bars_from_end = total_len - i
                 week_idx = 4 - int((bars_from_end - 1) // bars_per_week)
                 week_idx = max(1, min(4, week_idx))
@@ -190,50 +187,55 @@ agg_weekly = {
     4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
 }
 
-with st.spinner("جاري حساب الربح الصافي للشهر الحالي وتفاصيل الأسابيع..."):
+with st.spinner("جاري حساب الربح الصافي لآخر 7 أيام..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
-                w, l, o, p, w_stats = run_backtest(
+                # 1. حساب آخر 7 أيام بالضبط كما في الكود الأصلي
+                w, l, o, p, _ = run_backtest(
                     df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio)
+                    int(atr_len), float(atr_mult), float(rr_ratio), days=7
                 )
                 tot_w += w
                 tot_l += l
                 tot_o += o
                 tot_p += p
-                
+                if (w + l + o) > 0:
+                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
+
+                # 2. حساب جدول الأسابيع للشهر من نفس البيانات (30d)
+                _, _, _, _, w_stats = run_backtest(
+                    df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
+                    int(atr_len), float(atr_mult), float(rr_ratio), days=28
+                )
                 for wk in range(1, 5):
                     if wk in w_stats:
                         agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
                         agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
                         agg_weekly[wk]["open"] += w_stats[wk]["open"]
                         agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
-
-                if (w + l + o) > 0:
-                    details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
         except Exception:
             pass
 
 closed_t = tot_w + tot_l
 win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
 
-st.markdown(f"**إجمالي الربح الصافي سبوت للشهر الحالي ({timeframe})**")
+st.markdown(f"**الربح الصافي سبوت لمدة 7 أيام ({timeframe})**")
 st.title(f"$ {tot_p:.2f}")
-st.markdown("**نسبة النجاح الإجمالية**")
+st.markdown("**نسبة النجاح**")
 st.title(f"{win_r:.1f}%")
 st.info(f"↑ مغلقة: {closed_t} | مفتوحة: {tot_o}")
 st.success(f"✅ {tot_w} ناجحة")
 st.error(f"❌ {tot_l} خاسرة")
 
-# بناء جدول الربح الصافي لكل أسبوع
+# جدول الربح الصافي لكل أسبوع على حدة لمدة الشهر الحالي
 st.subheader("الربح الصافي لكل أسبوع خلال الشهر الحالي")
 week_labels = {
-    1: "الأسبوع الأول (قبل 3 أسابيع)",
-    2: "الأسبوع الثاني (قبل أسبوعين)",
-    3: "الأسبوع الثالث (الأسبوع الماضي)",
-    4: "الأسبوع الرابع (الأسبوع الحالي)"
+    1: "الأسبوع الأول",
+    2: "الأسبوع الثاني",
+    3: "الأسبوع الثالث",
+    4: "الأسبوع الرابع (الأخير)"
 }
 
 weekly_rows = []
@@ -257,5 +259,5 @@ for wk in range(1, 5):
 st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=True)
 
 if details:
-    with st.expander("عرض تفاصيل الصفقات والربح الصافي لكل عملة خلال الشهر"):
+    with st.expander("عرض تفاصيل الصفقات والربح الصافي لكل عملة"):
         st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
