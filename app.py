@@ -5,49 +5,21 @@ import numpy as np
 
 st.set_page_config(page_title="متتبع التداول الفوري المرن - RSI", layout="centered")
 
-st.markdown("""
-<style>
-.main { direction: rtl; text-align: right; }
-div[data-testid="stCheckbox"] { direction: rtl; text-align: right; }
-div[data-testid="stSelectbox"], div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
-.profit-box-green {
-    background-color: #0d3b1e;
-    border: 2px solid #28a745;
-    border-radius: 12px;
-    padding: 20px;
-    text-align: center;
-    margin-bottom: 20px;
-}
-.profit-box-red {
-    background-color: #3b0d0d;
-    border: 2px solid #dc3545;
-    border-radius: 12px;
-    padding: 20px;
-    text-align: center;
-    margin-bottom: 20px;
-}
-.profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }
-.profit-amount-green { color: #2ecc71; font-size: 36px; font-weight: bold; direction: ltr; }
-.profit-amount-red { color: #ff6b6b; font-size: 36px; font-weight: bold; direction: ltr; }
-.info-bar {
-    color: #aaaaaa;
-    font-size: 13px;
-    text-align: center;
-    margin: 15px 0;
-    padding: 8px;
-    background-color: #1e1e1e;
-    border-radius: 8px;
-}
-.alert-box {
-    background-color: #162436;
-    border: 1px solid #2b4c7e;
-    border-radius: 10px;
-    padding: 15px;
-    text-align: center;
-    color: #90caf9;
-}
-</style>
-""", unsafe_allow_html=True)
+css = (
+    "<style>"
+    ".main { direction: rtl; text-align: right; }"
+    "div[data-testid='stCheckbox'] { direction: rtl; text-align: right; }"
+    "div[data-testid='stSelectbox'], div[data-testid='stNumberInput'] { direction: rtl; text-align: right; }"
+    ".profit-box-green { background-color: #0d3b1e; border: 2px solid #28a745; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px; }"
+    ".profit-box-red { background-color: #3b0d0d; border: 2px solid #dc3545; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px; }"
+    ".profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }"
+    ".profit-amount-green { color: #2ecc71; font-size: 36px; font-weight: bold; direction: ltr; }"
+    ".profit-amount-red { color: #ff6b6b; font-size: 36px; font-weight: bold; direction: ltr; }"
+    ".info-bar { color: #aaaaaa; font-size: 13px; text-align: center; margin: 15px 0; padding: 8px; background-color: #1e1e1e; border-radius: 8px; }"
+    ".alert-box { background-color: #162436; border: 1px solid #2b4c7e; border-radius: 10px; padding: 15px; text-align: center; color: #90caf9; }"
+    "</style>"
+)
+st.markdown(css, unsafe_allow_html=True)
 
 COINS = [
     "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", 
@@ -202,12 +174,8 @@ box_class = "profit-box-green" if weekly_profit >= 0 else "profit-box-red"
 amount_class = "profit-amount-green" if weekly_profit >= 0 else "profit-amount-red"
 sign = "+" if weekly_profit > 0 else ""
 
-st.markdown(f"""
-<div class="{box_class}">
-    <div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div>
-    <div class="{amount_class}">{sign}{weekly_profit:.2f}$</div>
-</div>
-""", unsafe_allow_html=True)
+profit_html = f'<div class="{box_class}"><div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div><div class="{amount_class}">{sign}{weekly_profit:.2f}$</div></div>'
+st.markdown(profit_html, unsafe_allow_html=True)
 
 if st.checkbox("🔥 إظهار ملخص الأداء للأسبوع الحالي"):
     if not weekly_trades.empty:
@@ -250,5 +218,3 @@ if st.checkbox("⚙️ إظهار إعدادات الاستراتيجية"):
     st.caption("التداول فوري (Spot) بدون وقف خسارة، ويتم تحديث النتائج تلقائياً عند تغيير أي رقم.")
 
 tp_text = f" أو +{st.session_state.tp_pct}%" if st.session_state.tp_pct > 0 else ""
-st.markdown(f"""
-<div class="info-bar">
