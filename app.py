@@ -61,23 +61,24 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
     trades_history = []
     current_opportunities = []
 
+    try:
+        all_data = yf.download(COINS, period=period_str, interval=timeframe, group_by='ticker', progress=False, threads=True)
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
     for symbol in COINS:
         try:
-            df = yf.download(symbol, period=period_str, interval=timeframe, progress=False)
-            if df.empty or len(df) < swing_lookback + 10:
+            if symbol not in all_data.columns.get_level_values(0):
                 continue
-            
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            df = df.reset_index()
-            time_col = df.columns[0]
+            df = all_data[symbol].dropna(subset=['Open', 'High', 'Low', 'Close'])
+            if len(df) < swing_lookback + 10:
+                continue
 
             opens = df['Open'].values.astype(float)
             highs = df['High'].values.astype(float)
             lows = df['Low'].values.astype(float)
             closes = df['Close'].values.astype(float)
-            times = df[time_col].values
+            times = df.index
 
             in_position = False
             buy_price = 0.0
@@ -116,9 +117,9 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
                         profit_usd = trade_amount * profit_pct
                         trades_history.append({
                             "العملة": symbol.replace("-USD", ""),
-                            "تاريخ الشراء": str(buy_time)[:16].replace("T", " "),
+                            "تاريخ الشراء": str(buy_time)[:16],
                             "سعر الشراء": round(buy_price, 4),
-                            "تاريخ البيع": str(curr_time)[:16].replace("T", " "),
+                            "تاريخ البيع": str(curr_time)[:16],
                             "سعر البيع": round(sell_price, 4),
                             "سبب الإغلاق": sell_reason,
                             "الربح ($)": round(profit_usd, 2),
@@ -129,7 +130,6 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
 
                 prev_swing_low = np.min(lows[i - swing_lookback : i])
                 prev_swing_high = np.max(highs[i - swing_lookback : i])
-
                 recent_min_low = np.min(lows[i - 4 : i + 1])
 
                 if recent_min_low < prev_swing_low and curr_close > curr_open:
@@ -193,7 +193,7 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
                         "منطقة الشراء (FVG)": round(fvg_top, 4) if has_fvg else round(last_price, 4),
                         "وقف الخسارة (SL)": round(sweep_low, 4),
                         "هدف الربح": round(est_tp, 4),
-                        "الوقت": str(times[-1])[:16].replace("T", " ")
+                        "الوقت": str(times[-1])[:16]
                     })
 
         except Exception:
