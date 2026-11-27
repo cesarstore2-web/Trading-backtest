@@ -23,12 +23,17 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# مربعات التحكم العلوية
-show_settings = st.checkbox("⚙️ إظهار إعدادات الاستراتيجية", value=False)
+# مكان مخصص في الأعلى لعرض الربح الصافي دائماً
+top_profit_placeholder = st.empty()
+
+# --- ترتيب المربعات حسب الأولوية ---
+show_weekly_summary = st.checkbox("🔥 إظهار ملخص الأداء للأسبوع الحالي", value=False)
 show_details = st.checkbox("📋 إظهار تفاصيل الصفقات", value=False)
 show_4weeks = st.checkbox("📅 إظهار سجل آخر 4 أسابيع", value=False)
+show_settings = st.checkbox("⚙️ إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
+    st.divider()
     timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
     c1, c2 = st.columns(2)
     with c1:
@@ -187,39 +192,34 @@ with st.spinner("جاري تحليل السوق..."):
         except Exception:
             pass
 
-# 1. التوصيات المستقبلية
+# --- عرض بطاقة الربح الصافي الدائمة في أعلى الصفحة ---
+p_color = "#16a34a" if tot_p >= 0 else "#dc2626"
+p_bg = "rgba(22, 163, 74, 0.14)" if tot_p >= 0 else "rgba(220, 38, 38, 0.14)"
+p_sign = "+" if tot_p > 0 else ""
+
+top_profit_placeholder.markdown(
+    f"""
+    <div style="background-color:{p_bg}; border:2px solid {p_color}; border-radius:12px; padding:14px; text-align:center; margin-bottom:14px;">
+        <div style="font-size:15px; font-weight:bold; opacity:0.9;">💰 الربح الصافي للأسبوع الحالي</div>
+        <div style="font-size:32px; font-weight:900; color:{p_color}; direction:ltr; margin-top:4px;">{p_sign}{tot_p:.2f}$</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# 1. التوصيات المستقبلية (الفرص الحالية)
 st.subheader("🎯 التوصيات المستقبلية (الفرص الحالية)")
 if live_signals:
     st.dataframe(pd.DataFrame(live_signals), use_container_width=True, hide_index=True)
 else:
     st.info("لا توجد فرص مطابقة للشروط في الشمعة الحالية أو السابقة.")
 
-# 2. ملخص الأسبوع الحالي
-st.subheader("🔥 ملخص الأداء للأسبوع الحالي")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("ناجحة", tot_w)
-c2.metric("خاسرة", tot_l)
-c3.metric("مفتوحة", tot_o)
-c4.metric("الربح ($)", f"{tot_p:.2f}$", delta=f"{tot_p:.2f}$")
-
-cw_closed = tot_w + tot_l
-cw_winrate = (tot_w / cw_closed * 100) if cw_closed > 0 else 0.0
-st.caption(f"نسبة النجاح: {cw_winrate:.1f}% | الصفقات المغلقة: {cw_closed}")
-
-# 3. تفاصيل الصفقات (تظهر عند تفعيل المربع)
-if show_details:
-    st.subheader("📋 تفاصيل الصفقات (الأسبوع الحالي)")
-    if details:
-        st.dataframe(pd.DataFrame(details).sort_values(by="الربح", ascending=False), use_container_width=True, hide_index=True)
-    else:
-        st.warning("لا توجد صفقات في الأسبوع الحالي.")
-
-# 4. سجل 4 أسابيع (يظهر عند تفعيل المربع)
-if show_4weeks:
-    st.subheader("📅 سجل الأداء لآخر 4 أسابيع")
-    w_rows = []
-    for wk in range(4, 0, -1):
-        wd = agg_weekly[wk]
-        lbl = "الأسبوع الحالي" if wk == 4 else f"قبل {4 - wk} أسابيع"
-        w_rows.append(dict(الفترة=lbl, ناجحة=wd["wins"], خاسرة=wd["losses"], مفتوحة=wd["open"], الربح=round(wd["profit"], 2)))
-    st.dataframe(pd.DataFrame(w_rows), use_container_width=True, hide_index=True)
+# 2. ملخص الأسبوع الحالي (يظهر عند تفعيل المربع الأول)
+if show_weekly_summary:
+    st.subheader("🔥 ملخص الأداء للأسبوع الحالي")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ناجحة", tot_w)
+    c2.metric("خاسرة", tot_l)
+    c3.metric("مفتوحة", tot_o)
+    cw_closed = tot_w + tot_l
+    cw_winrate = (tot_w / cw_closed * 100) if cw_closed > 0 else 0.0
