@@ -56,6 +56,7 @@ now_ma = datetime.now(MOROCCO_TZ)
 start_window, end_window = get_sunday_to_sunday_window(now_ma)
 month_weeks = get_current_month_weeks(now_ma)
 
+# القيم الافتراضية المعتمدة
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -64,8 +65,11 @@ atr_mult = 2.3
 rr_ratio = 2.3
 use_demand = False
 use_support = True
-use_bounce_confirm = True
+
+# مربعات تفعيل الميزات الثلاث (القيم الافتراضية)
 use_breakeven = True
+use_circuit_breaker = True
+use_soft_bounce = False
 
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
@@ -87,12 +91,10 @@ if show_settings:
     with r3:
         rr_ratio = st.number_input("Risk-to-Reward (1:X)", 0.1, 10.0, 2.3, 0.1, format="%.1f")
 
-    st.markdown("**تحسينات حماية الأرباح**")
-    p1, p2 = st.columns(2)
-    with p1:
-        use_bounce_confirm = st.checkbox("تأكيد الارتداد (إغلاق فوق قمة السابقة)", value=True)
-    with p2:
-        use_breakeven = st.checkbox("تأمين الدخول عند ربح 1:1 (Break-Even)", value=True)
+    st.markdown("**ميزات التحسين والحماية (قابلة للتفعيل المستقل)**")
+    use_breakeven = st.checkbox("1. تأمين الدخول عند ربح 1:1 (Break-Even)", value=True)
+    use_circuit_breaker = st.checkbox("2. قاطع الحماية (إيقاف العملة بعد خسارتين في الأسبوع)", value=True)
+    use_soft_bounce = st.checkbox("3. فلتر ارتداد مرن (إغلاق فوق إغلاق الشمعة السابقة)", value=False)
 
     st.markdown("**مصدر مناطق الدخول**")
     z1, z2 = st.columns(2)
@@ -151,7 +153,7 @@ def check_zone_touch(window_df, curr_candle, enable_demand, enable_support):
 
     return False, ""
 
-def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, bounce_conf, breakeven):
+def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, en_be, en_cb, en_sb):
     min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
         return 0, 0, 0, 0.0
@@ -159,6 +161,7 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
     df['ATR'] = calc_atr(df, a_len)
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
     wins, losses, open_t, profit, fee = 0, 0, 0, 0.0, 0.001
+    consecutive_losses = 0
 
     i = min_bars
     while i < len(df) - 1:
@@ -166,6 +169,10 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
         if candle_time < start_dt or candle_time > end_dt:
             i += 1
             continue
+
+        # الميزة 2: قاطع الحماية (توقف العملة عن التداول لبقية الأسبوع بعد خسارتين متتاليتين)
+        if en_cb and consecutive_losses >= 2:
+            break
 
         c_row = df.iloc[i]
         p_row = df.iloc[i - 1]
@@ -181,7 +188,8 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
         buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
         strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
 
-        if bounce_conf and close_p <= float(p_row['High']):
+        # الميزة 3: فلتر الارتداد المرن (إغلاق فوق إغلاق الشمعة السابقة)
+        if en_sb and close_p <= float(p_row['Close']):
             i += 1
             continue
 
@@ -206,21 +214,25 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
                         fut_low = float(fut['Low'])
                         fut_high = float(fut['High'])
 
-                        if breakeven and not be_activated and fut_high >= be_trigger:
+                        # الميزة 1: تأمين الدخول عند ربح 1:1
+                        if en_be and not be_activated and fut_high >= be_trigger:
                             be_activated = True
                             sl = entry * 1.002
 
                         if fut_low <= sl:
                             if be_activated:
                                 wins += 1
+                                consecutive_losses = 0
                             else:
                                 losses += 1
+                                consecutive_losses += 1
                                 profit -= (TRADE_AMOUNT * (sl_dist / entry) + TRADE_AMOUNT * fee * 2)
                             closed = True
                             i = j
                             break
                         elif fut_high >= tp:
                             wins += 1
+                            consecutive_losses = 0
                             profit += (TRADE_AMOUNT * ((tp - entry) / entry) - TRADE_AMOUNT * fee * 2)
                             closed = True
                             i = j
@@ -231,7 +243,7 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
         i += 1
     return wins, losses, open_t, profit
 
-def check_live_signals(df, name, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, bounce_conf):
+def check_live_signals(df, name, buy_pct_req, lookback, a_len, a_m, rr, en_demand, en_support, en_sb):
     min_bars = max(lookback, a_len) + 5
     if len(df) < min_bars:
         return None, None
@@ -247,7 +259,7 @@ def check_live_signals(df, name, buy_pct_req, lookback, a_len, a_m, rr, en_deman
 
     buy_ratio = ((close_p - low_p) / candle_range * 100.0) if candle_range > 0 else 50.0
     in_zone, z_type = check_zone_touch(window_df, last_candle, en_demand, en_support)
-    bounce_ok = (close_p > float(prev_candle['High'])) if bounce_conf else True
+    bounce_ok = (close_p > float(prev_candle['Close'])) if en_sb else True
 
     if in_zone and buy_ratio >= buy_pct_req and close_p > open_p and bounce_ok:
         sl_dist = float(last_candle['ATR']) * a_m
@@ -278,14 +290,15 @@ tot_w, tot_l, tot_o, tot_p, details = 0, 0, 0, 0.0, []
 live_buys, watchlist = [], []
 weekly_stats = {w_label: {"ناجحة": 0, "خاسرة": 0, "مفتوحة": 0, "الربح الصافي ($)": 0.0, "الفترة": f"{ws.strftime('%m-%d')} إلى {we.strftime('%m-%d')}"} for w_label, ws, we in month_weeks}
 
-with st.spinner("جاري فحص العملات الـ 22 وتطبيق تحسينات تأكيد الارتداد..."):
+with st.spinner("جاري فحص العملات الـ 22 وتطبيق ميزات الحماية..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
                 w, l, o, p = run_backtest(
                     df_m.copy(), start_window, end_window, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_bounce_confirm, use_breakeven
+                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support,
+                    use_breakeven, use_circuit_breaker, use_soft_bounce
                 )
                 tot_w += w
                 tot_l += l
@@ -296,7 +309,7 @@ with st.spinner("جاري فحص العملات الـ 22 وتطبيق تحسي�
 
                 sig, watch = check_live_signals(
                     df_m.copy(), name, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_bounce_confirm
+                    int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_soft_bounce
                 )
                 if sig:
                     live_buys.append(sig)
@@ -306,7 +319,8 @@ with st.spinner("جاري فحص العملات الـ 22 وتطبيق تحسي�
                 for w_label, ws, we in month_weeks:
                     ww, wl, wo, wp = run_backtest(
                         df_m.copy(), ws, we, int(min_buy_ratio), int(zone_lookback),
-                        int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support, use_bounce_confirm, use_breakeven
+                        int(atr_len), float(atr_mult), float(rr_ratio), use_demand, use_support,
+                        use_breakeven, use_circuit_breaker, use_soft_bounce
                     )
                     weekly_stats[w_label]["ناجحة"] += ww
                     weekly_stats[w_label]["خاسرة"] += wl
@@ -329,7 +343,7 @@ st.error(f"❌ {tot_l} خاسرة")
 st.divider()
 st.subheader("🎯 التوصيات المستقبلية والإشارات الحية")
 if live_buys:
-    st.success("إشارات شراء مؤكدة بالارتداد الآن:")
+    st.success("إشارات شراء جاهزة الآن:")
     st.dataframe(pd.DataFrame(live_buys), use_container_width=True, hide_index=True)
 else:
     st.caption("لا توجد إشارة دخول مكتملة في هذه اللحظة؛ راقب القائمة أدناه:")
@@ -352,14 +366,3 @@ for w_label, stats in weekly_stats.items():
         "ناجحة": stats["ناجحة"],
         "خاسرة": stats["خاسرة"],
         "مفتوحة": stats["مفتوحة"],
-        "الربح الصافي ($)": stats["الربح الصافي ($)"]
-    })
-
-st.dataframe(pd.DataFrame(weekly_rows), use_container_width=True, hide_index=True)
-st.markdown(f"**إجمالي الربح الصافي للشهر الحالي:** **`$ {total_month_profit:.2f}`**")
-
-if details:
-    with st.expander("عرض تفاصيل صفقات الدورة الحالية لكل عملة"):
-        st.dataframe(pd.DataFrame(details), use_container_width=True, hide_index=True)
-
-st.caption("تم التحديث بنجاح")
