@@ -8,27 +8,19 @@ st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", lay
 # رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية (مشاريع بنية تحتية وطبقة أولى حلال)
+# قائمة الـ 8 عملات الرقمية الحلال المختارة بصيغة Yahoo Finance
 HALAL_COINS = {
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Ethereum",
-    "SOL-USD": "Solana",
-    "AVAX-USD": "Avalanche",
-    "NEAR-USD": "NEAR Protocol",
-    "SUI20947-USD": "Sui",
-    "APT21794-USD": "Aptos",
-    "INJ-USD": "Injective",
-    "SEI-USD": "Sei",
-    "TIA-USD": "Celestia",
-    "RENDER-USD": "Render",
-    "ARB11841-USD": "Arbitrum",
-    "DOT-USD": "Polkadot",
-    "LINK-USD": "Chainlink",
-    "ADA-USD": "Cardano",
-    "HBAR-USD": "Hedera"
+    "TAO22974-USD": "Bittensor (TAO)",
+    "RENDER-USD": "Render (RENDER)",
+    "LINK-USD": "Chainlink (LINK)",
+    "HBAR-USD": "Hedera (HBAR)",
+    "SUI20947-USD": "Sui (SUI)",
+    "TIA-USD": "Celestia (TIA)",
+    "ARB11841-USD": "Arbitrum (ARB)",
+    "DOT-USD": "Polkadot (DOT)"
 }
 
-# القيم الافتراضية المطابقة للصورة
+# القيم الافتراضية المعتمدة
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -68,7 +60,7 @@ if show_settings:
         use_support = st.checkbox("مستويات الدعم (Support Levels)", value=True)
     st.divider()
 
-st.caption(f"العملات النقية: {len(HALAL_COINS)} عملة | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: 7 أيام")
+st.caption(f"العملات المختارة: {len(HALAL_COINS)} عملات نقية | الشراء > {min_buy_ratio}% عند الدعوم | الفريم: {timeframe} | المدة: 7 أيام")
 
 def calc_atr(df, length):
     hl = df['High'] - df['Low']
