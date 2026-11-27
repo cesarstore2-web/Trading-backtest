@@ -3,55 +3,52 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-# إعدادات الصفحة
 st.set_page_config(page_title="متتبع التداول الفوري المرن - RSI", layout="centered")
 
-# تنسيق الواجهة باللغة العربية (RTL)
 st.markdown("""
-    <style>
-    .main { direction: rtl; text-align: right; }
-    div[data-testid="stCheckbox"] { direction: rtl; text-align: right; }
-    div[data-testid="stSelectbox"], div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
-    .profit-box-green {
-        background-color: #0d3b1e;
-        border: 2px solid #28a745;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        margin-bottom: 20px;
-    }
-    .profit-box-red {
-        background-color: #3b0d0d;
-        border: 2px solid #dc3545;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        margin-bottom: 20px;
-    }
-    .profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }
-    .profit-amount-green { color: #2ecc71; font-size: 36px; font-weight: bold; direction: ltr; }
-    .profit-amount-red { color: #ff6b6b; font-size: 36px; font-weight: bold; direction: ltr; }
-    .info-bar {
-        color: #aaaaaa;
-        font-size: 13px;
-        text-align: center;
-        margin: 15px 0;
-        padding: 8px;
-        background-color: #1e1e1e;
-        border-radius: 8px;
-    }
-    .alert-box {
-        background-color: #162436;
-        border: 1px solid #2b4c7e;
-        border-radius: 10px;
-        padding: 15px;
-        text-align: center;
-        color: #90caf9;
-    }
-    </style>
+<style>
+.main { direction: rtl; text-align: right; }
+div[data-testid="stCheckbox"] { direction: rtl; text-align: right; }
+div[data-testid="stSelectbox"], div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
+.profit-box-green {
+    background-color: #0d3b1e;
+    border: 2px solid #28a745;
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    margin-bottom: 20px;
+}
+.profit-box-red {
+    background-color: #3b0d0d;
+    border: 2px solid #dc3545;
+    border-radius: 12px;
+    padding: 20px;
+    text-align: center;
+    margin-bottom: 20px;
+}
+.profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }
+.profit-amount-green { color: #2ecc71; font-size: 36px; font-weight: bold; direction: ltr; }
+.profit-amount-red { color: #ff6b6b; font-size: 36px; font-weight: bold; direction: ltr; }
+.info-bar {
+    color: #aaaaaa;
+    font-size: 13px;
+    text-align: center;
+    margin: 15px 0;
+    padding: 8px;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+}
+.alert-box {
+    background-color: #162436;
+    border: 1px solid #2b4c7e;
+    border-radius: 10px;
+    padding: 15px;
+    text-align: center;
+    color: #90caf9;
+}
+</style>
 """, unsafe_allow_html=True)
 
-# قائمة بـ 22 عملة رقمية
 COINS = [
     "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", 
     "DOT-USD", "LINK-USD", "ATOM-USD", "NEAR-USD", "ALGO-USD", 
@@ -60,7 +57,6 @@ COINS = [
     "TIA-USD", "SUI-USD"
 ]
 
-# القيم الافتراضية في ذاكرة الجلسة (Session State)
 if 'rsi_buy' not in st.session_state:
     st.session_state.rsi_buy = 15
 if 'rsi_sell' not in st.session_state:
@@ -72,7 +68,6 @@ if 'rsi_period' not in st.session_state:
 if 'trade_amount' not in st.session_state:
     st.session_state.trade_amount = 100.0
 
-# نافذة الإطار الزمني في أعلى الواجهة لسهولة الوصول
 TIMEFRAME_OPTIONS = {
     "5 دقائق (5m)": ("5m", "35d"),
     "15 دقيقة (15m)": ("15m", "35d"),
@@ -85,11 +80,10 @@ TIMEFRAME_OPTIONS = {
 selected_tf_label = st.selectbox(
     "⏱️ اختر الإطار الزمني للتداول:",
     options=list(TIMEFRAME_OPTIONS.keys()),
-    index=0  # الافتراضي 5 دقائق
+    index=0
 )
 TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 
-# دالة حساب مؤشر RSI
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -118,13 +112,9 @@ def run_scanner(timeframe, period_str, rsi_buy, rsi_sell, tp_pct, rsi_period, tr
             df['Prev_RSI'] = df['RSI'].shift(1)
             df['Is_Green'] = df['Close'] > df['Open']
 
-            # شرط الشراء: اختراق مستوى الشراء صعوداً + شمعة صاعدة
             df['Buy_Signal'] = (df['Prev_RSI'] <= rsi_buy) & (df['RSI'] > rsi_buy) & df['Is_Green']
-            
-            # شرط البيع: اختراق مستوى البيع صعوداً + شمعة صاعدة
             df['Sell_Signal'] = (df['Prev_RSI'] <= rsi_sell) & (df['RSI'] > rsi_sell) & df['Is_Green']
 
-            # فحص الفرص الحالية (في الشمعة الحالية أو السابقة)
             last_2 = df.tail(2)
             if last_2['Buy_Signal'].any():
                 last_price = float(df['Close'].iloc[-1])
@@ -139,7 +129,6 @@ def run_scanner(timeframe, period_str, rsi_buy, rsi_sell, tp_pct, rsi_period, tr
                     opp_data[f"هدف الربح (+{tp_pct}%)"] = round(last_price * (1 + tp_decimal), 4)
                 current_opportunities.append(opp_data)
 
-            # محاكاة الصفقات التاريخية (تداول فوري Spot بدون وقف خسارة)
             in_position = False
             buy_price = 0.0
             buy_time = None
@@ -157,11 +146,9 @@ def run_scanner(timeframe, period_str, rsi_buy, rsi_sell, tp_pct, rsi_period, tr
                     sell_reason = None
                     sell_price = 0.0
 
-                    # 1. التحقق من هدف الربح (إذا كان مفعلاً أكبر من 0)
                     if tp_pct > 0 and current_high >= buy_price * (1 + tp_decimal):
                         sell_price = buy_price * (1 + tp_decimal)
                         sell_reason = f"جني ربح (+{tp_pct}%)"
-                    # 2. التحقق من إشارة بيع RSI بشمعة صاعدة
                     elif row['Sell_Signal']:
                         sell_price = current_close
                         sell_reason = f"إشارة RSI > {rsi_sell}"
@@ -186,7 +173,6 @@ def run_scanner(timeframe, period_str, rsi_buy, rsi_sell, tp_pct, rsi_period, tr
 
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-# تشغيل الفحص بالإعدادات المختارة
 trades_df, opps_df = run_scanner(
     TIMEFRAME,
     DATA_PERIOD,
@@ -197,7 +183,6 @@ trades_df, opps_df = run_scanner(
     st.session_state.trade_amount
 )
 
-# تصفية الصفقات حسب الشهر الحالي والأسبوع الحالي
 weekly_profit = 0.0
 weekly_trades = pd.DataFrame()
 current_month_trades = pd.DataFrame()
@@ -206,28 +191,24 @@ if not trades_df.empty:
     trades_df['تاريخ البيع_dt'] = pd.to_datetime(trades_df['تاريخ البيع'])
     now = pd.Timestamp.now(tz=trades_df['تاريخ البيع_dt'].dt.tz)
     
-    # بداية الشهر الحالي
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     current_month_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_month]
     
-    # بداية الأسبوع الحالي (الإثنين)
     start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     weekly_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_week]
     weekly_profit = weekly_trades['الربح ($)'].sum()
 
-# 1. صندوق الربح الصافي للأسبوع الحالي
 box_class = "profit-box-green" if weekly_profit >= 0 else "profit-box-red"
 amount_class = "profit-amount-green" if weekly_profit >= 0 else "profit-amount-red"
 sign = "+" if weekly_profit > 0 else ""
 
 st.markdown(f"""
-    <div class="{box_class}">
-        <div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div>
-        <div class="{amount_class}">{sign}{weekly_profit:.2f}$</div>
-    </div>
+<div class="{box_class}">
+    <div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div>
+    <div class="{amount_class}">{sign}{weekly_profit:.2f}$</div>
+</div>
 """, unsafe_allow_html=True)
 
-# 2. الخيارات التفاعلية
 if st.checkbox("🔥 إظهار ملخص الأداء للأسبوع الحالي"):
     if not weekly_trades.empty:
         st.write(f"عدد الصفقات المغلقة هذا الأسبوع: **{len(weekly_trades)}**")
@@ -256,5 +237,18 @@ if st.checkbox("📅 إظهار سجل 4 أسابيع (الشهر الحالي)"
     else:
         st.info("لا توجد صفقات مغلقة في الشهر الحالي حتى الآن.")
 
-# 3. نوافذ تغيير الإعدادات التفاعلية
 if st.checkbox("⚙️ إظهار إعدادات الاستراتيجية"):
+    st.markdown("#### 🛠️ تعديل قيم الاستراتيجية")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.session_state.rsi_buy = st.number_input("مستوى شراء RSI:", min_value=1, max_value=50, value=st.session_state.rsi_buy, step=1)
+        st.session_state.tp_pct = st.number_input("نسبة جني الربح % (0 للإلغاء):", min_value=0.0, max_value=100.0, value=st.session_state.tp_pct, step=0.5)
+    with col2:
+        st.session_state.rsi_sell = st.number_input("مستوى بيع RSI:", min_value=20, max_value=95, value=st.session_state.rsi_sell, step=1)
+        st.session_state.trade_amount = st.number_input("مبلغ الصفقة ($):", min_value=10.0, max_value=100000.0, value=st.session_state.trade_amount, step=10.0)
+    st.session_state.rsi_period = st.number_input("فترة مؤشر RSI:", min_value=2, max_value=50, value=st.session_state.rsi_period, step=1)
+    st.caption("التداول فوري (Spot) بدون وقف خسارة، ويتم تحديث النتائج تلقائياً عند تغيير أي رقم.")
+
+tp_text = f" أو +{st.session_state.tp_pct}%" if st.session_state.tp_pct > 0 else ""
+st.markdown(f"""
+<div class="info-bar">
