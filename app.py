@@ -8,7 +8,7 @@ st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", lay
 # رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية (مشاريع بنية تحتية وطبقة أولى حلال)
+# قائمة العملات الرقمية النقية
 HALAL_COINS = {
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
@@ -108,16 +108,14 @@ def fetch_data(ticker, tf):
 def check_zone_touch(window_df, curr_candle):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
-    
     lows = window_df['Low'].values
     support_level = np.min(lows)
     tolerance = support_level * 0.005
     if curr_low <= (support_level + tolerance) and curr_close >= support_level:
         return True
-
     return False
 
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len, e_mode, e_slope, days=7):
+def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema=False, ema_len=200, e_mode="اتجاه EMA صاعد (EMA Rising)", e_slope=5, days=7):
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     bars_per_week = c_7d[tf]
     target_bars = bars_per_week if days == 7 else bars_per_week * 4
@@ -162,7 +160,6 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len,
         else:
             buy_pressure_ratio = 50.0
 
-        # التحقق من شرط فلتر EMA حسب النوع المختار
         if not en_ema:
             ema_condition = True
         elif e_mode == "اتجاه EMA صاعد (EMA Rising)":
@@ -170,7 +167,7 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len,
             ema_condition = ema_val > prev_ema
         elif e_mode == "السعر فوق EMA (Close > EMA)":
             ema_condition = close_p > ema_val
-        else:  # السعر تحت EMA (ارتداد من قاع)
+        else:
             ema_condition = close_p < ema_val
 
         strong_buying = (
@@ -258,7 +255,9 @@ with st.spinner("جاري حساب الربح الصافي..."):
                         agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
                         agg_weekly[wk]["open"] += w_stats[wk]["open"]
                         agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"تنبيه في عملة {name}: {e}")
 
 closed_t = tot_w + tot_l
+win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
+
