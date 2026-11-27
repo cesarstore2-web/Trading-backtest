@@ -5,10 +5,8 @@ import numpy as np
 
 st.set_page_config(page_title="ماسح ضغط الشراء والدعوم + Supertrend", layout="centered")
 
-# رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية (مشاريع بنية تحتية وطبقة أولى حلال)
 HALAL_COINS = {
     "BTC-USD": "Bitcoin",
     "ETH-USD": "Ethereum",
@@ -28,7 +26,6 @@ HALAL_COINS = {
     "HBAR-USD": "Hedera"
 }
 
-# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -36,12 +33,10 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# القيم الافتراضية لفلتر Supertrend
 use_supertrend = True
 st_period = 10
 st_multiplier = 3.0
 
-# مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
@@ -93,7 +88,7 @@ def calc_supertrend(df, period=10, multiplier=3.0):
     n = len(df)
     final_ub = np.zeros(n)
     final_lb = np.zeros(n)
-    st_dir = np.ones(n)  # 1 = صاعد (أخضر), -1 = هابط (أحمر)
+    st_dir = np.ones(n)
     
     close = df['Close'].values
     b_ub = basic_ub.values
@@ -105,19 +100,16 @@ def calc_supertrend(df, period=10, multiplier=3.0):
             final_lb[i] = b_lb[i]
             continue
             
-        # تحديث الحد العلوي
         if b_ub[i] < final_ub[i-1] or close[i-1] > final_ub[i-1]:
             final_ub[i] = b_ub[i]
         else:
             final_ub[i] = final_ub[i-1]
             
-        # تحديث الحد السفلي
         if b_lb[i] > final_lb[i-1] or close[i-1] < final_lb[i-1]:
             final_lb[i] = b_lb[i]
         else:
             final_lb[i] = final_lb[i-1]
             
-        # تحديد اتجاه السوبرتريند
         if st_dir[i-1] == 1:
             st_dir[i] = -1 if close[i] < final_lb[i] else 1
         else:
@@ -134,7 +126,13 @@ def fetch_data(ticker, tf):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     if tf == "4h":
-        df = df.resample('4h').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+        df = df.resample('4h').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
     return df
 
 def check_zone_touch(window_df, curr_candle):
@@ -180,7 +178,6 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, use_st, st_per, 
             i += 1
             continue
 
-        # التحقق من فلتر السوبرتريند (يجب أن يكون صاعداً = 1)
         st_ok = (c_row['ST_Dir'] == 1) if use_st else True
         if not st_ok:
             i += 1
@@ -198,7 +195,11 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, use_st, st_per, 
         else:
             buy_pressure_ratio = 50.0
 
-        strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8)
+        strong_buying = (
+            (buy_pressure_ratio >= buy_pct_req)
+            and (close_p > open_p)
+            and (vol >= float(c_row['Vol_MA']) * 0.8)
+        )
 
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
@@ -255,12 +256,20 @@ with st.spinner("جاري حساب الربح الصافي وتحليل فلتر
         try:
             df_m = fetch_data(ticker, timeframe)
             if not df_m.empty:
-                # 1. حساب آخر 7 أيام
-                w, l, o, p, _ = run_backtest(
-                    df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                    int(atr_len), float(atr_mult), float(rr_ratio),
-                    use_supertrend, int(st_period), float(st_multiplier), days=7
+                res_7d = run_backtest(
+                    df_m,
+                    timeframe,
+                    int(min_buy_ratio),
+                    int(zone_lookback),
+                    int(atr_len),
+                    float(atr_mult),
+                    float(rr_ratio),
+                    use_supertrend,
+                    int(st_period),
+                    float(st_multiplier),
+                    days=7
                 )
+                w, l, o, p, _ = res_7d
                 tot_w += w
                 tot_l += l
                 tot_o += o
@@ -274,5 +283,10 @@ with st.spinner("جاري حساب الربح الصافي وتحليل فلتر
                         "الربح الصافي ($)": round(p, 2)
                     })
 
-                # 2. حساب جدول الأسابيع للشهر (28 يوماً)
-                _, _, _, _, w_stats = run_backtest(
+                res_28d = run_backtest(
+                    df_m,
+                    timeframe,
+                    int(min_buy_ratio),
+                    int(zone_lookback),
+                    int(atr_len),
+                    float(atr_mult),
