@@ -37,10 +37,12 @@ if 'use_sl' not in st.session_state:
     st.session_state.use_sl = True
 if 'trade_amount' not in st.session_state:
     st.session_state.trade_amount = 100.0
+if 'target_mode' not in st.session_state:
+    st.session_state.target_mode = "مضاعف المخاطرة (RR 1:X)"
 
 TIMEFRAME_OPTIONS = {
-    "5 دقائق (5m)": ("5m", "35d"),
-    "15 دقيقة (15m)": ("15m", "35d"),
+    "5 دقائق (5m)": ("5m", "14d"),
+    "15 دقيقة (15m)": ("15m", "30d"),
     "30 دقيقة (30m)": ("30m", "35d"),
     "1 ساعة (1h)": ("1h", "45d"),
     "4 ساعات (4h)": ("4h", "60d"),
@@ -55,7 +57,7 @@ selected_tf_label = st.selectbox(
 TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 
 @st.cache_data(ttl=180)
-def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, trade_amount):
+def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, trade_amount, target_mode):
     trades_history = []
     current_opportunities = []
 
@@ -71,13 +73,18 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
             df = df.reset_index()
             time_col = df.columns[0]
 
+            opens = df['Open'].values.astype(float)
+            highs = df['High'].values.astype(float)
+            lows = df['Low'].values.astype(float)
+            closes = df['Close'].values.astype(float)
+            times = df[time_col].values
+
             in_position = False
             buy_price = 0.0
             sl_price = 0.0
             tp_price = 0.0
             buy_time = None
 
-            # حالة تتبع نموذج CISD و FVG
             cisd_active = False
             sweep_low = 0.0
             old_high = 0.0
@@ -87,32 +94,31 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
             cisd_bar_idx = -1
 
             for i in range(swing_lookback + 3, len(df)):
-                curr_open = float(df.loc[i, 'Open'])
-                curr_high = float(df.loc[i, 'High'])
-                curr_low = float(df.loc[i, 'Low'])
-                curr_close = float(df.loc[i, 'Close'])
-                curr_time = df.loc[i, time_col]
+                curr_open = opens[i]
+                curr_high = highs[i]
+                curr_low = lows[i]
+                curr_close = closes[i]
+                curr_time = times[i]
 
-                # 1. إدارة الصفقة المفتوحة حالياً
                 if in_position:
                     sell_reason = None
                     sell_price = 0.0
 
                     if use_sl and curr_low <= sl_price:
                         sell_price = sl_price
-                        sell_reason = "وقف خسارة (SL below low)"
+                        sell_reason = "وقف خسارة (SL)"
                     elif curr_high >= tp_price:
                         sell_price = tp_price
-                        sell_reason = f"هدف الربح (RR 1:{rr_ratio})"
+                        sell_reason = "القمة السابقة (Old High)" if target_mode == "القمة السابقة (Old High)" else f"هدف الربح (RR 1:{rr_ratio})"
 
                     if sell_reason:
                         profit_pct = (sell_price - buy_price) / buy_price
                         profit_usd = trade_amount * profit_pct
                         trades_history.append({
                             "العملة": symbol.replace("-USD", ""),
-                            "تاريخ الشراء": str(buy_time)[:16],
+                            "تاريخ الشراء": str(buy_time)[:16].replace("T", " "),
                             "سعر الشراء": round(buy_price, 4),
-                            "تاريخ البيع": str(curr_time)[:16],
+                            "تاريخ البيع": str(curr_time)[:16].replace("T", " "),
                             "سعر البيع": round(sell_price, 4),
                             "سبب الإغلاق": sell_reason,
                             "الربح ($)": round(profit_usd, 2),
@@ -121,38 +127,31 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
                         in_position = False
                     continue
 
-                # 2. البحث عن نموذج Bullish CISD (سحب سيولة + إغلاق فوق افتتاح أول شمعة هابطة)
-                prev_window = df.iloc[i - swing_lookback : i]
-                prev_swing_low = float(prev_window['Low'].min())
-                prev_swing_high = float(prev_window['High'].max())
+                prev_swing_low = np.min(lows[i - swing_lookback : i])
+                prev_swing_high = np.max(highs[i - swing_lookback : i])
 
-                # التحقق من سحب السيولة في آخر 4 شموع وإغلاق شمعة صاعدة فوق افتتاح أول شمعة هابطة
-                recent_4 = df.iloc[i-4 : i+1]
-                recent_min_low = float(recent_4['Low'].min())
+                recent_min_low = np.min(lows[i - 4 : i + 1])
 
                 if recent_min_low < prev_swing_low and curr_close > curr_open:
-                    # تحديد أول شمعة هابطة في موجة النزول الأخيرة
-                    bearish_candles = recent_4[recent_4['Close'] < recent_4['Open']]
-                    if not bearish_candles.empty:
-                        first_bearish_open = float(bearish_candles.iloc[0]['Open'])
-                        # شرط CISD: إغلاق جسم الشمعة الصاعدة فوق افتتاح أول شمعة هابطة
-                        if curr_close > first_bearish_open:
-                            cisd_active = True
-                            sweep_low = recent_min_low
-                            old_high = prev_swing_high
-                            cisd_bar_idx = i
-                            has_fvg = False
+                    first_bearish_open = None
+                    for k in range(i - 4, i + 1):
+                        if closes[k] < opens[k]:
+                            first_bearish_open = opens[k]
+                            break
 
-                            # البحث عن فجوة قيمة عادلة FVG بين الشمعة i-2 والشمعة الحالية i
-                            candle_minus_2_high = float(df.loc[i-2, 'High'])
-                            if curr_low > candle_minus_2_high:
-                                has_fvg = True
-                                fvg_top = curr_low
-                                fvg_bottom = candle_minus_2_high
+                    if first_bearish_open is not None and curr_close > first_bearish_open:
+                        cisd_active = True
+                        sweep_low = recent_min_low
+                        old_high = prev_swing_high
+                        cisd_bar_idx = i
+                        has_fvg = False
 
-                # 3. الدخول عند إعادة اختبار FVG (Buy here) أو مباشرة بعد CISD
+                        if curr_low > highs[i - 2]:
+                            has_fvg = True
+                            fvg_top = curr_low
+                            fvg_bottom = highs[i - 2]
+
                 if cisd_active and i > cisd_bar_idx:
-                    # إلغاء النموذج إذا كسر السعر قاع سحب السيولة أو مر أكثر من 8 شموع
                     if curr_low < sweep_low or (i - cisd_bar_idx) > 8:
                         cisd_active = False
                         continue
@@ -161,41 +160,40 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
                     entry_price = 0.0
 
                     if has_fvg:
-                        # الدخول عند لمس السعر لمنطقة FVG
                         if curr_low <= fvg_top and curr_close >= fvg_bottom:
                             entry_triggered = True
                             entry_price = fvg_top
                     else:
-                        # إذا لم تتشكل FVG واضحة، الدخول عند أول تراجع طفيف بعد CISD
-                        if curr_low <= float(df.loc[cisd_bar_idx, 'Close']):
+                        if curr_low <= closes[cisd_bar_idx]:
                             entry_triggered = True
-                            entry_price = float(df.loc[cisd_bar_idx, 'Close'])
+                            entry_price = closes[cisd_bar_idx]
 
                     if entry_triggered and entry_price > sweep_low:
                         risk = entry_price - sweep_low
-                        # تجنب الصفقات ذات المخاطرة المجهرية جداً (أقل من 0.2%)
                         if (risk / entry_price) >= 0.002:
                             in_position = True
                             buy_price = entry_price
                             sl_price = sweep_low * 0.999
-                            tp_price = buy_price + (risk * rr_ratio)
+                            if target_mode == "القمة السابقة (Old High)" and old_high > buy_price:
+                                tp_price = old_high
+                            else:
+                                tp_price = buy_price + (risk * rr_ratio)
                             buy_time = curr_time
                             cisd_active = False
 
-            # 4. فحص الفرص الحالية الجاهزة للدخول الآن (في آخر شمعتين)
             if cisd_active and (len(df) - 1 - cisd_bar_idx) <= 4:
-                last_price = float(df.iloc[-1]['Close'])
+                last_price = closes[-1]
                 risk = last_price - sweep_low
                 if risk > 0:
-                    est_tp = last_price + (risk * rr_ratio)
+                    est_tp = old_high if (target_mode == "القمة السابقة (Old High)" and old_high > last_price) else (last_price + risk * rr_ratio)
                     current_opportunities.append({
                         "العملة": symbol.replace("-USD", ""),
                         "حالة النموذج": "Bullish CISD + FVG" if has_fvg else "Bullish CISD",
                         "السعر الحالي": round(last_price, 4),
                         "منطقة الشراء (FVG)": round(fvg_top, 4) if has_fvg else round(last_price, 4),
                         "وقف الخسارة (SL)": round(sweep_low, 4),
-                        f"الهدف (RR 1:{rr_ratio})": round(est_tp, 4),
-                        "الوقت": str(df.iloc[-1][time_col])[:16]
+                        "هدف الربح": round(est_tp, 4),
+                        "الوقت": str(times[-1])[:16].replace("T", " ")
                     })
 
         except Exception:
@@ -203,14 +201,16 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
 
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-trades_df, opps_df = run_cisd_scanner(
-    TIMEFRAME,
-    DATA_PERIOD,
-    st.session_state.rr_ratio,
-    st.session_state.swing_lookback,
-    st.session_state.use_sl,
-    st.session_state.trade_amount
-)
+with st.spinner("⏳ جاري فحص العملات الـ 22 واستخراج نماذج CISD & FVG..."):
+    trades_df, opps_df = run_cisd_scanner(
+        TIMEFRAME,
+        DATA_PERIOD,
+        st.session_state.rr_ratio,
+        st.session_state.swing_lookback,
+        st.session_state.use_sl,
+        st.session_state.trade_amount,
+        st.session_state.target_mode
+    )
 
 weekly_profit = 0.0
 weekly_trades = pd.DataFrame()
@@ -218,6 +218,13 @@ current_month_trades = pd.DataFrame()
 
 if not trades_df.empty:
     trades_df['تاريخ البيع_dt'] = pd.to_datetime(trades_df['تاريخ البيع'])
-    now = pd.Timestamp.now(tz=trades_df['تاريخ البيع_dt'].dt.tz)
+    now = pd.Timestamp.now()
     
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    current_month_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_month]
+    
+    start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    weekly_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_week]
+    weekly_profit = weekly_trades['الربح ($)'].sum()
+
+box_class = "profit-box-green" if weekly_profit >= 0 else "profit-box-red"
