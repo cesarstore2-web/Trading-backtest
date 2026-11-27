@@ -5,10 +5,8 @@ import numpy as np
 
 st.set_page_config(page_title="ماسح ضغط الشراء والدعوم", layout="centered")
 
-# رأس مال كل صفقة ثابت في الخفاء (100 دولار)
 TRADE_AMOUNT = 100.0
 
-# قائمة العملات الرقمية النقية (رموز باينانس مقابل USDT)
 HALAL_COINS = {
     "BTCUSDT": "Bitcoin",
     "ETHUSDT": "Ethereum",
@@ -28,7 +26,6 @@ HALAL_COINS = {
     "HBARUSDT": "Hedera"
 }
 
-# القيم الافتراضية
 timeframe = "1h"
 min_buy_ratio = 80
 zone_lookback = 100
@@ -36,18 +33,15 @@ atr_len = 13
 atr_mult = 2.3
 rr_ratio = 2.3
 
-# إعدادات فلتر EMA الافتراضية
 use_ema_filter = False
 ema_length = 200
 ema_mode = "اتجاه EMA صاعد (EMA Rising)"
 ema_slope_bars = 5
 
-# مربع إظهار أو إخفاء الإعدادات
 show_settings = st.checkbox("إظهار إعدادات الاستراتيجية", value=False)
 
 if show_settings:
     timeframe = st.selectbox("اختر الإطار الزمني:", ["5m", "15m", "30m", "1h", "4h"], index=3)
-    
     st.markdown("**إعدادات ضغط الشراء والدعوم**")
     c1, c2 = st.columns(2)
     with c1:
@@ -62,14 +56,7 @@ if show_settings:
         with e1:
             ema_length = st.number_input("طول متوسط EMA:", min_value=10, max_value=500, value=200, step=10)
         with e2:
-            ema_mode = st.selectbox(
-                "نوع شرط EMA:",
-                [
-                    "اتجاه EMA صاعد (EMA Rising)",
-                    "السعر فوق EMA (Close > EMA)",
-                    "السعر تحت EMA (ارتداد من قاع)"
-                ]
-            )
+            ema_mode = st.selectbox("نوع شرط EMA:", ["اتجاه EMA صاعد (EMA Rising)", "السعر فوق EMA (Close > EMA)", "السعر تحت EMA (ارتداد من قاع)"])
         if ema_mode == "اتجاه EMA صاعد (EMA Rising)":
             ema_slope_bars = st.number_input("مقارنة EMA مع قبل (عدد الشموع):", min_value=1, max_value=50, value=5, step=1)
 
@@ -95,7 +82,6 @@ def calc_atr(df, length):
 
 @st.cache_data(ttl=600)
 def fetch_data(symbol, tf):
-    # جلب بيانات 30 يوماً (720 شمعة على فريم الساعة، أو 1000 شمعة كحد أقصى للطلب الواحد)
     limit = 1000 if tf in ["5m", "15m", "30m"] else 750
     urls = [
         f"https://binance.com{symbol}&interval={tf}&limit={limit}",
@@ -107,10 +93,8 @@ def fetch_data(symbol, tf):
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list) and len(data) > 0:
-                    df = pd.DataFrame(data, columns=[
-                        'Open_time', 'Open', 'High', 'Low', 'Close', 'Volume',
-                        'Close_time', 'Quote_vol', 'Trades', 'Taker_buy_base', 'Taker_buy_quote', 'Ignore'
-                    ])
+                    cols = ['Open_time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Close_time', 'Quote_vol', 'Trades', 'Taker_buy_base', 'Taker_buy_quote', 'Ignore']
+                    df = pd.DataFrame(data, columns=cols)
                     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
                         df[col] = df[col].astype(float)
                     return df[['Open', 'High', 'Low', 'Close', 'Volume']]
@@ -121,14 +105,11 @@ def fetch_data(symbol, tf):
 def check_zone_touch(window_df, curr_candle):
     curr_low = float(curr_candle['Low'])
     curr_close = float(curr_candle['Close'])
-    lows = window_df['Low'].values
-    support_level = np.min(lows)
+    support_level = np.min(window_df['Low'].values)
     tolerance = support_level * 0.005
-    if curr_low <= (support_level + tolerance) and curr_close >= support_level:
-        return True
-    return False
+    return (curr_low <= (support_level + tolerance)) and (curr_close >= support_level)
 
-def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema=False, ema_len=200, e_mode="اتجاه EMA صاعد (EMA Rising)", e_slope=5, days=7):
+def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema, ema_len, e_mode, e_slope, days):
     c_7d = {"5m": 2016, "15m": 672, "30m": 336, "1h": 168, "4h": 42}
     bars_per_week = c_7d[tf]
     target_bars = bars_per_week if days == 7 else bars_per_week * 4
@@ -150,7 +131,7 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema=False, em
         1: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
         2: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
         3: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
-        4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+        4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0}
     }
 
     i = start_i
@@ -168,37 +149,24 @@ def run_backtest(df, tf, buy_pct_req, lookback, a_len, a_m, rr, en_ema=False, em
         ema_val = float(c_row['EMA'])
         candle_range = high_p - low_p
 
-        if candle_range > 0 and vol > 0:
-            buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0
-        else:
-            buy_pressure_ratio = 50.0
+        buy_pressure_ratio = ((close_p - low_p) / candle_range) * 100.0 if (candle_range > 0 and vol > 0) else 50.0
 
         if not en_ema:
             ema_condition = True
         elif e_mode == "اتجاه EMA صاعد (EMA Rising)":
-            prev_ema = float(df.iloc[i - e_slope]['EMA'])
-            ema_condition = ema_val > prev_ema
+            ema_condition = ema_val > float(df.iloc[i - e_slope]['EMA'])
         elif e_mode == "السعر فوق EMA (Close > EMA)":
             ema_condition = close_p > ema_val
         else:
             ema_condition = close_p < ema_val
 
-        strong_buying = (
-            (buy_pressure_ratio >= buy_pct_req)
-            and (close_p > open_p)
-            and (vol >= float(c_row['Vol_MA']) * 0.8)
-            and ema_condition
-        )
+        strong_buying = (buy_pressure_ratio >= buy_pct_req) and (close_p > open_p) and (vol >= float(c_row['Vol_MA']) * 0.8) and ema_condition
 
         if strong_buying:
             window_df = df.iloc[i - lookback : i]
-            in_zone = check_zone_touch(window_df, c_row)
-
-            if in_zone:
+            if check_zone_touch(window_df, c_row):
                 bars_from_end = total_len - i
-                week_idx = 4 - int((bars_from_end - 1) // bars_per_week)
-                week_idx = max(1, min(4, week_idx))
-
+                week_idx = max(1, min(4, 4 - int((bars_from_end - 1) // bars_per_week)))
                 entry = close_p
                 sl_dist = float(c_row['ATR']) * a_m
                 if sl_dist > 0:
@@ -237,18 +205,14 @@ agg_weekly = {
     1: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
     2: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
     3: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
-    4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0},
+    4: {"wins": 0, "losses": 0, "open": 0, "profit": 0.0}
 }
 
 with st.spinner("جاري جلب البيانات وحساب الربح الصافي..."):
     for ticker, name in HALAL_COINS.items():
         df_m = fetch_data(ticker, timeframe)
         if not df_m.empty:
-            w, l, o, p, _ = run_backtest(
-                df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                int(atr_len), float(atr_mult), float(rr_ratio),
-                use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), days=7
-            )
+            w, l, o, p, _ = run_backtest(df_m, timeframe, int(min_buy_ratio), int(zone_lookback), int(atr_len), float(atr_mult), float(rr_ratio), use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), 7)
             tot_w += w
             tot_l += l
             tot_o += o
@@ -256,6 +220,23 @@ with st.spinner("جاري جلب البيانات وحساب الربح الصا
             if (w + l + o) > 0:
                 details.append({"العملة": name, "ناجحة": w, "خاسرة": l, "مفتوحة": o, "الربح الصافي ($)": round(p, 2)})
 
-            _, _, _, _, w_stats = run_backtest(
-                df_m, timeframe, int(min_buy_ratio), int(zone_lookback),
-                int(atr_len), float(atr_mult), float(rr_ratio),
+            _, _, _, _, w_stats = run_backtest(df_m, timeframe, int(min_buy_ratio), int(zone_lookback), int(atr_len), float(atr_mult), float(rr_ratio), use_ema_filter, int(ema_length), ema_mode, int(ema_slope_bars), 28)
+            for wk in range(1, 5):
+                if wk in w_stats:
+                    agg_weekly[wk]["wins"] += w_stats[wk]["wins"]
+                    agg_weekly[wk]["losses"] += w_stats[wk]["losses"]
+                    agg_weekly[wk]["open"] += w_stats[wk]["open"]
+                    agg_weekly[wk]["profit"] += w_stats[wk]["profit"]
+
+closed_t = tot_w + tot_l
+win_r = (tot_w / closed_t * 100) if closed_t > 0 else 0.0
+
+st.markdown(f"**الربح الصافي سبوت لمدة 7 أيام ({timeframe})**")
+st.title(f"$ {tot_p:.2f}")
+st.markdown("**نسبة النجاح**")
+st.title(f"{win_r:.1f}%")
+st.info(f"↑ مغلقة: {closed_t} | مفتوحة: {tot_o}")
+st.success(f"✅ {tot_w} ناجحة")
+st.error(f"❌ {tot_l} خاسرة")
+
+st.subheader("الربح الصافي لكل أسبوع خلال الشهر الحالي")
