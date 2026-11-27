@@ -41,9 +41,9 @@ if 'target_mode' not in st.session_state:
     st.session_state.target_mode = "مضاعف المخاطرة (RR 1:X)"
 
 TIMEFRAME_OPTIONS = {
-    "5 دقائق (5m)": ("5m", "14d"),
-    "15 دقيقة (15m)": ("15m", "30d"),
-    "30 دقيقة (30m)": ("30m", "35d"),
+    "5 دقائق (5m)": ("5m", "7d"),
+    "15 دقيقة (15m)": ("15m", "14d"),
+    "30 دقيقة (30m)": ("30m", "30d"),
     "1 ساعة (1h)": ("1h", "45d"),
     "4 ساعات (4h)": ("4h", "60d"),
     "يومي (1d)": ("1d", "180d")
@@ -56,28 +56,31 @@ selected_tf_label = st.selectbox(
 )
 TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 
-@st.cache_data(ttl=180)
-def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, trade_amount, target_mode):
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_coin_data(symbol, period_str, timeframe):
+    df = yf.Ticker(symbol).history(period=period_str, interval=timeframe)
+    return df
+
+def analyze_all_coins(timeframe, period_str, rr_ratio, swing_lookback, use_sl, trade_amount, target_mode):
     trades_history = []
     current_opportunities = []
 
-    try:
-        all_data = yf.download(COINS, period=period_str, interval=timeframe, group_by='ticker', progress=False, threads=True)
-    except Exception:
-        return pd.DataFrame(), pd.DataFrame()
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-    for symbol in COINS:
+    for idx_coin, symbol in enumerate(COINS):
+        status_text.caption(f"⏳ جاري فحص {symbol.replace('-USD', '')} ({idx_coin + 1}/{len(COINS)})...")
+        progress_bar.progress((idx_coin + 1) / len(COINS))
+
         try:
-            if symbol not in all_data.columns.get_level_values(0):
-                continue
-            df = all_data[symbol].dropna(subset=['Open', 'High', 'Low', 'Close'])
-            if len(df) < swing_lookback + 10:
+            df = fetch_coin_data(symbol, period_str, timeframe)
+            if df is None or df.empty or len(df) < swing_lookback + 10:
                 continue
 
-            opens = df['Open'].values.astype(float)
-            highs = df['High'].values.astype(float)
-            lows = df['Low'].values.astype(float)
-            closes = df['Close'].values.astype(float)
+            opens = df['Open'].to_numpy(dtype=float)
+            highs = df['High'].to_numpy(dtype=float)
+            lows = df['Low'].to_numpy(dtype=float)
+            closes = df['Close'].to_numpy(dtype=float)
             times = df.index
 
             in_position = False
@@ -199,18 +202,19 @@ def run_cisd_scanner(timeframe, period_str, rr_ratio, swing_lookback, use_sl, tr
         except Exception:
             continue
 
+    progress_bar.empty()
+    status_text.empty()
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-with st.spinner("⏳ جاري فحص العملات الـ 22 واستخراج نماذج CISD & FVG..."):
-    trades_df, opps_df = run_cisd_scanner(
-        TIMEFRAME,
-        DATA_PERIOD,
-        st.session_state.rr_ratio,
-        st.session_state.swing_lookback,
-        st.session_state.use_sl,
-        st.session_state.trade_amount,
-        st.session_state.target_mode
-    )
+trades_df, opps_df = analyze_all_coins(
+    TIMEFRAME,
+    DATA_PERIOD,
+    st.session_state.rr_ratio,
+    st.session_state.swing_lookback,
+    st.session_state.use_sl,
+    st.session_state.trade_amount,
+    st.session_state.target_mode
+)
 
 weekly_profit = 0.0
 weekly_trades = pd.DataFrame()
@@ -218,7 +222,7 @@ current_month_trades = pd.DataFrame()
 
 if not trades_df.empty:
     trades_df['تاريخ البيع_dt'] = pd.to_datetime(trades_df['تاريخ البيع'])
-    now = pd.Timestamp.now()
+    now = pd.Timestamp.now(tz=trades_df['تاريخ البيع_dt'].dt.tz)
     
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     current_month_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_month]
@@ -227,4 +231,3 @@ if not trades_df.empty:
     weekly_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_week]
     weekly_profit = weekly_trades['الربح ($)'].sum()
 
-box_class = "profit-box-green" if weekly_profit >= 0 else "profit-box-red"
