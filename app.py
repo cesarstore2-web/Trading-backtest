@@ -12,16 +12,26 @@ TRADE_AMOUNT = 100.0
 # توقيت المغرب الحالي (UTC / WET)
 MOROCCO_TZ = timezone.utc
 
-# قائمة العملات الـ 8 النقية المعتمدة
+# قائمة الـ 16 عملة رقمية النقية (الـ 8 الأساسية + 8 إضافية بنفس الشروط)
 HALAL_COINS = {
-    "TIA-USD": "Celestia",
-    "SUI20947-USD": "Sui",
-    "RENDER-USD": "Render",
-    "ARB11841-USD": "Arbitrum",
-    "DOT-USD": "Polkadot",
-    "TAO22974-USD": "Bittensor",
-    "HBAR-USD": "Hedera",
-    "LINK-USD": "Chainlink"
+    # القائمة الأساسية
+    "TIA-USD": "Celestia (TIA)",
+    "SUI20947-USD": "Sui (SUI)",
+    "RENDER-USD": "Render (RENDER)",
+    "ARB11841-USD": "Arbitrum (ARB)",
+    "DOT-USD": "Polkadot (DOT)",
+    "TAO22974-USD": "Bittensor (TAO)",
+    "HBAR-USD": "Hedera (HBAR)",
+    "LINK-USD": "Chainlink (LINK)",
+    # العملات المضافة
+    "SOL-USD": "Solana (SOL)",
+    "AVAX-USD": "Avalanche (AVAX)",
+    "NEAR-USD": "NEAR Protocol (NEAR)",
+    "APT21794-USD": "Aptos (APT)",
+    "SEI-USD": "Sei (SEI)",
+    "ATOM-USD": "Cosmos (ATOM)",
+    "ALGO-USD": "Algorand (ALGO)",
+    "IMX10603-USD": "Immutable (IMX)"
 }
 
 # دالة حساب بداية ونهاية الدورة الأسبوعية (الأحد 00:00 إلى الأحد القادم 23:55 بتوقيت المغرب UTC)
@@ -75,7 +85,7 @@ if show_settings:
     st.divider()
 
 st.caption(
-    f"📅 الدورة: من الأحد {start_window.strftime('%Y-%m-%d %H:%M')} إلى الأحد {end_window.strftime('%Y-%m-%d %H:%M')} (توقيت المغرب UTC)"
+    f"العملات: {len(HALAL_COINS)} عملة نقية | الدورة: من الأحد {start_window.strftime('%Y-%m-%d %H:%M')} إلى الأحد {end_window.strftime('%Y-%m-%d %H:%M')} (UTC)"
 )
 
 def calc_atr(df, length):
@@ -94,7 +104,6 @@ def fetch_data(ticker, tf):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
         
-    # ضبط توقيت الشموع على توقيت المغرب الحالي (UTC)
     if df.index.tz is None:
         df.index = df.index.tz_localize(MOROCCO_TZ)
     else:
@@ -202,7 +211,7 @@ def run_backtest(df, start_dt, end_dt, buy_pct_req, lookback, a_len, a_m, rr, en
 
 tot_w, tot_l, tot_o, tot_p, details = 0, 0, 0, 0.0, []
 
-with st.spinner("جاري حساب صفقات الدورة الأسبوعية بتوقيت المغرب (UTC)..."):
+with st.spinner("جاري فحص العملات الـ 16 وحساب صفقات الدورة الحالية..."):
     for ticker, name in HALAL_COINS.items():
         try:
             df_m = fetch_data(ticker, timeframe)
