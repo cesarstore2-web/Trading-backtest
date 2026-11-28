@@ -6,11 +6,12 @@ import requests
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="تقاطع المتوسطات — سبوت USDT", page_icon="📈", layout="centered")
+st.set_page_config(page_title="تقاطع المتوسطات — سبوت العملات الحلال", page_icon="📈", layout="centered")
 CAPITAL = 100.0
 
-COINS = {"BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT", "SOLUSDT": "SOL/USDT", "ADAUSDT": "ADA/USDT", "AVAXUSDT": "AVAX/USDT", "DOTUSDT": "DOT/USDT", "LINKUSDT": "LINK/USDT", "ATOMUSDT": "ATOM/USDT", "NEARUSDT": "NEAR/USDT", "ALGOUSDT": "ALGO/USDT", "XLMUSDT": "XLM/USDT", "VETUSDT": "VET/USDT", "HBARUSDT": "HBAR/USDT", "FILUSDT": "FIL/USDT", "ICPUSDT": "ICP/USDT", "APTUSDT": "APT/USDT", "ARBUSDT": "ARB/USDT", "OPUSDT": "OP/USDT", "RENDERUSDT": "RENDER/USDT", "GRTUSDT": "GRT/USDT", "TIAUSDT": "TIA/USDT", "SUIUSDT": "SUI/USDT"}
-YF_FALLBACK = {"BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD", "ADAUSDT": "ADA-USD", "AVAXUSDT": "AVAX-USD", "DOTUSDT": "DOT-USD", "LINKUSDT": "LINK-USD", "ATOMUSDT": "ATOM-USD", "NEARUSDT": "NEAR-USD", "ALGOUSDT": "ALGO-USD", "XLMUSDT": "XLM-USD", "VETUSDT": "VET-USD", "HBARUSDT": "HBAR-USD", "FILUSDT": "FIL-USD", "ICPUSDT": "ICP-USD", "APTUSDT": "APT21794-USD", "ARBUSDT": "ARB11841-USD", "OPUSDT": "OP-USD", "RENDERUSDT": "RENDER-USD", "GRTUSDT": "GRT6719-USD", "TIAUSDT": "TIA22861-USD", "SUIUSDT": "SUI20947-USD"}
+# ───────────────────────── العملات الحلال بأزواج USDT (في الخلفية، بدون TIA) ─────────────────────────
+COINS = {"BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT", "SOLUSDT": "SOL/USDT", "ADAUSDT": "ADA/USDT", "AVAXUSDT": "AVAX/USDT", "DOTUSDT": "DOT/USDT", "LINKUSDT": "LINK/USDT", "ATOMUSDT": "ATOM/USDT", "NEARUSDT": "NEAR/USDT", "ALGOUSDT": "ALGO/USDT", "XLMUSDT": "XLM/USDT", "VETUSDT": "VET/USDT", "HBARUSDT": "HBAR/USDT", "FILUSDT": "FIL/USDT", "ICPUSDT": "ICP/USDT", "APTUSDT": "APT/USDT", "ARBUSDT": "ARB/USDT", "OPUSDT": "OP/USDT", "RENDERUSDT": "RENDER/USDT", "GRTUSDT": "GRT/USDT", "SUIUSDT": "SUI/USDT"}
+YF_FALLBACK = {"BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD", "ADAUSDT": "ADA-USD", "AVAXUSDT": "AVAX-USD", "DOTUSDT": "DOT-USD", "LINKUSDT": "LINK-USD", "ATOMUSDT": "ATOM-USD", "NEARUSDT": "NEAR-USD", "ALGOUSDT": "ALGO-USD", "XLMUSDT": "XLM-USD", "VETUSDT": "VET-USD", "HBARUSDT": "HBAR-USD", "FILUSDT": "FIL-USD", "ICPUSDT": "ICP-USD", "APTUSDT": "APT21794-USD", "ARBUSDT": "ARB11841-USD", "OPUSDT": "OP-USD", "RENDERUSDT": "RENDER-USD", "GRTUSDT": "GRT6719-USD", "SUIUSDT": "SUI20947-USD"}
 ALL_SYMBOLS = tuple(COINS.keys())
 AR_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
 TF_OPTIONS = ("5m", "15m", "30m", "1h")
@@ -22,7 +23,7 @@ for _k, _v in DEFAULTS.items():
     if ("w_" + _k) not in st.session_state: st.session_state["w_" + _k] = SAVED.get(_k, _v)
 cfg = {k: st.session_state["w_" + k] for k in DEFAULTS}
 
-st.markdown("<style>html, body, .stApp, [data-testid='stAppViewContainer'] {direction: rtl; text-align: right;} .block-container {padding-top: 1.2rem; max-width: 760px;} .big-box {border-radius: 18px; padding: 18px 10px; text-align: center; margin-bottom: 10px;} .big-title {font-size: 15px; opacity: .85; margin-bottom: 4px;} .big-num {font-size: 46px; font-weight: 800; line-height: 1.1; direction: ltr;} .big-sub {font-size: 13px; opacity: .85; margin-top: 6px;} .wk-grid {display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; margin-bottom: 12px;} .wk-card {flex: 1 1 22%; min-width: 22%; border-radius: 14px; padding: 10px 6px; text-align: center;} .wk-t {font-size: 12px; opacity: .85;} .wk-n {font-size: 19px; font-weight: 700; direction: ltr; margin-top: 2px;}</style>", unsafe_allow_html=True)
+st.markdown("<style>html, body, .stApp, [data-testid='stAppViewContainer'] {direction: rtl; text-align: right;} .block-container {padding-top: 1.2rem; max-width: 760px;} .big-box {border-radius: 18px; padding: 18px 10px; text-align: center; margin-bottom: 10px;} .big-title {font-size: 15px; opacity: .85; margin-bottom: 4px;} .big-num {font-size: 46px; font-weight: 800; line-height: 1.1; direction: ltr;} .big-sub {font-size: 13px; opacity: .85; margin-top: 6px;} .wk-grid {display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;} .wk-card {flex: 1 1 30%; min-width: 30%; border-radius: 14px; padding: 12px 6px; text-align: center;} .wk-t {font-size: 12px; opacity: .85;} .wk-n {font-size: 20px; font-weight: 700; direction: ltr; margin-top: 3px;}</style>", unsafe_allow_html=True)
 
 GREEN, RED, GREY = "#16a34a", "#dc2626", "#6b7280"
 def tone(v, active=True): return GREY if not active else (GREEN if v > 0 else RED if v < 0 else GREY)
@@ -55,7 +56,7 @@ def _clean_yf(df):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_usdt(interval):
-    data, missing = {}, []
+    data, missing, failed = {}, [], []
     for sym in ALL_SYMBOLS:
         df = _fetch_binance_usdt(sym, interval)
         if df is not None and len(df) >= 150: data[sym] = df
@@ -68,7 +69,8 @@ def fetch_all_usdt(interval):
             try: df = _clean_yf(raw[yfs].copy()) if (raw is not None and isinstance(raw.columns, pd.MultiIndex) and yfs in raw.columns.get_level_values(0)) else None
             except Exception: df = None
             if df is not None and len(df) >= 150: data[sym] = df
-    return data
+            else: failed.append(COINS.get(sym, sym))
+    return data, failed
 
 def calc_ma(series, length, ma_type):
     s, n = pd.Series(series), int(length)
@@ -113,20 +115,22 @@ def backtest_ma_cross(sym, df, p):
     floating_pnl = ((float(c.item(last_closed)) - open_trade["entry"]) * (CAPITAL / open_trade["entry"]) - (open_trade["entry"] * (CAPITAL / open_trade["entry"]) + float(c.item(last_closed)) * (CAPITAL / open_trade["entry"])) * fee_rate) if open_trade is not None else 0.0
     return trades, floating_pnl
 
-st.markdown("<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت USDT</h2>", unsafe_allow_html=True)
-with st.spinner("جاري تحديث بيانات USDT وحساب التقاطعات..."): data = fetch_all_usdt(cfg["tf"])
+st.markdown("<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت العملات الحلال</h2>", unsafe_allow_html=True)
+with st.spinner("جاري تحديث البيانات وحساب التقاطعات..."): data, failed = fetch_all_usdt(cfg["tf"])
 
 all_trades, total_floating, last_candle_str = [], 0.0, ""
 for sym, df in data.items():
     t_list, flt = backtest_ma_cross(sym, df, cfg)
     all_trades.extend(t_list)
     total_floating += flt
-    last_candle_str = df.index.__getitem__(-2).strftime("%d-%m-%Y %H:%M UTC") if len(df) >= 2 else last_candle_str
+    if len(df) >= 2: last_candle_str = df.index.__getitem__(-2).strftime("%d-%m-%Y %H:%M UTC")
 
 trades_df = pd.DataFrame(all_trades)
-now_ym = datetime.now(timezone.utc).strftime("%Y-%m")
-ym_list = sorted(trades_df["الشهر"].unique().tolist(), reverse=True) if not trades_df.empty else [now_ym]
-sel_ym = st.selectbox("اختر الشهر", ym_list, format_func=fmt_ym, label_visibility="collapsed") if len(ym_list) > 1 else next(iter(ym_list))
+now_utc = datetime.now(timezone.utc)
+sel_ym = now_utc.strftime("%Y-%m")
+today_day = int(now_utc.day)
 
 m_df = trades_df.loc[trades_df["الشهر"] == sel_ym].copy() if not trades_df.empty else pd.DataFrame()
 month_pnl = float(m_df["الربح $"].sum()) if not m_df.empty else 0.0
+wins = int((m_df["الربح $"] > 0).sum()) if not m_df.empty else 0
+total_t = len(m_df)
