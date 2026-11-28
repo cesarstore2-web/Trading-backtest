@@ -1,216 +1,420 @@
+# -*- coding: utf-8 -*-
+"""
+استراتيجية اختراق القمة والسيولة (Momentum Swing Breakout)
+تداول فوري Spot - شراء فقط - بدون رافعة مالية
+تشغيل:  streamlit run app.py
+المتطلبات: pip install streamlit yfinance pandas numpy
+"""
+
+import calendar
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
 import streamlit as st
 import yfinance as yf
-import pandas as pd
-import numpy as np
 
-st.set_page_config(page_title="قناص الاختراق والسيولة - Spot", layout="centered")
-
-css = (
-    "<style>"
-    ".main { direction: rtl; text-align: right; }"
-    "div[data-testid='stSelectbox'], div[data-testid='stNumberInput'], div[data-testid='stCheckbox'] { direction: rtl; text-align: right; }"
-    ".profit-box-green { background-color: #0d3b1e; border: 2px solid #28a745; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 15px; }"
-    ".profit-box-red { background-color: #3b0d0d; border: 2px solid #dc3545; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 15px; }"
-    ".profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }"
-    ".profit-amount-green { color: #2ecc71; font-size: 36px; font-weight: bold; direction: ltr; }"
-    ".profit-amount-red { color: #ff6b6b; font-size: 36px; font-weight: bold; direction: ltr; }"
-    ".info-bar { color: #aaaaaa; font-size: 13px; text-align: center; margin: 10px 0 15px 0; padding: 8px; background-color: #1e1e1e; border-radius: 8px; }"
-    ".alert-box { background-color: #162436; border: 1px solid #2b4c7e; border-radius: 10px; padding: 15px; text-align: center; color: #90caf9; }"
-    "</style>"
-)
-st.markdown(css, unsafe_allow_html=True)
+# ----------------------------------------------------------------------
+# الإعدادات الثابتة
+# ----------------------------------------------------------------------
+st.set_page_config(page_title="اختراق القمة والسيولة", page_icon="📈", layout="centered")
 
 COINS = [
-    "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", 
-    "DOT-USD", "LINK-USD", "ATOM-USD", "NEAR-USD", "ALGO-USD", 
-    "XLM-USD", "VET-USD", "HBAR-USD", "FIL-USD", "ICP-USD", 
-    "APT-USD", "ARB-USD", "OP-USD", "RENDER-USD", "GRT-USD", 
-    "TIA-USD", "SUI-USD"
+    "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", "DOT-USD",
+    "LINK-USD", "ATOM-USD", "NEAR-USD", "ALGO-USD", "XLM-USD", "VET-USD",
+    "HBAR-USD", "FIL-USD", "ICP-USD", "APT-USD", "ARB-USD", "OP-USD",
+    "RENDER-USD", "GRT-USD", "TIA-USD", "SUI-USD",
 ]
 
-if 'swing_len' not in st.session_state:
-    st.session_state.swing_len = 12
-if 'vol_mult' not in st.session_state:
-    st.session_state.vol_mult = 1.3
-if 'rr_ratio' not in st.session_state:
-    st.session_state.rr_ratio = 2.0
-if 'trade_amount' not in st.session_state:
-    st.session_state.trade_amount = 100.0
-if 'use_trend' not in st.session_state:
-    st.session_state.use_trend = True
-if 'ema_period' not in st.session_state:
-    st.session_state.ema_period = 200
+CAPITAL = 100.0          # رأس مال كل صفقة (ثابت - يعمل في الخلفية فقط)
+BE_BUFFER = 0.001        # +0.1% لتغطية العمولة عند التأمين
 
-TIMEFRAME_OPTIONS = {
-    "5 دقائق (5m)": ("5m", "30d"),
-    "15 دقيقة (15m)": ("15m", "35d"),
-    "30 دقيقة (30m)": ("30m", "45d"),
-    "1 ساعة (1h)": ("1h", "60d")
+SECTIONS = [
+    "التوصيات الحالية",
+    "أداء الأسبوع الحالي",
+    "سجل 4 أسابيع للشهر الحالي",
+    "تفاصيل الصفقات",
+    "الإعدادات",
+]
+
+TIMEFRAMES = ["5m", "15m", "30m", "1h"]
+PERIODS = {"5m": "30d", "15m": "60d", "30m": "60d", "1h": "180d"}
+
+DEFAULT_CFG = {
+    "tf": "15m",
+    "use_ema": True,
+    "ema_len": 200,
+    "lookback": 12,
+    "vol_len": 20,
+    "vol_mult": 1.3,
+    "rr": 2.0,
 }
 
-col_top1, col_top2 = st.columns(2)
-with col_top1:
-    selected_tf_label = st.selectbox("⏱️ الإطار الزمني:", options=list(TIMEFRAME_OPTIONS.keys()), index=0)
-with col_top2:
-    st.write("")
-    st.write("")
-    st.session_state.use_trend = st.checkbox(f"ترند EMA {st.session_state.ema_period}", value=st.session_state.use_trend)
-
-TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
-
-@st.cache_data(ttl=180, show_spinner=False)
-def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, trade_amount, use_trend, ema_period):
-    trades_history = []
-    current_opportunities = []
-    try:
-        all_data = yf.download(COINS, period=period_str, interval=timeframe, group_by='ticker', progress=False, threads=True)
-    except Exception:
-        return pd.DataFrame(), pd.DataFrame()
-
-    for symbol in COINS:
-        coin_name = symbol.replace("-USD", "")
-        try:
-            if symbol not in all_data.columns.get_level_values(0):
-                continue
-            df = all_data[symbol].dropna(subset=['Open', 'High', 'Low', 'Close']).copy()
-            min_bars = (ema_period + 5) if use_trend else (swing_len + 25)
-            if len(df) < min_bars:
-                continue
-            if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-
-            df['EMA'] = df['Close'].ewm(span=ema_period, adjust=False).mean()
-            df['PSH'] = df['High'].shift(1).rolling(window=swing_len).max()
-            df['PSL'] = df['Low'].shift(1).rolling(window=swing_len).min()
-            df['Vol_MA'] = df['Volume'].shift(1).rolling(window=20).mean()
-            df['Is_Green'] = df['Close'] > df['Open']
-
-            trend_cond = (df['Close'] > df['EMA']) if use_trend else True
-            df['Buy_Signal'] = trend_cond & (df['Close'] > df['PSH']) & df['Is_Green'] & (df['Volume'] >= df['Vol_MA'] * vol_mult)
-
-            if df.tail(3)['Buy_Signal'].any():
-                last_price = float(df['Close'].iloc[-1])
-                sl_p = float(df['PSL'].iloc[-1])
-                risk = last_price - sl_p
-                if risk > 0 and (risk / last_price) >= 0.003:
-                    tp_p = last_price + (risk * rr_ratio)
-                    tp_pct = ((tp_p - last_price) / last_price) * 100
-                    current_opportunities.append({
-                        "العملة": coin_name,
-                        "سعر الدخول": round(last_price, 4),
-                        f"الهدف (1:{rr_ratio})": f"{round(tp_p, 4)} (+{round(tp_pct, 2)}%)",
-                        "وقف الخسارة": round(sl_p, 4),
-                        "الوقت": str(df.index[-1])[:16]
-                    })
-
-            in_position = False
-            buy_price = 0.0
-            sl_price = 0.0
-            tp_price = 0.0
-            breakeven_price = 0.0
-            is_secured = False
-            buy_time = None
-
-            start_idx = ema_period if use_trend else (swing_len + 20)
-            sub_df = df.iloc[start_idx:]
-
-            for idx, row in sub_df.iterrows():
-                curr_high = float(row['High'])
-                curr_low = float(row['Low'])
-                curr_close = float(row['Close'])
-
-                if not in_position and row['Buy_Signal']:
-                    psl_val = float(row['PSL'])
-                    risk = curr_close - psl_val
-                    if risk > 0 and 0.003 <= (risk / curr_close) <= 0.06:
-                        in_position = True
-                        buy_price = curr_close
-                        sl_price = psl_val
-                        tp_price = buy_price + (risk * rr_ratio)
-                        breakeven_price = buy_price + risk
-                        is_secured = False
-                        buy_time = idx
-                elif in_position:
-                    if not is_secured and curr_high >= breakeven_price:
-                        sl_price = buy_price * 1.001
-                        is_secured = True
-                    sell_reason = None
-                    sell_price = 0.0
-                    if curr_low <= sl_price:
-                        sell_price = sl_price
-                        sell_reason = "تأمين بدون خسارة (BE)" if is_secured else "وقف خسارة (PSL)"
-                    elif curr_high >= tp_price:
-                        sell_price = tp_price
-                        sell_reason = f"هدف كامل (1:{rr_ratio})"
-                    if sell_reason:
-                        profit_pct = (sell_price - buy_price) / buy_price
-                        profit_usd = trade_amount * profit_pct
-                        trades_history.append({
-                            "العملة": coin_name,
-                            "تاريخ الشراء": buy_time,
-                            "سعر الشراء": round(buy_price, 4),
-                            "تاريخ البيع": idx,
-                            "سعر البيع": round(sell_price, 4),
-                            "سبب الإغلاق": sell_reason,
-                            "الربح ($)": round(profit_usd, 2),
-                            "النسبة (%)": round(profit_pct * 100, 2)
-                        })
-                        in_position = False
-        except Exception:
-            continue
-
-    return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
-
-with st.spinner("⚡ جاري تحديث البيانات والسجلات..."):
-    trades_df, opps_df = run_breakout_scanner(
-        TIMEFRAME, DATA_PERIOD, st.session_state.swing_len, st.session_state.vol_mult,
-        st.session_state.rr_ratio, st.session_state.trade_amount, st.session_state.use_trend, st.session_state.ema_period
-    )
-
-weekly_profit = 0.0
-weekly_trades = pd.DataFrame()
-current_month_trades = pd.DataFrame()
-now = pd.Timestamp.utcnow().tz_localize(None)
-
-if not trades_df.empty:
-    trades_df['تاريخ البيع'] = pd.to_datetime(trades_df['تاريخ البيع'])
-    trades_df['تاريخ الشراء'] = pd.to_datetime(trades_df['تاريخ الشراء'])
-    start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    current_month_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_month].copy()
-    start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    weekly_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_week].copy()
-    weekly_profit = weekly_trades['الربح ($)'].sum()
-
-box_class = "profit-box-green" if weekly_profit >= 0 else "profit-box-red"
-amount_class = "profit-amount-green" if weekly_profit >= 0 else "profit-amount-red"
-sign = "+" if weekly_profit > 0 else ""
-
-profit_html = f'<div class="{box_class}"><div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div><div class="{amount_class}">{sign}{weekly_profit:.2f}$</div></div>'
-st.markdown(profit_html, unsafe_allow_html=True)
-
-trend_label = f"مفعل (EMA {st.session_state.ema_period})" if st.session_state.use_trend else "ملغي (حر)"
-info_html = f'<div class="info-bar">العملات: {len(COINS)} | الترند: {trend_label} | الهدف: 1:{st.session_state.rr_ratio} | الفريم: {TIMEFRAME}</div>'
-st.markdown(info_html, unsafe_allow_html=True)
-
-section = st.selectbox(
-    "📂 اختر القسم للعرض:",
-    options=[
-        "🎯 التوصيات والفرص الحالية",
-        "🔥 أداء الأسبوع الحالي",
-        "📅 سجل 4 أسابيع (الشهر الحالي)",
-        "📋 تفاصيل جميع الصفقات",
-        "⚙️ إعدادات الاستراتيجية والمتوسط"
-    ],
-    index=0
+# ----------------------------------------------------------------------
+# تنسيق RTL
+# ----------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
+        direction: rtl; text-align: right;
+    }
+    .block-container {padding-top: 1.2rem; padding-left: .8rem; padding-right: .8rem;}
+    div[data-baseweb="select"] > div {direction: rtl;}
+    [data-testid="stMetric"] {text-align: right;}
+    [data-testid="stDataFrame"] {direction: ltr;}
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-st.divider()
+if "cfg" not in st.session_state:
+    st.session_state["cfg"] = DEFAULT_CFG.copy()
+cfg = st.session_state["cfg"]
 
-if section == "🎯 التوصيات والفرص الحالية":
-    st.subheader("🎯 التوصيات المستقبلية (الفرص الحالية)")
-    if not opps_df.empty:
-        st.success(f"تم قنص {len(opps_df)} فرصة مطابقة للشروط!")
-        st.dataframe(opps_df, use_container_width=True)
+
+# ----------------------------------------------------------------------
+# جلب البيانات
+# ----------------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_all(tf: str) -> dict:
+    """تحميل بيانات كل العملات مرة واحدة وتوحيد التوقيت."""
+    raw = yf.download(
+        COINS,
+        period=PERIODS[tf],
+        interval=tf,
+        group_by="ticker",
+        auto_adjust=False,
+        progress=False,
+        threads=True,
+    )
+    out = {}
+    if raw is None or raw.empty:
+        return out
+    top = raw.columns.get_level_values(0) if isinstance(raw.columns, pd.MultiIndex) else []
+    for sym in COINS:
+        if sym not in top:
+            continue
+        df = raw[sym][["Open", "High", "Low", "Close", "Volume"]].dropna()
+        if df.empty:
+            continue
+        # توحيد التوقيت: تحويل إلى UTC ثم إزالة معلومات المنطقة الزمنية
+        if df.index.tz is not None:
+            df.index = df.index.tz_convert("UTC").tz_localize(None)
+        else:
+            df.index = df.index.tz_localize(None)
+        # حذف الشمعة الأخيرة لأنها غير مكتملة (ما زالت تتشكل)
+        df = df.iloc[:-1]
+        if len(df) > 50:
+            out[sym] = df
+    return out
+
+
+# ----------------------------------------------------------------------
+# منطق الاستراتيجية + المحاكاة
+# ----------------------------------------------------------------------
+def run_backtest(sym: str, df: pd.DataFrame, cfg: dict) -> list:
+    n_look = int(cfg["lookback"])
+    vol_len = int(cfg["vol_len"])
+    ema_len = int(cfg["ema_len"])
+
+    d = df.copy()
+    d["psh"] = d["High"].rolling(n_look).max().shift(1)     # أعلى قمة لآخر N شمعة سابقة
+    d["psl"] = d["Low"].rolling(n_look).min().shift(1)      # أدنى قاع لآخر N شمعة سابقة
+    d["avgvol"] = d["Volume"].rolling(vol_len).mean().shift(1)
+    d["ema"] = d["Close"].ewm(span=ema_len, adjust=False).mean()
+
+    cond = (
+        (d["Close"] > d["Open"])
+        & (d["Close"] > d["psh"])
+        & (d["Volume"] > cfg["vol_mult"] * d["avgvol"])
+    )
+    if cfg["use_ema"]:
+        cond &= d["Close"] > d["ema"]
+        cond &= pd.Series(np.arange(len(d)) >= ema_len, index=d.index)  # انتظار اكتمال تسخين EMA
+    sig = cond.fillna(False).values
+
+    idx = d.index
+    o, h, l, c = d["Open"].values, d["High"].values, d["Low"].values, d["Close"].values
+    psl = d["psl"].values
+    n = len(d)
+    rr = float(cfg["rr"])
+
+    trades = []
+    i = 0
+    while i < n:
+        if not sig[i]:
+            i += 1
+            continue
+
+        entry = c[i]
+        sl0 = psl[i]
+        risk = entry - sl0
+        if not np.isfinite(risk) or risk <= 0:
+            i += 1
+            continue
+
+        tp = entry + rr * risk
+        be_trigger = entry + 1.0 * risk
+        be_price = entry * (1 + BE_BUFFER)
+        cur_sl = sl0
+        be_on = False
+        exit_idx, exit_price, status = None, None, None
+
+        for j in range(i + 1, n):
+            if l[j] <= cur_sl:
+                exit_price = min(o[j], cur_sl)
+                exit_idx = j
+                status = "تأمين (Breakeven)" if be_on else "خاسرة"
+                break
+            if h[j] >= tp:
+                exit_price, exit_idx, status = tp, j, "رابحة (TP)"
+                break
+            if (not be_on) and h[j] >= be_trigger:
+                be_on = True
+                cur_sl = be_price
+
+        if exit_idx is None:
+            exit_price = c[n - 1]
+            status = "مفتوحة"
+            exit_time = None
+        else:
+            exit_time = idx[exit_idx]
+
+        pnl_pct = (exit_price / entry - 1) * 100
+        trades.append(
+            {
+                "العملة": sym.replace("-USD", ""),
+                "وقت الدخول": idx[i],
+                "سعر الدخول": entry,
+                "وقف الخسارة الأولي": sl0,
+                "الهدف TP": tp,
+                "مستوى التأمين 1:1": be_trigger,
+                "وقف الخسارة الحالي": cur_sl,
+                "التأمين مفعّل": be_on,
+                "وقت الخروج": exit_time,
+                "سعر الخروج/الحالي": exit_price,
+                "الحالة": status,
+                "النسبة %": pnl_pct,
+                "الربح/الخسارة $": CAPITAL * (exit_price / entry - 1),
+            }
+        )
+        i = (exit_idx + 1) if exit_idx is not None else n
+    return trades
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def compute_trades(tf: str, cfg_items: tuple) -> pd.DataFrame:
+    cfg_local = dict(cfg_items)
+    data = fetch_all(tf)
+    rows = []
+    for sym, df in data.items():
+        rows.extend(run_backtest(sym, df, cfg_local))
+    if not rows:
+        return pd.DataFrame()
+    t = pd.DataFrame(rows)
+    t["وقت الدخول"] = pd.to_datetime(t["وقت الدخول"]).dt.tz_localize(None)
+    t["وقت الخروج"] = pd.to_datetime(t["وقت الخروج"]).dt.tz_localize(None)
+    return t.sort_values("وقت الدخول", ascending=False).reset_index(drop=True)
+
+
+def stats(t: pd.DataFrame) -> dict:
+    closed = t[t["الحالة"] != "مفتوحة"]
+    wins = (closed["الحالة"] == "رابحة (TP)").sum()
+    be = (closed["الحالة"] == "تأمين (Breakeven)").sum()
+    loss = (closed["الحالة"] == "خاسرة").sum()
+    total = len(closed)
+    return {
+        "الصفقات المغلقة": int(total),
+        "رابحة": int(wins),
+        "تأمين": int(be),
+        "خاسرة": int(loss),
+        "نسبة النجاح %": round(wins / total * 100, 1) if total else 0.0,
+        "مغلق $": round(closed["الربح/الخسارة $"].sum(), 2),
+        "عائم $": round(t[t["الحالة"] == "مفتوحة"]["الربح/الخسارة $"].sum(), 2),
+        "الإجمالي $": round(t["الربح/الخسارة $"].sum(), 2),
+    }
+
+
+def show_stats(t: pd.DataFrame):
+    s = stats(t)
+    c1, c2 = st.columns(2)
+    c1.metric("الصفقات المغلقة", s["الصفقات المغلقة"])
+    c2.metric("نسبة النجاح", f'{s["نسبة النجاح %"]}%')
+    c3, c4, c5 = st.columns(3)
+    c3.metric("رابحة", s["رابحة"])
+    c4.metric("تأمين", s["تأمين"])
+    c5.metric("خاسرة", s["خاسرة"])
+    c6, c7 = st.columns(2)
+    c6.metric("ربح/خسارة مغلقة", f'{s["مغلق $"]:+.2f} $')
+    c7.metric("ربح/خسارة عائمة", f'{s["عائم $"]:+.2f} $')
+    st.metric("الإجمالي", f'{s["الإجمالي $"]:+.2f} $')
+
+
+def fmt_table(t: pd.DataFrame, cols: list) -> pd.DataFrame:
+    d = t[cols].copy()
+    for col in d.columns:
+        if d[col].dtype.kind == "f":
+            d[col] = d[col].map(lambda x: f"{x:,.6g}" if abs(x) < 1 else f"{x:,.4f}")
+    return d
+
+
+# ----------------------------------------------------------------------
+# الواجهة
+# ----------------------------------------------------------------------
+st.title("📈 اختراق القمة والسيولة")
+st.caption(f"Spot - شراء فقط - 22 عملة حلال - الفريم: {cfg['tf']} - رأس مال الصفقة ثابت")
+
+section = st.selectbox("القسم", SECTIONS, key="section_nav")
+
+now = datetime.utcnow()
+
+# ---------------- الإعدادات ----------------
+if section == "الإعدادات":
+    st.subheader("⚙️ الإعدادات")
+    with st.form("settings_form"):
+        tf = st.selectbox("الإطار الزمني", TIMEFRAMES, index=TIMEFRAMES.index(cfg["tf"]))
+        use_ema = st.checkbox("تفعيل فلتر الاتجاه (EMA)", value=cfg["use_ema"])
+        ema_len = st.number_input("رقم المتوسط EMA", min_value=2, max_value=1000, value=int(cfg["ema_len"]), step=1)
+        lookback = st.number_input("عدد الشموع للقمة/القاع (PSH/PSL)", min_value=2, max_value=200, value=int(cfg["lookback"]), step=1)
+        vol_len = st.number_input("عدد شموع متوسط الحجم", min_value=2, max_value=200, value=int(cfg["vol_len"]), step=1)
+        vol_mult = st.number_input("مضاعف الحجم", min_value=0.1, max_value=10.0, value=float(cfg["vol_mult"]), step=0.1, format="%.2f")
+        rr = st.number_input("مضاعف المخاطرة/العائد (RR)", min_value=0.5, max_value=10.0, value=float(cfg["rr"]), step=0.5, format="%.2f")
+        submitted = st.form_submit_button("💾 حفظ وتطبيق")
+    if submitted:
+        st.session_state["cfg"] = {
+            "tf": tf, "use_ema": use_ema, "ema_len": int(ema_len),
+            "lookback": int(lookback), "vol_len": int(vol_len),
+            "vol_mult": float(vol_mult), "rr": float(rr),
+        }
+        st.success("تم حفظ الإعدادات. انتقل إلى أي قسم لرؤية النتائج.")
+    if st.button("🔄 تحديث البيانات الآن"):
+        st.cache_data.clear()
+        st.success("تم مسح الذاكرة المؤقتة.")
+    st.stop()
+
+# ---------------- حساب الصفقات ----------------
+with st.spinner("جارٍ تحميل البيانات وتحليل العملات..."):
+    trades = compute_trades(cfg["tf"], tuple(sorted(cfg.items())))
+
+if trades.empty:
+    st.warning("لا توجد صفقات أو تعذر تحميل البيانات حالياً. جرّب تحديث البيانات من قسم الإعدادات.")
+    st.stop()
+
+week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+last_day = calendar.monthrange(now.year, now.month)[1]
+
+# ---------------- التوصيات الحالية ----------------
+if section == "التوصيات الحالية":
+    st.subheader("🎯 التوصيات الحالية (صفقات مفتوحة)")
+    open_t = trades[trades["الحالة"] == "مفتوحة"].copy()
+    if open_t.empty:
+        st.info("لا توجد توصيات نشطة حالياً.")
     else:
-        st.markdown('<div class="alert-box">لا توجد إشارة اختراق في آخر 3 شموع.. الماسح يراقب الـ 22 عملة تلقائياً.</div>', unsafe_allow_html=True)
+        for _, r in open_t.iterrows():
+            icon = "🟢" if r["النسبة %"] >= 0 else "🔴"
+            with st.container(border=True):
+                st.markdown(f"### {icon} {r['العملة']}")
+                st.write(f"وقت الدخول: {r['وقت الدخول']:%Y-%m-%d %H:%M} (UTC)")
+                a, b = st.columns(2)
+                a.metric("سعر الدخول", f"{r['سعر الدخول']:,.6g}")
+                b.metric("السعر الحالي", f"{r['سعر الخروج/الحالي']:,.6g}", f"{r['النسبة %']:+.2f}%")
+                c1, c2 = st.columns(2)
+                c1.metric("🛑 وقف الخسارة", f"{r['وقف الخسارة الحالي']:,.6g}")
+                c2.metric("🎯 الهدف", f"{r['الهدف TP']:,.6g}")
+                st.caption(
+                    f"مستوى التأمين 1:1 عند {r['مستوى التأمين 1:1']:,.6g} - "
+                    + ("✅ التأمين مفعّل" if r["التأمين مفعّل"] else "لم يُفعَّل بعد")
+                    + f" - الربح/الخسارة العائمة: {r['الربح/الخسارة $']:+.2f} $"
+                )
 
+# ---------------- أداء الأسبوع الحالي ----------------
+elif section == "أداء الأسبوع الحالي":
+    st.subheader("📅 أداء الأسبوع الحالي")
+    st.caption(f"من {week_start:%Y-%m-%d} (الاثنين) حتى الآن")
+    wk = trades[trades["وقت الدخول"] >= week_start]
+    if wk.empty:
+        st.info("لا توجد صفقات هذا الأسبوع.")
+    else:
+        show_stats(wk)
+        st.markdown("**حسب العملة**")
+        by = wk.groupby("العملة").agg(
+            الصفقات=("العملة", "count"),
+            الربح_الخسارة=("الربح/الخسارة $", "sum"),
+        ).sort_values("الربح_الخسارة", ascending=False).round(2)
+        by.columns = ["الصفقات", "الربح/الخسارة $"]
+        st.dataframe(by, use_container_width=True)
+
+# ---------------- سجل 4 أسابيع ----------------
+elif section == "سجل 4 أسابيع للشهر الحالي":
+    st.subheader("🗓️ سجل 4 أسابيع للشهر الحالي")
+    st.caption(f"شهر {now:%Y-%m} - الأسابيع: 1-7، 8-14، 15-21، 22-{last_day}")
+    bounds = [
+        (1, 8, "الأسبوع 1 (1-7)"),
+        (8, 15, "الأسبوع 2 (8-14)"),
+        (15, 22, "الأسبوع 3 (15-21)"),
+        (22, last_day + 1, f"الأسبوع 4 (22-{last_day})"),
+    ]
+    rows = []
+    for d1, d2, label in bounds:
+        start = month_start.replace(day=d1)
+        end = (month_start.replace(day=d2) if d2 <= last_day
+               else (month_start.replace(day=last_day) + timedelta(days=1)))
+        part = trades[(trades["وقت الدخول"] >= start) & (trades["وقت الدخول"] < end)]
+        closed = part[part["الحالة"] != "مفتوحة"]
+        wins = int((closed["الحالة"] == "رابحة (TP)").sum())
+        rows.append({
+            "الأسبوع": label,
+            "الصفقات": len(part),
+            "رابحة": wins,
+            "تأمين": int((closed["الحالة"] == "تأمين (Breakeven)").sum()),
+            "خاسرة": int((closed["الحالة"] == "خاسرة").sum()),
+            "نسبة النجاح %": round(wins / len(closed) * 100, 1) if len(closed) else 0.0,
+            "الربح/الخسارة $": round(part["الربح/الخسارة $"].sum(), 2),
+        })
+    log = pd.DataFrame(rows)
+    st.dataframe(log, use_container_width=True, hide_index=True)
+    st.metric("إجمالي الشهر", f'{log["الربح/الخسارة $"].sum():+.2f} $')
+    mt = trades[trades["وقت الدخول"] >= month_start]
+    if not mt.empty:
+        st.markdown("**ملخص الشهر**")
+        show_stats(mt)
+    if cfg["tf"] != "1h" and (now - month_start).days > 28:
+        st.caption("ملاحظة: بيانات الفريمات الصغيرة محدودة المدة في Yahoo Finance.")
+
+# ---------------- تفاصيل الصفقات ----------------
+elif section == "تفاصيل الصفقات":
+    st.subheader("📋 تفاصيل الصفقات")
+    status_opts = ["الكل", "مفتوحة", "رابحة (TP)", "تأمين (Breakeven)", "خاسرة"]
+    status_sel = st.selectbox("تصفية حسب الحالة", status_opts)
+    coin_opts = ["الكل"] + sorted(trades["العملة"].unique().tolist())
+    coin_sel = st.selectbox("تصفية حسب العملة", coin_opts)
+    period_sel = st.selectbox("الفترة", ["الشهر الحالي", "الأسبوع الحالي", "كل البيانات"])
+
+    t = trades.copy()
+    if status_sel != "الكل":
+        t = t[t["الحالة"] == status_sel]
+    if coin_sel != "الكل":
+        t = t[t["العملة"] == coin_sel]
+    if period_sel == "الشهر الحالي":
+        t = t[t["وقت الدخول"] >= month_start]
+    elif period_sel == "الأسبوع الحالي":
+        t = t[t["وقت الدخول"] >= week_start]
+
+    st.caption(f"عدد الصفقات: {len(t)}")
+    if t.empty:
+        st.info("لا توجد صفقات مطابقة.")
+    else:
+        cols = [
+            "العملة", "الحالة", "وقت الدخول", "سعر الدخول", "وقف الخسارة الأولي",
+            "الهدف TP", "سعر الخروج/الحالي", "النسبة %", "الربح/الخسارة $", "وقت الخروج",
+        ]
+        d = t[cols].copy()
+        d["النسبة %"] = d["النسبة %"].round(2)
+        d["الربح/الخسارة $"] = d["الربح/الخسارة $"].round(2)
+        st.dataframe(d, use_container_width=True, hide_index=True)
+
+st.divider()
+st.caption("⚠️ للأغراض التعليمية فقط وليست نصيحة استثمارية. المحاكاة تفترض الدخول عند إغلاق شمعة الإشارة، "
+           "وعند تحقق الوقف والهدف في نفس الشمعة يُفترض الوقف أولاً (تحفظاً).")
