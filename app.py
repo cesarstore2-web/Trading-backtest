@@ -8,7 +8,7 @@ st.set_page_config(page_title="قناص الاختراق والسيولة - Spot
 css = (
     "<style>"
     ".main { direction: rtl; text-align: right; }"
-    "div[data-testid='stSelectbox'], div[data-testid='stNumberInput'], div[data-testid='stRadio'], div[data-testid='stCheckbox'] { direction: rtl; text-align: right; }"
+    "div[data-testid='stSelectbox'], div[data-testid='stNumberInput'], div[data-testid='stCheckbox'] { direction: rtl; text-align: right; }"
     ".profit-box-green { background-color: #0d3b1e; border: 2px solid #28a745; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 15px; }"
     ".profit-box-red { background-color: #3b0d0d; border: 2px solid #dc3545; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 15px; }"
     ".profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }"
@@ -38,6 +38,8 @@ if 'trade_amount' not in st.session_state:
     st.session_state.trade_amount = 100.0
 if 'use_trend' not in st.session_state:
     st.session_state.use_trend = True
+if 'ema_period' not in st.session_state:
+    st.session_state.ema_period = 200
 
 TIMEFRAME_OPTIONS = {
     "5 دقائق (5m)": ("5m", "30d"),
@@ -56,12 +58,12 @@ with col_top1:
 with col_top2:
     st.write("")
     st.write("")
-    st.session_state.use_trend = st.checkbox("فلتر الترند (EMA 200)", value=st.session_state.use_trend)
+    st.session_state.use_trend = st.checkbox(f"ترند EMA {st.session_state.ema_period}", value=st.session_state.use_trend)
 
 TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 
 @st.cache_data(ttl=180, show_spinner=False)
-def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, trade_amount, use_trend):
+def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, trade_amount, use_trend, ema_period):
     trades_history = []
     current_opportunities = []
 
@@ -76,20 +78,20 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
             if symbol not in all_data.columns.get_level_values(0):
                 continue
             df = all_data[symbol].dropna(subset=['Open', 'High', 'Low', 'Close']).copy()
-            min_bars = 205 if use_trend else (swing_len + 25)
+            min_bars = (ema_period + 5) if use_trend else (swing_len + 25)
             if len(df) < min_bars:
                 continue
 
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
 
-            df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+            df['EMA'] = df['Close'].ewm(span=ema_period, adjust=False).mean()
             df['PSH'] = df['High'].shift(1).rolling(window=swing_len).max()
             df['PSL'] = df['Low'].shift(1).rolling(window=swing_len).min()
             df['Vol_MA'] = df['Volume'].shift(1).rolling(window=20).mean()
             df['Is_Green'] = df['Close'] > df['Open']
 
-            trend_cond = (df['Close'] > df['EMA200']) if use_trend else True
+            trend_cond = (df['Close'] > df['EMA']) if use_trend else True
 
             df['Buy_Signal'] = (
                 trend_cond &
@@ -123,7 +125,7 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
             is_secured = False
             buy_time = None
 
-            start_idx = 200 if use_trend else (swing_len + 20)
+            start_idx = ema_period if use_trend else (swing_len + 20)
             sub_df = df.iloc[start_idx:]
 
             for idx, row in sub_df.iterrows():
@@ -186,7 +188,8 @@ with st.spinner("⚡ جاري تحديث البيانات والسجلات..."):
         st.session_state.vol_mult,
         st.session_state.rr_ratio,
         st.session_state.trade_amount,
-        st.session_state.use_trend
+        st.session_state.use_trend,
+        st.session_state.ema_period
     )
 
 weekly_profit = 0.0
@@ -212,21 +215,20 @@ sign = "+" if weekly_profit > 0 else ""
 profit_html = f'<div class="{box_class}"><div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div><div class="{amount_class}">{sign}{weekly_profit:.2f}$</div></div>'
 st.markdown(profit_html, unsafe_allow_html=True)
 
-trend_label = "مفعل (EMA 200)" if st.session_state.use_trend else "ملغي (حر)"
+trend_label = f"مفعل (EMA {st.session_state.ema_period})" if st.session_state.use_trend else "ملغي (حر)"
 info_html = f'<div class="info-bar">العملات: {len(COINS)} | الترند: {trend_label} | الهدف: 1:{st.session_state.rr_ratio} | الفريم: {TIMEFRAME}</div>'
 st.markdown(info_html, unsafe_allow_html=True)
 
-# قائمة تنقل سريعة ومضمونة للهاتف بدلاً من التبويبات والمربعات
-section = st.radio(
-    "اختر القسم للعرض:",
+section = st.selectbox(
+    "📂 اختر القسم للعرض:",
     options=[
         "🎯 التوصيات والفرص الحالية",
         "🔥 أداء الأسبوع الحالي",
         "📅 سجل 4 أسابيع (الشهر الحالي)",
         "📋 تفاصيل جميع الصفقات",
-        "⚙️ إعدادات الاستراتيجية"
+        "⚙️ إعدادات الاستراتيجية والمتوسط"
     ],
-    horizontal=False
+    index=0
 )
 
 st.divider()
@@ -234,4 +236,3 @@ st.divider()
 if section == "🎯 التوصيات والفرص الحالية":
     st.subheader("🎯 التوصيات المستقبلية (الفرص الحالية)")
     if not opps_df.empty:
-        st.success(f"تم قنص {len(opps_df)} فرصة مطابقة للشروط!")
