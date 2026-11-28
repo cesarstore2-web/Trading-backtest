@@ -79,6 +79,23 @@ st.markdown(
 
 if "cfg" not in st.session_state:
     st.session_state["cfg"] = DEFAULT_CFG.copy()
+
+
+def sync_cfg():
+    """تُستدعى تلقائياً عند أي تعديل في الإعدادات (بدون زر حفظ)."""
+    ss = st.session_state
+    old = ss["cfg"]
+    ss["cfg"] = {
+        "tf": ss.get("w_tf", old["tf"]),
+        "use_ema": ss.get("w_use_ema", old["use_ema"]),
+        "ema_len": int(ss.get("w_ema_len", old["ema_len"])),
+        "lookback": int(ss.get("w_lookback", old["lookback"])),
+        "vol_len": int(ss.get("w_vol_len", old["vol_len"])),
+        "vol_mult": float(ss.get("w_vol_mult", old["vol_mult"])),
+        "rr": float(ss.get("w_rr", old["rr"])),
+    }
+
+
 cfg = st.session_state["cfg"]
 
 
@@ -322,23 +339,35 @@ show_settings = st.checkbox("⚙️ إظهار الإعدادات", value=False,
 
 if show_settings:
     with st.container(border=True):
-        st.subheader("⚙️ الإعدادات")
-        with st.form("settings_form"):
-            tf = st.selectbox("الإطار الزمني", TIMEFRAMES, index=TIMEFRAMES.index(cfg["tf"]))
-            use_ema = st.checkbox("تفعيل فلتر الاتجاه (EMA)", value=cfg["use_ema"])
-            ema_len = st.number_input("رقم المتوسط EMA", min_value=2, max_value=1000, value=int(cfg["ema_len"]), step=1)
-            lookback = st.number_input("عدد الشموع للقمة/القاع (PSH/PSL)", min_value=2, max_value=200, value=int(cfg["lookback"]), step=1)
-            vol_len = st.number_input("عدد شموع متوسط الحجم", min_value=2, max_value=200, value=int(cfg["vol_len"]), step=1)
-            vol_mult = st.number_input("مضاعف الحجم", min_value=0.1, max_value=10.0, value=float(cfg["vol_mult"]), step=0.1, format="%.2f")
-            rr = st.number_input("مضاعف المخاطرة/العائد (RR)", min_value=0.5, max_value=10.0, value=float(cfg["rr"]), step=0.5, format="%.2f")
-            submitted = st.form_submit_button("💾 حفظ وتطبيق")
-        if submitted:
-            st.session_state["cfg"] = {
-                "tf": tf, "use_ema": use_ema, "ema_len": int(ema_len),
-                "lookback": int(lookback), "vol_len": int(vol_len),
-                "vol_mult": float(vol_mult), "rr": float(rr),
-            }
-            st.rerun()
+        st.subheader("⚙️ الإعدادات (تُطبَّق تلقائياً)")
+        st.selectbox(
+            "الإطار الزمني", TIMEFRAMES, index=TIMEFRAMES.index(cfg["tf"]),
+            key="w_tf", on_change=sync_cfg,
+        )
+        st.checkbox(
+            "تفعيل فلتر الاتجاه (EMA)", value=cfg["use_ema"],
+            key="w_use_ema", on_change=sync_cfg,
+        )
+        st.number_input(
+            "رقم المتوسط EMA", min_value=2, max_value=1000, value=int(cfg["ema_len"]),
+            step=1, key="w_ema_len", on_change=sync_cfg,
+        )
+        st.number_input(
+            "عدد الشموع للقمة/القاع (PSH/PSL)", min_value=2, max_value=200, value=int(cfg["lookback"]),
+            step=1, key="w_lookback", on_change=sync_cfg,
+        )
+        st.number_input(
+            "عدد شموع متوسط الحجم", min_value=2, max_value=200, value=int(cfg["vol_len"]),
+            step=1, key="w_vol_len", on_change=sync_cfg,
+        )
+        st.number_input(
+            "مضاعف الحجم", min_value=0.1, max_value=10.0, value=float(cfg["vol_mult"]),
+            step=0.1, format="%.2f", key="w_vol_mult", on_change=sync_cfg,
+        )
+        st.number_input(
+            "مضاعف المخاطرة/العائد (RR)", min_value=0.5, max_value=10.0, value=float(cfg["rr"]),
+            step=0.5, format="%.2f", key="w_rr", on_change=sync_cfg,
+        )
         if st.button("🔄 تحديث البيانات الآن"):
             st.cache_data.clear()
             st.rerun()
