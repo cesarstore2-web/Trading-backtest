@@ -1,4 +1,5 @@
-# app.py  —  LGFP Scalper (Streamlit) — Spot / شراء فقط / بيانات yfinance / توقيت UTC
+# app.py — موجات إليوت + فلتر العرض والطلب + الدعم والمقاومة
+# Streamlit / سبوت شراء فقط / بيانات yfinance / توقيت UTC / 100$ لكل صفقة (ثابت في الخلفية)
 import calendar
 from datetime import datetime, timezone
 
@@ -7,10 +8,11 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="LGFP سكالبينج حلال", page_icon="📈", layout="centered")
+st.set_page_config(page_title="إليوت سبوت حلال", page_icon="📈", layout="centered")
 
-# ───────────────────────── الإعدادات الثابتة ─────────────────────────
-# رموز Yahoo Finance — إذا فشل رمز سيظهر في تحذير بالتطبيق ويمكنك تعديله هنا
+CAPITAL = 100.0   # رأس مال كل صفقة (ثابت في الخلفية، بدون خانة إدخال)
+
+# ───────────────────────── العملات (رموز Yahoo Finance) ─────────────────────────
 COINS = {
     "BTC-USD": "BTC", "ETH-USD": "ETH", "SOL-USD": "SOL", "ADA-USD": "ADA",
     "AVAX-USD": "AVAX", "DOT-USD": "DOT", "LINK-USD": "LINK", "ATOM-USD": "ATOM",
@@ -22,32 +24,38 @@ COINS = {
 ALL_SYMBOLS = tuple(COINS.keys())
 AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
              "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
-ZONES_AR = ["تلقائي", "الثلث الأول", "الثلث الأوسط", "الثلث الأخير"]
-ZONE_NAME = {0: "الثلث الأول", 1: "الثلث الأوسط", 2: "الثلث الأخير"}
 TF_OPTIONS = ["5m", "15m", "30m", "1h"]
+MODES = ["الاثنان", "موجة 3 فقط", "موجة 5 فقط"]
 
 DEFAULTS = dict(
     tf="15m",
     coins=list(ALL_SYMBOLS),
-    min_vol=0.20,        # أدنى تذبذب ATR% (لتصفية العملات الهادئة)
-    capital=100.0,       # $ لكل صفقة
-    fee=0.10,            # % لكل جهة
-    rev_atr=4.0,         # عتبة انعكاس الموجة (ATR ×)
-    min_ret=38.2,        # أدنى تصحيح %
-    min_bars=24,         # أدنى طول للموجة الأب
-    max_bars=500,        # أقصى طول للموجة الأب
-    zone="تلقائي",
-    min_corr=0.40,       # أدنى ارتباط شكلي
-    min_frac=10.0,       # أدنى حركة للفراكتل % من مدى الموجة الأب
-    res=16,              # دقة الشكل (نقاط)
-    time_mult=1.618,
-    price_mult=1.618,
-    hold=24,             # أقصى مدة للصفقة (شموع)
-    tp_frac=100,         # الهدف % من المسافة إلى المسار المسقَط
-    min_gain=0.60,       # أدنى ربح متوقع % (يجب أن يغطي الرسوم)
-    sl_atr=1.5,          # الوقف = ATR ×
-    min_rr=1.0,          # أدنى عائد/مخاطرة
-    step=1,              # فحص الإشارة كل N شمعة
+    min_vol=0.20,      # أدنى تذبذب ATR %
+    fee=0.10,          # % لكل جهة
+    # ── قواعد إليوت ──
+    mode="الاثنان",
+    rev_atr=3.0,       # حساسية الموجات (انعكاس ATR ×)
+    w1_min=3.0,        # أدنى حجم للموجة 1 (ATR ×)
+    w2_min=38.2, w2_max=78.6,   # تصحيح الموجة 2 %
+    w3_min=1.0,        # الموجة 3 ≥ الموجة 1 ×
+    w4_min=23.6, w4_max=50.0,   # تصحيح الموجة 4 %
+    ext3=1.618,        # هدف الموجة 3 = قاع 2 + ext3 × الموجة 1
+    ext5=1.0,          # هدف الموجة 5 = قاع 4 + ext5 × الموجة 1
+    sl_buf=0.3,        # الوقف تحت قاع الموجة (ATR ×)
+    hold=48,           # أقصى مدة (شموع)
+    min_gain=0.8,      # أدنى ربح متوقع %
+    min_rr=1.2,        # أدنى عائد/مخاطرة
+    # ── فلتر العرض والطلب ──
+    sd_on=True, sd_require=True, sd_cap=True,
+    zone_imp=3.0,      # قوة الاندفاع لتكوين المنطقة (ATR ×)
+    d_tol=0.5,         # هامش لمس منطقة الطلب (ATR ×)
+    zone_age=400,      # أقصى عمر للمنطقة (شموع)
+    # ── الدعم والمقاومة ──
+    sr_on=True, sr_require=False, sr_cap=True,
+    sr_lookback=40,    # عدد القمم/القيعان المستخدمة
+    sr_touches=2,      # أدنى عدد لمسات للمستوى
+    sr_tol=0.6,        # هامش تجميع المستوى (ATR ×)
+    sr_buf=0.2,        # مسافة الأمان تحت المقاومة (ATR ×)
 )
 
 # ───────────────────────── حفظ الإعدادات حتى عند إخفائها ─────────────────────────
@@ -135,157 +143,180 @@ def fetch_all(symbols, interval):
     return data, failed
 
 
-# ───────────────────────── محرك LGFP ─────────────────────────
+# ───────────────────────── محرك إليوت ─────────────────────────
 def atr_arr(h, l, c, n=14):
     pc = np.roll(c, 1)
     pc[0] = c[0]
     tr = np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])
-    # copy=True: مصفوفات pandas الحديثة قد تكون للقراءة فقط
     a = pd.Series(tr).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy(dtype=float, copy=True)
     a[:n - 1] = np.nan
     return a
 
 
-def zigzag(h, l, atr, rev, min_ret):
-    """الموجة الأب الحية (نفس منطق Pine)."""
+def swings(h, l, atr, rev):
+    """قمم/قيعان مؤكدة (ZigZag بـ ATR). كل عنصر: (فهرس القمة/القاع، السعر، النوع +1/-1، شمعة التأكيد)."""
     n = len(h)
-    dirA = np.zeros(n, dtype=int)
-    oI = np.zeros(n, dtype=int)
-    eI = np.zeros(n, dtype=int)
-    oP = np.zeros(n)
-    eP = np.zeros(n)
-    d, oi, op, ei, ep = 1, 0, l[0], 0, h[0]
-    dirA[0], oI[0], oP[0], eI[0], eP[0] = d, oi, op, ei, ep
+    piv = []
+    d, hi, hi_i, lo, lo_i = 0, h[0], 0, l[0], 0
     for i in range(1, n):
         a = atr[i]
-        if d == 1:
-            wave = ep - op
-            retr = ep - l[i]
-            if h[i] > ep:
-                ep, ei = h[i], i
-            elif (not np.isnan(a)) and wave > 0 and retr >= rev * a and retr >= min_ret / 100.0 * wave:
-                oi, op, d, ep, ei = ei, ep, -1, l[i], i
-            elif l[i] < op:
-                op, oi, ep, ei = l[i], i, h[i], i
+        ok = not np.isnan(a)
+        if d == 0:
+            if ok:
+                if h[i] - lo >= rev * a:
+                    piv.append((lo_i, float(lo), -1, i))
+                    d, hi, hi_i = 1, h[i], i
+                    continue
+                if hi - l[i] >= rev * a:
+                    piv.append((hi_i, float(hi), 1, i))
+                    d, lo, lo_i = -1, l[i], i
+                    continue
+            if h[i] > hi:
+                hi, hi_i = h[i], i
+            if l[i] < lo:
+                lo, lo_i = l[i], i
+        elif d == 1:
+            if h[i] > hi:
+                hi, hi_i = h[i], i
+            elif ok and hi - l[i] >= rev * a:
+                piv.append((hi_i, float(hi), 1, i))
+                d, lo, lo_i = -1, l[i], i
         else:
-            wave = op - ep
-            retr = h[i] - ep
-            if l[i] < ep:
-                ep, ei = l[i], i
-            elif (not np.isnan(a)) and wave > 0 and retr >= rev * a and retr >= min_ret / 100.0 * wave:
-                oi, op, d, ep, ei = ei, ep, 1, h[i], i
-            elif h[i] > op:
-                op, oi, ep, ei = h[i], i, l[i], i
-        dirA[i], oI[i], oP[i], eI[i], eP[i] = d, oi, op, ei, ep
-    return dirA, oI, oP, eI, eP
+            if l[i] < lo:
+                lo, lo_i = l[i], i
+            elif ok and h[i] - lo >= rev * a:
+                piv.append((lo_i, float(lo), -1, i))
+                d, hi, hi_i = 1, h[i], i
+    return piv
 
 
-def _detr(a, j):
-    return a - (a[:, :1] + (a[:, -1:] - a[:, :1]) * j)
+def build_zones(piv, o, h, l, c, atr, p):
+    """مناطق الطلب (D) من القيعان والعرض (S) من القمم بعد اندفاع قوي. المنطقة تُفعَّل عند تأكيد الاندفاع."""
+    n = len(c)
+    zones = []
+    for k in range(len(piv) - 1):
+        idx, pr, typ, _ = piv[k]
+        _, npr, _, nconf = piv[k + 1]
+        a = atr[nconf]
+        if np.isnan(a) or abs(npr - pr) < p["zone_imp"] * a:
+            continue
+        if typ == -1:
+            lo_z = float(l[idx])
+            hi_z = float(max(max(o[idx], c[idx]), lo_z + 0.2 * a))
+            kind = "D"
+        else:
+            hi_z = float(h[idx])
+            lo_z = float(min(min(o[idx], c[idx]), hi_z - 0.2 * a))
+            kind = "S"
+        brk = n + 10 ** 6
+        if nconf + 1 < n:
+            seg = c[nconf + 1:]
+            hit = np.nonzero(seg < lo_z)[0] if kind == "D" else np.nonzero(seg > hi_z)[0]
+            if hit.size:
+                brk = nconf + 1 + int(hit[0])
+        zones.append(dict(kind=kind, lo=lo_z, hi=hi_z, idx=idx, act=nconf, brk=brk))
+    return zones
 
 
-def find_micro(i, c, h, l, idx, zz, p):
-    """البحث عن الفراكتل المصغّر في أثلاث الموجة الأب الصاعدة، وإسقاطه."""
-    dirA, oI, oP, eI, eP = zz
-    if dirA[i] != 1:
+def sr_levels(piv, k_last, atr_i, p, exclude_last=False):
+    end = k_last - 1 if exclude_last else k_last
+    start = max(0, k_last - int(p["sr_lookback"]) + 1)
+    if end < start:
+        return []
+    prices = sorted(piv[m][1] for m in range(start, end + 1))
+    tol = p["sr_tol"] * atr_i
+    levels, cur = [], [prices[0]]
+    for x in prices[1:]:
+        if x - cur[-1] <= tol:
+            cur.append(x)
+        else:
+            if len(cur) >= p["sr_touches"]:
+                levels.append(float(np.mean(cur)))
+            cur = [x]
+    if len(cur) >= p["sr_touches"]:
+        levels.append(float(np.mean(cur)))
+    return levels
+
+
+def elliott_pattern(k, piv, atr, p):
+    """نمط إليوت عند تأكيد القاع k: دخول الموجة 3 (نهاية الموجة 2) أو الموجة 5 (نهاية الموجة 4)."""
+    conf = piv[k][3]
+    a = atr[conf]
+    if np.isnan(a) or piv[k][2] != -1:
         return None
-    oi, op, ei, ep = int(oI[i]), oP[i], int(eI[i]), eP[i]
-    P = ei - oi
-    R = ep - op
-    if P < p["min_bars"] or P > p["max_bars"] or R <= 0:
-        return None
+    mode = p["mode"]
 
-    M = int(p["res"])
-    j = np.arange(M) / (M - 1.0)
-    pv = _detr(np.interp(oi + P * j, idx, c)[None, :], j)[0]
-    pvc = pv - pv.mean()
-    pvn = np.sqrt((pvc ** 2).sum())
-    if pvn == 0:
-        return None
+    def wave2_ok(L0, H1, L2):
+        w1 = H1 - L0
+        if w1 <= 0 or w1 < p["w1_min"] * a or L2 <= L0:
+            return None
+        retr = (H1 - L2) / w1 * 100.0
+        if not (p["w2_min"] <= retr <= p["w2_max"]):
+            return None
+        return w1
 
-    pLen = P / 3.0
-    zScore = [-2.0, -2.0, -2.0]
-    zS = [0, 0, 0]
-    zW = [0, 0, 0]
-    for z in range(3):
-        zr = int(np.floor(oi + pLen * z + 0.5))
-        for f in (0.5, 0.65, 0.8, 1.0):
-            w = int(np.floor(pLen * f + 0.5))
-            if w < 6 or w > pLen + 1.0:
-                continue
-            step = max(1, int(w / 6))
-            nst = max(0, int(np.floor((pLen - w + 1.0) / step)))
-            s = np.minimum(zr + np.arange(nst + 1) * step, ei - w)
-            s = s[s >= oi]
-            if s.size == 0:
-                continue
-            net = c[s + w] - c[s]
-            s = s[(net > 0) & (net >= p["min_frac"] / 100.0 * R)]
-            if s.size == 0:
-                continue
-            pos = s[:, None] + w * j[None, :]
-            vals = np.interp(pos.ravel(), idx, c).reshape(pos.shape)
-            vals = _detr(vals, j)
-            vc = vals - vals.mean(axis=1, keepdims=True)
-            den = np.sqrt((vc ** 2).sum(axis=1)) * pvn
-            sc = np.where(den > 0, (vc @ pvc) / np.where(den > 0, den, 1.0), 0.0)
-            k = int(np.argmax(sc))
-            if sc[k] > zScore[z]:
-                zScore[z], zS[z], zW[z] = float(sc[k]), int(s[k]), w
-
-    if p["zone"] is None:
-        sel = int(np.argmax(zScore))
-    else:
-        sel = int(p["zone"])
-    if zScore[sel] < p["min_corr"]:
-        return None
-
-    # التقاط بداية/نهاية الفراكتل عند أقرب قاع/قمة
-    s0 = zS[sel]
-    e0 = s0 + zW[sel]
-    lo1, hi1 = max(oi, s0 - 2), min(ei, s0 + 2)
-    cand = lo1 + int(np.argmin(l[lo1:hi1 + 1]))
-    sB = s0 if l[s0] <= l[cand] else cand
-    lo2, hi2 = max(oi, e0 - 2), min(ei, e0 + 2)
-    cand = lo2 + int(np.argmax(h[lo2:hi2 + 1]))
-    eB = e0 if h[e0] >= h[cand] else cand
-    sPx, ePxM = l[sB], h[eB]
-    if eB - sB < 4 or ePxM - sPx <= 0:
-        return None
-
-    # إعادة القياس ووضعه عند أصل الموجة الأب
-    nM = eB - sB
-    tScale = P * p["time_mult"] / nM
-    pScale = R * p["price_mult"] / (ePxM - sPx)
-    ks = np.arange(nM + 1)
-    pr = c[sB + ks].astype(float)
-    pr[0], pr[-1] = sPx, ePxM
-    xs = oi + np.floor(ks * tScale + 0.5)
-    ys = op + (pr - sPx) * pScale
-    endX, endY = xs[-1], ys[-1]
-    if i >= endX:
-        return None
-    fp = float(np.interp(min(i + p["hold"], endX), xs, ys))
-    return dict(corr=zScore[sel], zone=sel, fp=fp, endY=float(endY), op=float(op))
+    if mode in ("الاثنان", "موجة 5 فقط") and k >= 4:
+        L0, H1, L2, H3, L4 = (piv[k - 4][1], piv[k - 3][1], piv[k - 2][1], piv[k - 1][1], piv[k][1])
+        w1 = wave2_ok(L0, H1, L2)
+        if w1 is not None and H3 > H1:
+            w3 = H3 - L2
+            retr4 = (H3 - L4) / w3 * 100.0 if w3 > 0 else -1
+            if w3 >= p["w3_min"] * w1 and p["w4_min"] <= retr4 <= p["w4_max"] and L4 > H1:
+                return dict(kind="موجة 5", low=L4, low_idx=piv[k][0],
+                            sl=L4 - p["sl_buf"] * a, tp=L4 + p["ext5"] * w1)
+    if mode in ("الاثنان", "موجة 3 فقط") and k >= 2:
+        L0, H1, L2 = piv[k - 2][1], piv[k - 1][1], piv[k][1]
+        w1 = wave2_ok(L0, H1, L2)
+        if w1 is not None:
+            return dict(kind="موجة 3", low=L2, low_idx=piv[k][0],
+                        sl=L2 - p["sl_buf"] * a, tp=L2 + p["ext3"] * w1)
+    return None
 
 
-def make_signal(i, c, h, l, atr, idx, zz, p):
-    m = find_micro(i, c, h, l, idx, zz, p)
-    if m is None or np.isnan(atr[i]):
+def evaluate(k, piv, zones, c, atr, p):
+    base = elliott_pattern(k, piv, atr, p)
+    if base is None:
         return None
-    cl = c[i]
-    tp = cl + p["tp_frac"] / 100.0 * (m["fp"] - cl)
-    gain = (tp / cl - 1.0) * 100.0
-    if gain < p["min_gain"]:
+    conf = piv[k][3]
+    a = atr[conf]
+    ref = float(c[conf])
+    low, low_idx = base["low"], base["low_idx"]
+    sl, tp = base["sl"], base["tp"]
+    dem_flag = sr_flag = False
+
+    # فلتر العرض والطلب
+    if p["sd_on"]:
+        tol = p["d_tol"] * a
+        dem_flag = any(z["kind"] == "D" and z["idx"] < low_idx and z["act"] <= low_idx
+                       and z["brk"] > conf and conf - z["act"] <= p["zone_age"]
+                       and z["lo"] - tol <= low <= z["hi"] + tol for z in zones)
+        if p["sd_require"] and not dem_flag:
+            return None
+        if p["sd_cap"]:
+            sup = [z["lo"] for z in zones if z["kind"] == "S" and z["act"] <= conf < z["brk"]
+                   and conf - z["act"] <= p["zone_age"] and z["lo"] > ref]
+            if sup:
+                tp = min(tp, min(sup))
+
+    # الدعم والمقاومة
+    if p["sr_on"]:
+        sup_lv = sr_levels(piv, k, a, p, exclude_last=True)
+        sr_flag = any(abs(lv - low) <= p["sr_tol"] * a for lv in sup_lv)
+        if p["sr_require"] and not sr_flag:
+            return None
+        if p["sr_cap"]:
+            res = [lv for lv in sr_levels(piv, k, a, p) if lv > ref]
+            if res:
+                tp = min(tp, min(res) - p["sr_buf"] * a)
+
+    if sl >= ref or tp <= ref:
         return None
-    sl = max(m["op"], cl - p["sl_atr"] * atr[i])
-    if sl >= cl:
+    gain = (tp / ref - 1.0) * 100.0
+    rr = (tp - ref) / (ref - sl)
+    if gain < p["min_gain"] or rr < p["min_rr"]:
         return None
-    rr = (tp - cl) / (cl - sl)
-    if rr < p["min_rr"]:
-        return None
-    return dict(tp=float(tp), sl=float(sl), gain=float(gain), rr=float(rr),
-                corr=float(m["corr"]), zone=ZONE_NAME[m["zone"]])
+    return dict(kind=base["kind"], tp=float(tp), sl=float(sl), gain=float(gain), rr=float(rr),
+                dem=bool(dem_flag), sr=bool(sr_flag), ref=ref)
 
 
 # ───────────────────────── الباكتست لعملة واحدة (مخزَّن مؤقتاً) ─────────────────────────
@@ -302,54 +333,52 @@ def run_symbol(sym, interval, params_t, month_iso):
     times = df.index
     o, h, l, c = (np.array(df[k].to_numpy(), dtype=float) for k in ("Open", "High", "Low", "Close"))
     n = len(c)
-    idx = np.arange(n, dtype=float)
     atr = atr_arr(h, l, c)
-    zz = zigzag(h, l, atr, p["rev_atr"], p["min_ret"])
+    piv = swings(h, l, atr, p["rev_atr"])
+    zones = build_zones(piv, o, h, l, c, atr, p)
 
-    start = max(int(times.searchsorted(pd.Timestamp(month_iso))), 60)
-    cap, fee, hold, step = p["capital"], p["fee"] / 100.0, int(p["hold"]), max(1, int(p["step"]))
+    start = int(times.searchsorted(pd.Timestamp(month_iso)))
+    fee, hold = p["fee"] / 100.0, int(p["hold"])
+    trades, rec, busy = [], None, -1
 
-    trades, rec = [], None
-    i = start
-    while i < n:
-        if (i - start) % step != 0:
-            i += 1
+    for k in range(2, len(piv)):
+        if piv[k][2] != -1:
             continue
-        sig = make_signal(i, c, h, l, atr, idx, zz, p)
+        conf = piv[k][3]
+        if conf < start or conf < busy:
+            continue
+        sig = evaluate(k, piv, zones, c, atr, p)
         if sig is None:
-            i += 1
             continue
-        if i == n - 1:                      # توصية حالية (الدخول عند افتتاح الشمعة القادمة)
-            rec = dict(sym=sym, time=times[i], price=float(c[i]), **sig)
-            break
-        j = i + 1
+        if conf == n - 1:                   # توصية حالية: الدخول عند افتتاح الشمعة القادمة
+            rec = dict(sym=sym, time=times[conf], price=sig["ref"], tp=sig["tp"], sl=sig["sl"],
+                       gain=sig["gain"], rr=sig["rr"], kind=sig["kind"], dem=sig["dem"], sr=sig["sr"])
+            continue
+        j = conf + 1
         entry, tp, sl = float(o[j]), sig["tp"], sig["sl"]
         if entry >= tp or entry <= sl:
-            i += 1
             continue
-        k, status, ex, reason = j, "open", None, ""
-        while k < n:
-            if l[k] <= sl:
-                ex, reason, status = min(sl, float(o[k])), "وقف", "closed"
+        m, status, ex, reason = j, "open", None, ""
+        while m < n:
+            if l[m] <= sl:
+                ex, reason, status = min(sl, float(o[m])), "وقف", "closed"
                 break
-            if h[k] >= tp:
+            if h[m] >= tp:
                 ex, reason, status = tp, "هدف", "closed"
                 break
-            if k - j >= hold:
-                ex, reason, status = float(c[k]), "مدة", "closed"
+            if m - j >= hold:
+                ex, reason, status = float(c[m]), "مدة", "closed"
                 break
-            k += 1
+            m += 1
         if status == "open":
-            k = n - 1
+            m = n - 1
             ex, reason = float(c[n - 1]), "مفتوحة"
-        qty = cap / entry
-        net = qty * (ex - entry) - fee * (cap + qty * ex)
-        trades.append(dict(sym=sym, entry_t=times[j], exit_t=times[k], entry=entry, tp=tp, sl=sl,
+        qty = CAPITAL / entry
+        net = qty * (ex - entry) - fee * (CAPITAL + qty * ex)
+        trades.append(dict(sym=sym, entry_t=times[j], exit_t=times[m], entry=entry, tp=tp, sl=sl,
                            exit=ex, reason=reason, net=float(net), status=status,
-                           corr=sig["corr"], zone=sig["zone"]))
-        if status == "open":
-            break
-        i = k + 1
+                           kind=sig["kind"], dem=sig["dem"], sr=sig["sr"]))
+        busy = m if status == "closed" else n + 1
     vol = float(np.nanmean(atr[-200:] / c[-200:] * 100.0))
     return trades, rec, vol
 
@@ -360,23 +389,14 @@ month_start = pd.Timestamp(year=now.year, month=now.month, day=1)
 dim = calendar.monthrange(now.year, now.month)[1]
 month_label = f"{AR_MONTHS[now.month - 1]} {now.year}"
 
-st.markdown("<h3 style='text-align:center;margin:0 0 8px'>📈 LGFP — سكالبينج العملات الحلال</h3>",
+st.markdown("<h3 style='text-align:center;margin:0 0 8px'>📈 موجات إليوت — سبوت العملات الحلال</h3>",
             unsafe_allow_html=True)
 
-# --- حساب الباكتست حسب الإعدادات الحالية ---
-params = dict(
-    capital=float(cfg["capital"]), fee=float(cfg["fee"]),
-    rev_atr=float(cfg["rev_atr"]), min_ret=float(cfg["min_ret"]),
-    min_bars=int(cfg["min_bars"]), max_bars=int(cfg["max_bars"]),
-    zone={"تلقائي": None, "الثلث الأول": 0, "الثلث الأوسط": 1, "الثلث الأخير": 2}[cfg["zone"]],
-    min_corr=float(cfg["min_corr"]), min_frac=float(cfg["min_frac"]), res=int(cfg["res"]),
-    time_mult=float(cfg["time_mult"]), price_mult=float(cfg["price_mult"]),
-    hold=int(cfg["hold"]), tp_frac=float(cfg["tp_frac"]), min_gain=float(cfg["min_gain"]),
-    sl_atr=float(cfg["sl_atr"]), min_rr=float(cfg["min_rr"]), step=int(cfg["step"]),
-)
+PARAM_KEYS = [k for k in DEFAULTS if k not in ("tf", "coins", "min_vol")]
+params = {k: cfg[k] for k in PARAM_KEYS}
 params_t = tuple(sorted(params.items(), key=lambda kv: kv[0]))
 
-with st.spinner("جاري جلب بيانات yfinance وتشغيل الاستراتيجية…"):
+with st.spinner("جاري جلب بيانات yfinance وتحليل موجات إليوت…"):
     data, failed = fetch_all(ALL_SYMBOLS, cfg["tf"])
 
 all_trades, recs, vols, skipped = [], [], {}, []
@@ -399,7 +419,7 @@ if sel_coins:
 tdf = pd.DataFrame(all_trades)
 if tdf.empty:
     tdf = pd.DataFrame(columns=["sym", "entry_t", "exit_t", "entry", "tp", "sl", "exit",
-                                "reason", "net", "status", "corr", "zone"])
+                                "reason", "net", "status", "kind", "dem", "sr"])
 else:
     tdf["entry_t"] = pd.to_datetime(tdf["entry_t"])
     tdf["exit_t"] = pd.to_datetime(tdf["exit_t"])
@@ -440,46 +460,57 @@ st.markdown(f'<div class="wk-grid">{cards}</div>', unsafe_allow_html=True)
 # --- 3) مربع إظهار/إخفاء الإعدادات ---
 show = st.checkbox("⚙️ إظهار الإعدادات", value=False, key="show_settings")
 if show:
+    st.caption("تُطبَّق التغييرات تلقائياً بدون زر حفظ.")
     with st.container(border=True):
-        st.caption("تُطبَّق التغييرات تلقائياً بدون زر حفظ.")
-        c1, c2 = st.columns(2)
-        c1.selectbox("الإطار الزمني", TF_OPTIONS, key="w_tf")
-        c2.number_input("رأس المال لكل صفقة ($)", min_value=10.0, max_value=100000.0, step=10.0, key="w_capital")
-        st.multiselect("العملات (حلال)", list(ALL_SYMBOLS), format_func=lambda s: COINS[s], key="w_coins")
+        st.markdown("**عام**")
         c1, c2, c3 = st.columns(3)
-        c1.number_input("أدنى تذبذب ATR %", min_value=0.0, max_value=10.0, step=0.05, key="w_min_vol")
-        c2.number_input("الرسوم % لكل جهة", min_value=0.0, max_value=1.0, step=0.01, key="w_fee")
-        c3.number_input("فحص كل N شمعة", min_value=1, max_value=20, step=1, key="w_step")
+        c1.selectbox("الإطار الزمني", TF_OPTIONS, key="w_tf")
+        c2.number_input("أدنى تذبذب ATR %", min_value=0.0, max_value=10.0, step=0.05, key="w_min_vol")
+        c3.number_input("الرسوم % لكل جهة", min_value=0.0, max_value=1.0, step=0.01, key="w_fee")
+        st.multiselect("العملات", list(ALL_SYMBOLS), format_func=lambda s: COINS[s], key="w_coins")
 
-        st.markdown("**الموجة الأب**")
+    with st.container(border=True):
+        st.markdown("**موجات إليوت**")
         c1, c2 = st.columns(2)
-        c1.number_input("عتبة الانعكاس (ATR ×)", min_value=0.5, max_value=20.0, step=0.5, key="w_rev_atr")
-        c2.number_input("أدنى تصحيح %", min_value=10.0, max_value=100.0, step=1.0, key="w_min_ret")
-        c1.number_input("أدنى طول (شموع)", min_value=12, max_value=500, step=1, key="w_min_bars")
-        c2.number_input("أقصى طول (شموع)", min_value=50, max_value=900, step=10, key="w_max_bars")
+        c1.selectbox("نوع الدخول", MODES, key="w_mode")
+        c2.number_input("حساسية الموجات (ATR ×)", min_value=1.0, max_value=15.0, step=0.5, key="w_rev_atr")
+        c1.number_input("أدنى حجم للموجة 1 (ATR ×)", min_value=0.5, max_value=20.0, step=0.5, key="w_w1_min")
+        c2.number_input("الموجة 3 ≥ الموجة 1 ×", min_value=0.5, max_value=5.0, step=0.1, key="w_w3_min")
+        c1.number_input("تصحيح الموجة 2 — أدنى %", min_value=10.0, max_value=100.0, step=1.0, key="w_w2_min")
+        c2.number_input("تصحيح الموجة 2 — أقصى %", min_value=10.0, max_value=100.0, step=1.0, key="w_w2_max")
+        c1.number_input("تصحيح الموجة 4 — أدنى %", min_value=5.0, max_value=100.0, step=1.0, key="w_w4_min")
+        c2.number_input("تصحيح الموجة 4 — أقصى %", min_value=5.0, max_value=100.0, step=1.0, key="w_w4_max")
+        c1.number_input("هدف الموجة 3 (× الموجة 1)", min_value=0.5, max_value=5.0, step=0.001, format="%.3f", key="w_ext3")
+        c2.number_input("هدف الموجة 5 (× الموجة 1)", min_value=0.3, max_value=5.0, step=0.1, key="w_ext5")
+        c1.number_input("الوقف تحت القاع (ATR ×)", min_value=0.0, max_value=5.0, step=0.1, key="w_sl_buf")
+        c2.number_input("أقصى مدة (شموع)", min_value=3, max_value=300, step=1, key="w_hold")
+        c1.number_input("أدنى ربح متوقع %", min_value=0.0, max_value=20.0, step=0.1, key="w_min_gain")
+        c2.number_input("أدنى عائد/مخاطرة", min_value=0.3, max_value=10.0, step=0.1, key="w_min_rr")
 
-        st.markdown("**الفراكتل المصغّر**")
-        c1, c2 = st.columns(2)
-        c1.selectbox("منطقة البحث", ZONES_AR, key="w_zone")
-        c2.number_input("أدنى ارتباط شكلي", min_value=-1.0, max_value=1.0, step=0.05, key="w_min_corr")
-        c1.number_input("أدنى حركة % من مدى الموجة", min_value=1.0, max_value=80.0, step=1.0, key="w_min_frac")
-        c2.number_input("دقة الشكل (نقاط)", min_value=8, max_value=40, step=1, key="w_res")
+    with st.container(border=True):
+        st.markdown("**فلتر العرض والطلب**")
+        st.checkbox("تفعيل الفلتر", key="w_sd_on")
+        st.checkbox("اشتراط أن يلمس قاع الموجة منطقة طلب", key="w_sd_require")
+        st.checkbox("حصر الهدف عند أول منطقة عرض فوق السعر", key="w_sd_cap")
+        c1, c2, c3 = st.columns(3)
+        c1.number_input("قوة الاندفاع (ATR ×)", min_value=1.0, max_value=15.0, step=0.5, key="w_zone_imp")
+        c2.number_input("هامش اللمس (ATR ×)", min_value=0.0, max_value=3.0, step=0.1, key="w_d_tol")
+        c3.number_input("عمر المنطقة (شموع)", min_value=20, max_value=2000, step=20, key="w_zone_age")
 
-        st.markdown("**الإسقاط**")
+    with st.container(border=True):
+        st.markdown("**الدعم والمقاومة**")
+        st.checkbox("تفعيل الدعم والمقاومة", key="w_sr_on")
+        st.checkbox("اشتراط وجود دعم عند قاع الموجة", key="w_sr_require")
+        st.checkbox("حصر الهدف تحت أقرب مقاومة", key="w_sr_cap")
         c1, c2 = st.columns(2)
-        c1.number_input("مقياس الزمن ×", min_value=0.1, max_value=5.0, step=0.001, format="%.3f", key="w_time_mult")
-        c2.number_input("مقياس السعر ×", min_value=0.1, max_value=5.0, step=0.001, format="%.3f", key="w_price_mult")
+        c1.number_input("عدد القمم/القيعان المستخدمة", min_value=10, max_value=200, step=5, key="w_sr_lookback")
+        c2.number_input("أدنى عدد لمسات", min_value=2, max_value=6, step=1, key="w_sr_touches")
+        c1.number_input("هامش التجميع (ATR ×)", min_value=0.1, max_value=3.0, step=0.1, key="w_sr_tol")
+        c2.number_input("مسافة الأمان تحت المقاومة (ATR ×)", min_value=0.0, max_value=3.0, step=0.1, key="w_sr_buf")
 
-        st.markdown("**إدارة الصفقة**")
-        c1, c2 = st.columns(2)
-        c1.number_input("أقصى مدة (شموع)", min_value=3, max_value=200, step=1, key="w_hold")
-        c2.number_input("الهدف % من المسار المسقَط", min_value=10, max_value=200, step=5, key="w_tp_frac")
-        c1.number_input("أدنى ربح متوقع %", min_value=0.0, max_value=10.0, step=0.05, key="w_min_gain")
-        c2.number_input("الوقف (ATR ×)", min_value=0.3, max_value=10.0, step=0.1, key="w_sl_atr")
-        c1.number_input("أدنى عائد/مخاطرة", min_value=0.3, max_value=10.0, step=0.1, key="w_min_rr")
-        if c2.button("🔄 تحديث البيانات"):
-            st.cache_data.clear()
-            st.rerun()
+    if st.button("🔄 تحديث البيانات"):
+        st.cache_data.clear()
+        st.rerun()
 
 # حفظ القيم (لتبقى سارية حتى بعد إخفاء الإعدادات)
 for _k in DEFAULTS:
@@ -496,6 +527,7 @@ if data:
 
 # --- 4) الأقسام ---
 view = st.selectbox("القسم", ["التوصيات الحالية", "تفاصيل الصفقات", "ملخص العملات"])
+yn = lambda b: "✓" if b else "—"
 
 if view == "التوصيات الحالية":
     if not recs:
@@ -503,16 +535,17 @@ if view == "التوصيات الحالية":
     else:
         rd = pd.DataFrame([{
             "العملة": COINS[r["sym"]],
+            "الموجة": r["kind"],
             "وقت الإشارة (UTC)": f"{r['time']:%m-%d %H:%M}",
             "السعر": fmt_price(r["price"]),
             "الهدف": fmt_price(r["tp"]),
             "الوقف": fmt_price(r["sl"]),
             "ربح متوقع %": round(r["gain"], 2),
             "R:R": round(r["rr"], 2),
-            "الارتباط": round(r["corr"], 2),
-            "المنطقة": r["zone"],
+            "طلب": yn(r["dem"]),
+            "دعم": yn(r["sr"]),
             "ATR %": round(vols.get(r["sym"], 0.0), 2),
-        } for r in recs]).sort_values("الارتباط", ascending=False)
+        } for r in recs]).sort_values("R:R", ascending=False)
         st.dataframe(rd, hide_index=True, use_container_width=True)
         st.caption("الدخول المقترح عند افتتاح الشمعة التالية، شراء سبوت فقط.")
 
@@ -523,6 +556,7 @@ elif view == "تفاصيل الصفقات":
         td = tdf.sort_values("exit_t", ascending=False)
         out = pd.DataFrame({
             "العملة": td["sym"].map(COINS),
+            "الموجة": td["kind"],
             "الدخول (UTC)": td["entry_t"].dt.strftime("%m-%d %H:%M"),
             "الخروج (UTC)": td["exit_t"].dt.strftime("%m-%d %H:%M"),
             "سعر الدخول": td["entry"].map(fmt_price),
@@ -530,6 +564,8 @@ elif view == "تفاصيل الصفقات":
             "الوقف": td["sl"].map(fmt_price),
             "سعر الخروج": td["exit"].map(fmt_price),
             "السبب": td["reason"],
+            "طلب": td["dem"].map(yn),
+            "دعم": td["sr"].map(yn),
             "صافي $": td["net"].round(2),
         })
         st.dataframe(out, hide_index=True, use_container_width=True)
