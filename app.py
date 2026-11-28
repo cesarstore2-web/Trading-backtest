@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="متتبع التداول الفوري - Bullish CISD & FVG", layout="centered")
+st.set_page_config(page_title="متتبع التداول الفوري - التنبؤ بالفراكتل", layout="centered")
 
 css = (
     "<style>"
@@ -29,16 +29,20 @@ COINS = [
     "TIA-USD", "SUI-USD"
 ]
 
-if 'rr_ratio' not in st.session_state:
-    st.session_state.rr_ratio = 2.0
-if 'swing_lookback' not in st.session_state:
-    st.session_state.swing_lookback = 15
+if 'fractal_len' not in st.session_state:
+    st.session_state.fractal_len = 15
+if 'forecast_len' not in st.session_state:
+    st.session_state.forecast_len = 12
+if 'min_corr' not in st.session_state:
+    st.session_state.min_corr = 0.82
+if 'tp_pct' not in st.session_state:
+    st.session_state.tp_pct = 2.5
+if 'sl_pct' not in st.session_state:
+    st.session_state.sl_pct = 1.5
 if 'use_sl' not in st.session_state:
     st.session_state.use_sl = True
 if 'trade_amount' not in st.session_state:
     st.session_state.trade_amount = 100.0
-if 'target_mode' not in st.session_state:
-    st.session_state.target_mode = "مضاعف المخاطرة (RR 1:X)"
 
 TIMEFRAME_OPTIONS = {
     "5 دقائق (5m)": ("5m", "7d"),
@@ -58,26 +62,71 @@ TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_coin_data(symbol, period_str, timeframe):
-    df = yf.Ticker(symbol).history(period=period_str, interval=timeframe)
-    return df
+    return yf.Ticker(symbol).history(period=period_str, interval=timeframe)
 
-def analyze_all_coins(timeframe, period_str, rr_ratio, swing_lookback, use_sl, trade_amount, target_mode):
+def find_best_fractal_match(closes, current_idx, f_len, proj_len):
+    target_pattern = closes[current_idx - f_len + 1 : current_idx + 1]
+    t_std = np.std(target_pattern)
+    if t_std == 0:
+        return None
+
+    t_norm = (target_pattern - np.mean(target_pattern)) / t_std
+    best_corr = -1.0
+    best_idx = -1
+
+    # البحث في التاريخ السابق مع ترك مسافة كافية للتنبؤ وعدم التداخل
+    search_end = current_idx - f_len - proj_len
+    if search_end < f_len:
+        return None
+
+    # تسريع البحث بالخطوة 2 في البيانات الطويلة
+    step = 2 if search_end > 400 else 1
+    for j in range(f_len, search_end, step):
+        cand = closes[j - f_len + 1 : j + 1]
+        c_std = np.std(cand)
+        if c_std == 0:
+            continue
+        c_norm = (cand - np.mean(cand)) / c_std
+        corr = float(np.dot(t_norm, c_norm) / f_len)
+        if corr > best_corr:
+            best_corr = corr
+            best_idx = j
+
+    if best_idx == -1:
+        return None
+
+    # استخراج المسار المستقبلي للفراكتل وتكبيره ليتطابق مع السعر الحالي
+    hist_base_price = closes[best_idx]
+    curr_base_price = closes[current_idx]
+    hist_future = closes[best_idx + 1 : best_idx + 1 + proj_len]
+
+    # نسبة التغير التاريخية وتطبيقها على السعر الحالي (Scaling)
+    scale_factor = curr_base_price / hist_base_price
+    projected_prices = hist_future * scale_factor
+
+    return best_corr, projected_prices
+
+def run_fractal_scanner(timeframe, period_str, f_len, proj_len, min_corr, tp_pct, sl_pct, use_sl, trade_amount):
     trades_history = []
     current_opportunities = []
+    forecasts_dict = {}
 
     progress_bar = st.progress(0)
     status_text = st.empty()
 
+    tp_dec = tp_pct / 100.0
+    sl_dec = sl_pct / 100.0
+
     for idx_coin, symbol in enumerate(COINS):
-        status_text.caption(f"⏳ جاري فحص {symbol.replace('-USD', '')} ({idx_coin + 1}/{len(COINS)})...")
+        coin_name = symbol.replace("-USD", "")
+        status_text.caption(f"🧬 جاري استخراج الفراكتل لـ {coin_name} ({idx_coin + 1}/{len(COINS)})...")
         progress_bar.progress((idx_coin + 1) / len(COINS))
 
         try:
             df = fetch_coin_data(symbol, period_str, timeframe)
-            if df is None or df.empty or len(df) < swing_lookback + 10:
+            if df is None or df.empty or len(df) < (f_len * 3 + proj_len):
                 continue
 
-            opens = df['Open'].to_numpy(dtype=float)
             highs = df['High'].to_numpy(dtype=float)
             lows = df['Low'].to_numpy(dtype=float)
             closes = df['Close'].to_numpy(dtype=float)
@@ -85,20 +134,14 @@ def analyze_all_coins(timeframe, period_str, rr_ratio, swing_lookback, use_sl, t
 
             in_position = False
             buy_price = 0.0
-            sl_price = 0.0
             tp_price = 0.0
+            sl_price = 0.0
             buy_time = None
 
-            cisd_active = False
-            sweep_low = 0.0
-            old_high = 0.0
-            fvg_top = 0.0
-            fvg_bottom = 0.0
-            has_fvg = False
-            cisd_bar_idx = -1
+            # محاكاة الصفقات على آخر 300 شمعة لضمان السرعة والدقة
+            start_sim = max(f_len * 2 + proj_len, len(df) - 300)
 
-            for i in range(swing_lookback + 3, len(df)):
-                curr_open = opens[i]
+            for i in range(start_sim, len(df) - 1):
                 curr_high = highs[i]
                 curr_low = lows[i]
                 curr_close = closes[i]
@@ -110,16 +153,16 @@ def analyze_all_coins(timeframe, period_str, rr_ratio, swing_lookback, use_sl, t
 
                     if use_sl and curr_low <= sl_price:
                         sell_price = sl_price
-                        sell_reason = "وقف خسارة (SL)"
+                        sell_reason = f"وقف خسارة (-{sl_pct}%)"
                     elif curr_high >= tp_price:
                         sell_price = tp_price
-                        sell_reason = "القمة السابقة (Old High)" if target_mode == "القمة السابقة (Old High)" else f"هدف الربح (RR 1:{rr_ratio})"
+                        sell_reason = f"هدف الفراكتل (+{tp_pct}%)"
 
                     if sell_reason:
                         profit_pct = (sell_price - buy_price) / buy_price
                         profit_usd = trade_amount * profit_pct
                         trades_history.append({
-                            "العملة": symbol.replace("-USD", ""),
+                            "العملة": coin_name,
                             "تاريخ الشراء": str(buy_time)[:16],
                             "سعر الشراء": round(buy_price, 4),
                             "تاريخ البيع": str(curr_time)[:16],
@@ -131,89 +174,62 @@ def analyze_all_coins(timeframe, period_str, rr_ratio, swing_lookback, use_sl, t
                         in_position = False
                     continue
 
-                prev_swing_low = np.min(lows[i - swing_lookback : i])
-                prev_swing_high = np.max(highs[i - swing_lookback : i])
-                recent_min_low = np.min(lows[i - 4 : i + 1])
+                match = find_best_fractal_match(closes, i, f_len, proj_len)
+                if match is not None:
+                    corr, proj_prices = match
+                    max_proj = float(np.max(proj_prices))
+                    min_proj = float(np.min(proj_prices))
+                    expected_gain = (max_proj - curr_close) / curr_close
+                    expected_drawdown = (curr_close - min_proj) / curr_close
 
-                if recent_min_low < prev_swing_low and curr_close > curr_open:
-                    first_bearish_open = None
-                    for k in range(i - 4, i + 1):
-                        if closes[k] < opens[k]:
-                            first_bearish_open = opens[k]
-                            break
+                    # شرط الدخول: تطابق فراكتل عالي + توقع صعود يتجاوز الهدف قبل الهبوط
+                    if corr >= min_corr and expected_gain >= tp_dec and expected_drawdown < sl_dec:
+                        in_position = True
+                        buy_price = curr_close
+                        tp_price = buy_price * (1 + tp_dec)
+                        sl_price = buy_price * (1 - sl_dec)
+                        buy_time = curr_time
 
-                    if first_bearish_open is not None and curr_close > first_bearish_open:
-                        cisd_active = True
-                        sweep_low = recent_min_low
-                        old_high = prev_swing_high
-                        cisd_bar_idx = i
-                        has_fvg = False
+            # التنبؤ بالمستقبل للشمعة الحالية (آخر شمعة)
+            last_idx = len(df) - 1
+            live_match = find_best_fractal_match(closes, last_idx, f_len, proj_len)
+            if live_match is not None:
+                corr, proj_prices = live_match
+                curr_price = closes[last_idx]
+                max_proj = float(np.max(proj_prices))
+                expected_gain_pct = ((max_proj - curr_price) / curr_price) * 100.0
 
-                        if curr_low > highs[i - 2]:
-                            has_fvg = True
-                            fvg_top = curr_low
-                            fvg_bottom = highs[i - 2]
-
-                if cisd_active and i > cisd_bar_idx:
-                    if curr_low < sweep_low or (i - cisd_bar_idx) > 8:
-                        cisd_active = False
-                        continue
-
-                    entry_triggered = False
-                    entry_price = 0.0
-
-                    if has_fvg:
-                        if curr_low <= fvg_top and curr_close >= fvg_bottom:
-                            entry_triggered = True
-                            entry_price = fvg_top
-                    else:
-                        if curr_low <= closes[cisd_bar_idx]:
-                            entry_triggered = True
-                            entry_price = closes[cisd_bar_idx]
-
-                    if entry_triggered and entry_price > sweep_low:
-                        risk = entry_price - sweep_low
-                        if (risk / entry_price) >= 0.002:
-                            in_position = True
-                            buy_price = entry_price
-                            sl_price = sweep_low * 0.999
-                            if target_mode == "القمة السابقة (Old High)" and old_high > buy_price:
-                                tp_price = old_high
-                            else:
-                                tp_price = buy_price + (risk * rr_ratio)
-                            buy_time = curr_time
-                            cisd_active = False
-
-            if cisd_active and (len(df) - 1 - cisd_bar_idx) <= 4:
-                last_price = closes[-1]
-                risk = last_price - sweep_low
-                if risk > 0:
-                    est_tp = old_high if (target_mode == "القمة السابقة (Old High)" and old_high > last_price) else (last_price + risk * rr_ratio)
+                if corr >= min_corr and expected_gain_pct >= tp_pct:
                     current_opportunities.append({
-                        "العملة": symbol.replace("-USD", ""),
-                        "حالة النموذج": "Bullish CISD + FVG" if has_fvg else "Bullish CISD",
-                        "السعر الحالي": round(last_price, 4),
-                        "منطقة الشراء (FVG)": round(fvg_top, 4) if has_fvg else round(last_price, 4),
-                        "وقف الخسارة (SL)": round(sweep_low, 4),
-                        "هدف الربح": round(est_tp, 4),
-                        "الوقت": str(times[-1])[:16]
+                        "العملة": coin_name,
+                        "نسبة التطابق": f"{round(corr * 100, 1)}%",
+                        "السعر الحالي": round(curr_price, 4),
+                        "السعر المتوقع (المكبر)": round(max_proj, 4),
+                        "الربح المتوقع (%)": f"+{round(expected_gain_pct, 2)}%",
+                        "هدف البيع": round(curr_price * (1 + tp_dec), 4),
+                        "الوقت": str(times[last_idx])[:16]
                     })
+                    # حفظ مسار الرسم البياني للتنبؤ
+                    hist_segment = closes[last_idx - f_len + 1 : last_idx + 1]
+                    forecasts_dict[coin_name] = (hist_segment, proj_prices)
 
         except Exception:
             continue
 
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
+    return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities), forecasts_dict
 
-trades_df, opps_df = analyze_all_coins(
+trades_df, opps_df, forecasts_dict = run_fractal_scanner(
     TIMEFRAME,
     DATA_PERIOD,
-    st.session_state.rr_ratio,
-    st.session_state.swing_lookback,
+    st.session_state.fractal_len,
+    st.session_state.forecast_len,
+    st.session_state.min_corr,
+    st.session_state.tp_pct,
+    st.session_state.sl_pct,
     st.session_state.use_sl,
-    st.session_state.trade_amount,
-    st.session_state.target_mode
+    st.session_state.trade_amount
 )
 
 weekly_profit = 0.0
@@ -225,9 +241,3 @@ if not trades_df.empty:
     now = pd.Timestamp.now(tz=trades_df['تاريخ البيع_dt'].dt.tz)
     
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    current_month_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_month]
-    
-    start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    weekly_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_week]
-    weekly_profit = weekly_trades['الربح ($)'].sum()
-
