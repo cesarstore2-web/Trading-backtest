@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-استراتيجية اختراق القمة والسيولة (Momentum Swing Breakout)
+استراتيجية تقاطع متوسطين متحركين + وقف خسارة ATR + عائد R:R
 تداول فوري Spot - شراء فقط - بدون رافعة مالية
 تشغيل:  streamlit run app.py
 المتطلبات: pip install streamlit yfinance pandas numpy
@@ -17,7 +17,7 @@ import yfinance as yf
 # ----------------------------------------------------------------------
 # الإعدادات الثابتة
 # ----------------------------------------------------------------------
-st.set_page_config(page_title="اختراق القمة والسيولة", page_icon="📈", layout="centered")
+st.set_page_config(page_title="تقاطع المتوسطين", page_icon="📈", layout="centered")
 
 COINS = [
     "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", "DOT-USD",
@@ -27,7 +27,7 @@ COINS = [
 ]
 
 CAPITAL = 100.0          # رأس مال كل صفقة (ثابت - يعمل في الخلفية فقط)
-BE_BUFFER = 0.001        # +0.1% لتغطية العمولة عند التأمين
+BE_BUFFER = 0.001        # +0.1% لتغطية العمولة عند التأمين (إن كان مفعّلاً)
 
 SECTIONS = [
     "التوصيات الحالية",
@@ -37,16 +37,18 @@ SECTIONS = [
 ]
 
 TIMEFRAMES = ["5m", "15m", "30m", "1h"]
+MA_TYPES = ["EMA", "SMA"]
 PERIODS = {"5m": "30d", "15m": "60d", "30m": "60d", "1h": "180d"}
 
 DEFAULT_CFG = {
     "tf": "15m",
-    "use_ema": True,
-    "ema_len": 200,
-    "lookback": 12,
-    "vol_len": 20,
-    "vol_mult": 1.3,
+    "ma_type": "EMA",
+    "fast": 20,
+    "slow": 50,
+    "atr_len": 14,
+    "atr_mult": 1.5,
     "rr": 2.0,
+    "be": False,
 }
 
 # ----------------------------------------------------------------------
@@ -87,12 +89,13 @@ def sync_cfg():
     old = ss["cfg"]
     ss["cfg"] = {
         "tf": ss.get("w_tf", old["tf"]),
-        "use_ema": ss.get("w_use_ema", old["use_ema"]),
-        "ema_len": int(ss.get("w_ema_len", old["ema_len"])),
-        "lookback": int(ss.get("w_lookback", old["lookback"])),
-        "vol_len": int(ss.get("w_vol_len", old["vol_len"])),
-        "vol_mult": float(ss.get("w_vol_mult", old["vol_mult"])),
+        "ma_type": ss.get("w_ma_type", old["ma_type"]),
+        "fast": int(ss.get("w_fast", old["fast"])),
+        "slow": int(ss.get("w_slow", old["slow"])),
+        "atr_len": int(ss.get("w_atr_len", old["atr_len"])),
+        "atr_mult": float(ss.get("w_atr_mult", old["atr_mult"])),
         "rr": float(ss.get("w_rr", old["rr"])),
+        "be": bool(ss.get("w_be", old["be"])),
     }
 
 
@@ -139,32 +142,45 @@ def fetch_all(tf: str) -> dict:
 # ----------------------------------------------------------------------
 # منطق الاستراتيجية + المحاكاة
 # ----------------------------------------------------------------------
+def moving_average(series: pd.Series, length: int, kind: str) -> pd.Series:
+    if kind == "SMA":
+        return series.rolling(length).mean()
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def calc_atr(df: pd.DataFrame, length: int) -> pd.Series:
+    """ATR بطريقة Wilder."""
+    pc = df["Close"].shift(1)
+    tr = pd.concat(
+        [df["High"] - df["Low"], (df["High"] - pc).abs(), (df["Low"] - pc).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1.0 / length, adjust=False).mean()
+
+
 def run_backtest(sym: str, df: pd.DataFrame, cfg: dict) -> list:
-    n_look = int(cfg["lookback"])
-    vol_len = int(cfg["vol_len"])
-    ema_len = int(cfg["ema_len"])
+    fast_len, slow_len = int(cfg["fast"]), int(cfg["slow"])
+    if fast_len >= slow_len:                       # ضمان أن السريع أقصر من البطيء
+        fast_len, slow_len = min(fast_len, slow_len), max(fast_len, slow_len) + 1
+    atr_len = int(cfg["atr_len"])
+    atr_mult = float(cfg["atr_mult"])
+    rr = float(cfg["rr"])
+    use_be = bool(cfg["be"])
 
     d = df.copy()
-    d["psh"] = d["High"].rolling(n_look).max().shift(1)     # أعلى قمة لآخر N شمعة سابقة
-    d["psl"] = d["Low"].rolling(n_look).min().shift(1)      # أدنى قاع لآخر N شمعة سابقة
-    d["avgvol"] = d["Volume"].rolling(vol_len).mean().shift(1)
-    d["ema"] = d["Close"].ewm(span=ema_len, adjust=False).mean()
+    d["fast"] = moving_average(d["Close"], fast_len, cfg["ma_type"])
+    d["slow"] = moving_average(d["Close"], slow_len, cfg["ma_type"])
+    d["atr"] = calc_atr(d, atr_len)
 
-    cond = (
-        (d["Close"] > d["Open"])
-        & (d["Close"] > d["psh"])
-        & (d["Volume"] > cfg["vol_mult"] * d["avgvol"])
-    )
-    if cfg["use_ema"]:
-        cond &= d["Close"] > d["ema"]
-        cond &= pd.Series(np.arange(len(d)) >= ema_len, index=d.index)  # انتظار اكتمال تسخين EMA
-    sig = cond.fillna(False).values
+    # إشارة الشراء: المتوسط السريع يقطع البطيء صعوداً
+    cross_up = (d["fast"] > d["slow"]) & (d["fast"].shift(1) <= d["slow"].shift(1))
+    warm = pd.Series(np.arange(len(d)) >= max(slow_len, atr_len) + 1, index=d.index)
+    sig = (cross_up & warm).fillna(False).values
 
     idx = d.index
     o, h, l, c = d["Open"].values, d["High"].values, d["Low"].values, d["Close"].values
-    psl = d["psl"].values
+    atr = d["atr"].values
     n = len(d)
-    rr = float(cfg["rr"])
 
     trades = []
     i = 0
@@ -174,14 +190,14 @@ def run_backtest(sym: str, df: pd.DataFrame, cfg: dict) -> list:
             continue
 
         entry = c[i]
-        sl0 = psl[i]
-        risk = entry - sl0
-        if not np.isfinite(risk) or risk <= 0:
+        risk = atr_mult * atr[i]                   # المخاطرة = ATR × المضاعف
+        if not np.isfinite(risk) or risk <= 0 or risk >= entry:
             i += 1
             continue
 
+        sl0 = entry - risk
         tp = entry + rr * risk
-        be_trigger = entry + 1.0 * risk
+        be_trigger = entry + risk                  # 1R
         be_price = entry * (1 + BE_BUFFER)
         cur_sl = sl0
         be_on = False
@@ -196,7 +212,7 @@ def run_backtest(sym: str, df: pd.DataFrame, cfg: dict) -> list:
             if h[j] >= tp:
                 exit_price, exit_idx, status = tp, j, "رابحة (TP)"
                 break
-            if (not be_on) and h[j] >= be_trigger:
+            if use_be and (not be_on) and h[j] >= be_trigger:
                 be_on = True
                 cur_sl = be_price
 
@@ -340,39 +356,62 @@ show_settings = st.checkbox("⚙️ إظهار الإعدادات", value=False,
 if show_settings:
     with st.container(border=True):
         st.subheader("⚙️ الإعدادات (تُطبَّق تلقائياً)")
+
         st.selectbox(
             "الإطار الزمني", TIMEFRAMES, index=TIMEFRAMES.index(cfg["tf"]),
             key="w_tf", on_change=sync_cfg,
         )
-        st.checkbox(
-            "تفعيل فلتر الاتجاه (EMA)", value=cfg["use_ema"],
-            key="w_use_ema", on_change=sync_cfg,
-        )
-        st.number_input(
-            "رقم المتوسط EMA", min_value=2, max_value=1000, value=int(cfg["ema_len"]),
-            step=1, key="w_ema_len", on_change=sync_cfg,
-        )
-        st.number_input(
-            "عدد الشموع للقمة/القاع (PSH/PSL)", min_value=2, max_value=200, value=int(cfg["lookback"]),
-            step=1, key="w_lookback", on_change=sync_cfg,
-        )
-        st.number_input(
-            "عدد شموع متوسط الحجم", min_value=2, max_value=200, value=int(cfg["vol_len"]),
-            step=1, key="w_vol_len", on_change=sync_cfg,
-        )
-        st.number_input(
-            "مضاعف الحجم", min_value=0.1, max_value=10.0, value=float(cfg["vol_mult"]),
-            step=0.1, format="%.2f", key="w_vol_mult", on_change=sync_cfg,
-        )
-        st.number_input(
-            "مضاعف المخاطرة/العائد (RR)", min_value=0.5, max_value=10.0, value=float(cfg["rr"]),
-            step=0.5, format="%.2f", key="w_rr", on_change=sync_cfg,
-        )
+
+        # ---- نافذة المتوسطين ----
+        with st.container(border=True):
+            st.markdown("**📊 المتوسطان المتحركان**")
+            st.selectbox(
+                "نوع المتوسط", MA_TYPES, index=MA_TYPES.index(cfg["ma_type"]),
+                key="w_ma_type", on_change=sync_cfg,
+            )
+            st.number_input(
+                "المتوسط السريع (MA 1)", min_value=2, max_value=500, value=int(cfg["fast"]),
+                step=1, key="w_fast", on_change=sync_cfg,
+            )
+            st.number_input(
+                "المتوسط البطيء (MA 2)", min_value=3, max_value=1000, value=int(cfg["slow"]),
+                step=1, key="w_slow", on_change=sync_cfg,
+            )
+            if int(cfg["fast"]) >= int(cfg["slow"]):
+                st.warning("المتوسط السريع يجب أن يكون أقصر من البطيء.")
+
+        # ---- نافذة ATR SL ----
+        with st.container(border=True):
+            st.markdown("**🛑 ATR SL (وقف الخسارة)**")
+            st.number_input(
+                "فترة ATR", min_value=1, max_value=200, value=int(cfg["atr_len"]),
+                step=1, key="w_atr_len", on_change=sync_cfg,
+            )
+            st.number_input(
+                "مضاعف ATR", min_value=0.1, max_value=20.0, value=float(cfg["atr_mult"]),
+                step=0.1, format="%.2f", key="w_atr_mult", on_change=sync_cfg,
+            )
+
+        # ---- نافذة العائد R:R ----
+        with st.container(border=True):
+            st.markdown("**🎯 العائد R:R**")
+            st.number_input(
+                "R (العائد مقابل 1 مخاطرة)", min_value=0.5, max_value=20.0, value=float(cfg["rr"]),
+                step=0.5, format="%.2f", key="w_rr", on_change=sync_cfg,
+            )
+            st.checkbox(
+                "تأمين الصفقة عند 1R (نقل الوقف إلى الدخول +0.1%)", value=bool(cfg["be"]),
+                key="w_be", on_change=sync_cfg,
+            )
+
         if st.button("🔄 تحديث البيانات الآن"):
             st.cache_data.clear()
             st.rerun()
 
-st.caption(f"Spot - شراء فقط - 22 عملة حلال - الفريم: {cfg['tf']} - رأس مال الصفقة ثابت")
+st.caption(
+    f"Spot - شراء فقط - 22 عملة حلال - الفريم: {cfg['tf']} - "
+    f"{cfg['ma_type']} {cfg['fast']}/{cfg['slow']} - ATR {cfg['atr_len']}×{cfg['atr_mult']} - R:R 1:{cfg['rr']:g}"
+)
 
 if trades.empty:
     st.warning("لا توجد صفقات أو تعذر تحميل البيانات حالياً. جرّب تحديث البيانات من الإعدادات.")
@@ -399,9 +438,8 @@ if section == "التوصيات الحالية":
                 c1.metric("🛑 وقف الخسارة", f"{r['وقف الخسارة الحالي']:,.6g}")
                 c2.metric("🎯 الهدف", f"{r['الهدف TP']:,.6g}")
                 st.caption(
-                    f"مستوى التأمين 1:1 عند {r['مستوى التأمين 1:1']:,.6g} - "
-                    + ("✅ التأمين مفعّل" if r["التأمين مفعّل"] else "لم يُفعَّل بعد")
-                    + f" - الربح/الخسارة العائمة: {r['الربح/الخسارة $']:+.2f} $"
+                    f"الربح/الخسارة العائمة: {r['الربح/الخسارة $']:+.2f} $"
+                    + (" - ✅ التأمين مفعّل" if r["التأمين مفعّل"] else "")
                 )
 
 # ---------------- أداء الأسبوع الحالي ----------------
@@ -488,5 +526,5 @@ elif section == "تفاصيل الصفقات":
         st.dataframe(d, use_container_width=True, hide_index=True)
 
 st.divider()
-st.caption("⚠️ للأغراض التعليمية فقط وليست نصيحة استثمارية. المحاكاة تفترض الدخول عند إغلاق شمعة الإشارة، "
+st.caption("⚠️ للأغراض التعليمية فقط وليست نصيحة استثمارية. المحاكاة تفترض الدخول عند إغلاق شمعة التقاطع، "
            "وعند تحقق الوقف والهدف في نفس الشمعة يُفترض الوقف أولاً (تحفظاً).")
