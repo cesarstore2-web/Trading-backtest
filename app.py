@@ -12,9 +12,9 @@ CAPITAL = 100.0
 COINS = {"BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT", "SOLUSDT": "SOL/USDT", "ADAUSDT": "ADA/USDT", "AVAXUSDT": "AVAX/USDT", "DOTUSDT": "DOT/USDT", "LINKUSDT": "LINK/USDT", "ATOMUSDT": "ATOM/USDT", "NEARUSDT": "NEAR/USDT", "ALGOUSDT": "ALGO/USDT", "XLMUSDT": "XLM/USDT", "VETUSDT": "VET/USDT", "HBARUSDT": "HBAR/USDT", "FILUSDT": "FIL/USDT", "ICPUSDT": "ICP/USDT", "APTUSDT": "APT/USDT", "ARBUSDT": "ARB/USDT", "OPUSDT": "OP/USDT", "RENDERUSDT": "RENDER/USDT", "GRTUSDT": "GRT/USDT", "TIAUSDT": "TIA/USDT", "SUIUSDT": "SUI/USDT"}
 YF_FALLBACK = {"BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD", "ADAUSDT": "ADA-USD", "AVAXUSDT": "AVAX-USD", "DOTUSDT": "DOT-USD", "LINKUSDT": "LINK-USD", "ATOMUSDT": "ATOM-USD", "NEARUSDT": "NEAR-USD", "ALGOUSDT": "ALGO-USD", "XLMUSDT": "XLM-USD", "VETUSDT": "VET-USD", "HBARUSDT": "HBAR-USD", "FILUSDT": "FIL-USD", "ICPUSDT": "ICP-USD", "APTUSDT": "APT21794-USD", "ARBUSDT": "ARB11841-USD", "OPUSDT": "OP-USD", "RENDERUSDT": "RENDER-USD", "GRTUSDT": "GRT6719-USD", "TIAUSDT": "TIA22861-USD", "SUIUSDT": "SUI20947-USD"}
 ALL_SYMBOLS = tuple(COINS.keys())
-AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
-TF_OPTIONS = ["5m", "15m", "30m", "1h"]
-MA_TYPES = ["EMA", "SMA", "WMA"]
+AR_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
+TF_OPTIONS = ("5m", "15m", "30m", "1h")
+MA_TYPES = ("EMA", "SMA", "WMA")
 DEFAULTS = dict(tf="15m", fast_name="المتوسط السريع", fast_type="EMA", fast_len=9, slow_name="المتوسط البطيء", slow_type="EMA", slow_len=21, trend_name="متوسط الاتجاه", trend_type="SMA", trend_len=200, use_trend=True, min_vol=0.15, fee=0.10, sl_atr=2.0, rr=2.0, exit_cross=True, hold=96)
 
 SAVED = st.session_state.setdefault("_saved", {})
@@ -28,7 +28,9 @@ GREEN, RED, GREY = "#16a34a", "#dc2626", "#6b7280"
 def tone(v, active=True): return GREY if not active else (GREEN if v > 0 else RED if v < 0 else GREY)
 def money(v): return f"{'+' if v > 0 else '-' if v < 0 else ''}${abs(v):,.2f}"
 def fmt_price(x): return f"{x:.6g}"
-def fmt_ym(ym_str): return f"{AR_MONTHS[int(ym_str.split('-')) - 1]} {ym_str.split('-')}"
+def fmt_ym(ym_str):
+    y_s, m_s = str(ym_str).split("-")
+    return f"{AR_MONTHS.__getitem__(int(m_s) - 1)} {y_s}"
 
 def _fetch_binance_usdt(symbol, interval):
     for host in ("https://binance.vision", "https://binance.com"):
@@ -37,19 +39,19 @@ def _fetch_binance_usdt(symbol, interval):
             if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 0:
                 df = pd.DataFrame(r.json(), columns=["ot", "Open", "High", "Low", "Close", "Vol", "ct", "qv", "nt", "tb", "tq", "ig"])
                 df.index = pd.to_datetime(df["ot"], unit="ms", utc=True).dt.tz_localize(None)
-                for col in ["Open", "High", "Low", "Close"]: df[col] = df[col].astype(float)
-                return df[["Open", "High", "Low", "Close"]].sort_index()
+                for col in ("Open", "High", "Low", "Close"): df[col] = df[col].astype(float)
+                return df.loc[:, ["Open", "High", "Low", "Close"]].sort_index()
         except Exception: continue
     return None
 
 def _clean_yf(df):
     if df is None or len(df) == 0: return None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(-1)
-    if any(c not in df.columns for c in ["Open", "High", "Low", "Close"]): return None
-    df = df[["Open", "High", "Low", "Close"]].dropna()
+    if any(c not in df.columns for c in ("Open", "High", "Low", "Close")): return None
+    df = df.loc[:, ["Open", "High", "Low", "Close"]].dropna()
     idx = pd.DatetimeIndex(df.index)
     df.index = (idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")).tz_localize(None)
-    return df[~df.index.duplicated(keep="last")].sort_index()
+    return df.loc[~df.index.duplicated(keep="last")].sort_index()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_usdt(interval):
@@ -75,9 +77,9 @@ def calc_ma(series, length, ma_type):
     return s.rolling(n).mean().to_numpy(dtype=float)
 
 def atr_arr(h, l, c, n=14):
-    pc = np.roll(c, 1); pc = c
+    pc = np.roll(c, 1); pc.__setitem__(0, c.__getitem__(0))
     a = pd.Series(np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy(dtype=float, copy=True)
-    a[:n - 1] = np.nan
+    a.__setitem__(slice(0, n - 1), np.nan)
     return a
 
 def backtest_ma_cross(sym, df, p):
@@ -87,25 +89,28 @@ def backtest_ma_cross(sym, df, p):
     trades, open_trade, fee_rate, last_closed = [], None, p["fee"] / 100.0, n - 2
     if last_closed <= start_bar: return trades, 0.0
     for i in range(start_bar, last_closed + 1):
+        hi_i, lo_i, cl_i = float(h.item(i)), float(l.item(i)), float(c.item(i))
+        fa_i, fa_p = float(fast.item(i)), float(fast.item(i - 1))
+        sl_i, sl_p = float(slow.item(i)), float(slow.item(i - 1))
+        at_i, tr_i = float(atr.item(i)), float(trend.item(i))
         if open_trade is not None:
             sl, tp, entry, exit_price, reason = open_trade["sl"], open_trade["tp"], open_trade["entry"], None, None
-            if l[i] <= sl: exit_price, reason = sl, "وقف خسارة"
-            elif h[i] >= tp: exit_price, reason = tp, "هدف"
-            elif p["exit_cross"] and fast[i] < slow[i] and fast[i - 1] >= slow[i - 1]: exit_price, reason = float(c[i]), f"تقاطع عكسي ({p['fast_name']})"
-            elif (i - open_trade["entry_bar"]) >= int(p["hold"]): exit_price, reason = float(c[i]), "انتهاء المدة"
+            if lo_i <= sl: exit_price, reason = sl, "وقف خسارة"
+            elif hi_i >= tp: exit_price, reason = tp, "هدف"
+            elif p["exit_cross"] and fa_i < sl_i and fa_p >= sl_p: exit_price, reason = cl_i, f"تقاطع عكسي ({p['fast_name']})"
+            elif (i - open_trade["entry_bar"]) >= int(p["hold"]): exit_price, reason = cl_i, "انتهاء المدة"
             if exit_price is not None:
                 qty = CAPITAL / entry
                 net = (exit_price - entry) * qty - (entry * qty + exit_price * qty) * fee_rate
-                trades.append({"الزوج": COINS.get(sym, sym), "الإشارة": f"{p['fast_name']} × {p['slow_name']}", "الدخول": open_trade["entry_time"], "الخروج": ts[i], "الشهر": ts[i].strftime("%Y-%m"), "اليوم": int(ts[i].day), "سعر الدخول": entry, "سعر الخروج": exit_price, "النتيجة": reason, "الربح $": round(net, 2)})
+                trades.append({"الزوج": COINS.get(sym, sym), "الإشارة": f"{p['fast_name']} × {p['slow_name']}", "الدخول": open_trade["entry_time"], "الخروج": ts.__getitem__(i), "الشهر": ts.__getitem__(i).strftime("%Y-%m"), "اليوم": int(ts.__getitem__(i).day), "سعر الدخول": entry, "سعر الخروج": exit_price, "النتيجة": reason, "الربح $": round(net, 2)})
                 open_trade = None
             continue
-        if np.isnan(atr[i]) or np.isnan(fast[i]) or np.isnan(slow[i]) or not (fast[i] > slow[i] and fast[i - 1] <= slow[i - 1]): continue
-        entry, a = float(c[i]), float(atr[i])
-        if (a / entry * 100.0) < p["min_vol"] or (p["use_trend"] and (np.isnan(trend[i]) or entry <= trend[i])): continue
-        sl = entry - p["sl_atr"] * a; risk = entry - sl
+        if np.isnan(at_i) or np.isnan(fa_i) or np.isnan(sl_i) or not (fa_i > sl_i and fa_p <= sl_p): continue
+        if (at_i / cl_i * 100.0) < p["min_vol"] or (p["use_trend"] and (np.isnan(tr_i) or cl_i <= tr_i)): continue
+        sl = cl_i - p["sl_atr"] * at_i; risk = cl_i - sl
         if risk <= 0: continue
-        open_trade = {"entry_bar": i, "entry_time": ts[i], "entry": entry, "sl": sl, "tp": entry + risk * p["rr"]}
-    floating_pnl = ((float(c[last_closed]) - open_trade["entry"]) * (CAPITAL / open_trade["entry"]) - (open_trade["entry"] * (CAPITAL / open_trade["entry"]) + float(c[last_closed]) * (CAPITAL / open_trade["entry"])) * fee_rate) if open_trade is not None else 0.0
+        open_trade = {"entry_bar": i, "entry_time": ts.__getitem__(i), "entry": cl_i, "sl": sl, "tp": cl_i + risk * p["rr"]}
+    floating_pnl = ((float(c.item(last_closed)) - open_trade["entry"]) * (CAPITAL / open_trade["entry"]) - (open_trade["entry"] * (CAPITAL / open_trade["entry"]) + float(c.item(last_closed)) * (CAPITAL / open_trade["entry"])) * fee_rate) if open_trade is not None else 0.0
     return trades, floating_pnl
 
 st.markdown("<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت USDT</h2>", unsafe_allow_html=True)
@@ -116,17 +121,12 @@ for sym, df in data.items():
     t_list, flt = backtest_ma_cross(sym, df, cfg)
     all_trades.extend(t_list)
     total_floating += flt
-    last_candle_str = df.index[-2].strftime("%d-%m-%Y %H:%M UTC") if len(df) >= 2 else last_candle_str
+    last_candle_str = df.index.__getitem__(-2).strftime("%d-%m-%Y %H:%M UTC") if len(df) >= 2 else last_candle_str
 
 trades_df = pd.DataFrame(all_trades)
 now_ym = datetime.now(timezone.utc).strftime("%Y-%m")
 ym_list = sorted(trades_df["الشهر"].unique().tolist(), reverse=True) if not trades_df.empty else [now_ym]
-sel_ym = st.selectbox("اختر الشهر", ym_list, format_func=fmt_ym, label_visibility="collapsed") if len(ym_list) > 1 else ym_list
+sel_ym = st.selectbox("اختر الشهر", ym_list, format_func=fmt_ym, label_visibility="collapsed") if len(ym_list) > 1 else next(iter(ym_list))
 
-m_df = trades_df[trades_df["الشهر"] == sel_ym].copy() if not trades_df.empty else pd.DataFrame()
+m_df = trades_df.loc[trades_df["الشهر"] == sel_ym].copy() if not trades_df.empty else pd.DataFrame()
 month_pnl = float(m_df["الربح $"].sum()) if not m_df.empty else 0.0
-wins = int((m_df["الربح $"] > 0).sum()) if not m_df.empty else 0
-total_t = len(m_df)
-win_rate = (wins / total_t * 100.0) if total_t else 0.0
-
-bg = tone(month_pnl, total_t > 0)
