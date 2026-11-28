@@ -34,7 +34,6 @@ SECTIONS = [
     "أداء الأسبوع الحالي",
     "سجل 4 أسابيع للشهر الحالي",
     "تفاصيل الصفقات",
-    "الإعدادات",
 ]
 
 TIMEFRAMES = ["5m", "15m", "30m", "1h"]
@@ -59,10 +58,20 @@ st.markdown(
     html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
         direction: rtl; text-align: right;
     }
-    .block-container {padding-top: 1.2rem; padding-left: .8rem; padding-right: .8rem;}
+    .block-container {padding-top: 1rem; padding-left: .8rem; padding-right: .8rem;}
     div[data-baseweb="select"] > div {direction: rtl;}
     [data-testid="stMetric"] {text-align: right;}
     [data-testid="stDataFrame"] {direction: ltr;}
+    .net-box {
+        text-align: center; border-radius: 18px; padding: 14px 8px 12px 8px;
+        margin-bottom: 10px; border: 2px solid;
+    }
+    .net-label {font-size: 1.05rem; font-weight: 700; opacity: .9; margin-bottom: 2px;}
+    .net-value {
+        font-size: 3.2rem; font-weight: 900; line-height: 1.15;
+        direction: ltr; letter-spacing: 1px;
+    }
+    .net-sub {font-size: .9rem; opacity: .85; margin-top: 4px;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -251,59 +260,96 @@ def show_stats(t: pd.DataFrame):
     st.metric("الإجمالي", f'{s["الإجمالي $"]:+.2f} $')
 
 
-def fmt_table(t: pd.DataFrame, cols: list) -> pd.DataFrame:
-    d = t[cols].copy()
-    for col in d.columns:
-        if d[col].dtype.kind == "f":
-            d[col] = d[col].map(lambda x: f"{x:,.6g}" if abs(x) < 1 else f"{x:,.4f}")
-    return d
+def net_profit_banner(net: float, week_net: float, open_net: float, n_trades: int):
+    """عرض الربح الصافي بخط كبير وألوان متغيرة حسب الربح/الخسارة."""
+    if net > 0:
+        color, bg, icon = "#22c55e", "rgba(34,197,94,0.12)", "▲"
+    elif net < 0:
+        color, bg, icon = "#ef4444", "rgba(239,68,68,0.12)", "▼"
+    else:
+        color, bg, icon = "#f59e0b", "rgba(245,158,11,0.12)", "●"
+
+    def c_of(v):
+        return "#22c55e" if v > 0 else ("#ef4444" if v < 0 else "#f59e0b")
+
+    st.markdown(
+        f"""
+        <div class="net-box" style="border-color:{color}; background:{bg};">
+            <div class="net-label" style="color:{color};">💰 الربح الصافي - الشهر الحالي</div>
+            <div class="net-value" style="color:{color}; text-shadow: 0 0 14px {color}66;">
+                {icon} {net:+,.2f} $
+            </div>
+            <div class="net-sub">
+                الأسبوع: <b style="color:{c_of(week_net)}">{week_net:+,.2f} $</b>
+                &nbsp;|&nbsp;
+                عائم (مفتوحة): <b style="color:{c_of(open_net)}">{open_net:+,.2f} $</b>
+                &nbsp;|&nbsp;
+                الصفقات: <b>{n_trades}</b>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ----------------------------------------------------------------------
-# الواجهة
+# حساب الصفقات (قبل رسم الواجهة لعرض الربح الصافي في الأعلى)
 # ----------------------------------------------------------------------
-st.title("📈 اختراق القمة والسيولة")
-st.caption(f"Spot - شراء فقط - 22 عملة حلال - الفريم: {cfg['tf']} - رأس مال الصفقة ثابت")
-
-section = st.selectbox("القسم", SECTIONS, key="section_nav")
-
 now = datetime.utcnow()
-
-# ---------------- الإعدادات ----------------
-if section == "الإعدادات":
-    st.subheader("⚙️ الإعدادات")
-    with st.form("settings_form"):
-        tf = st.selectbox("الإطار الزمني", TIMEFRAMES, index=TIMEFRAMES.index(cfg["tf"]))
-        use_ema = st.checkbox("تفعيل فلتر الاتجاه (EMA)", value=cfg["use_ema"])
-        ema_len = st.number_input("رقم المتوسط EMA", min_value=2, max_value=1000, value=int(cfg["ema_len"]), step=1)
-        lookback = st.number_input("عدد الشموع للقمة/القاع (PSH/PSL)", min_value=2, max_value=200, value=int(cfg["lookback"]), step=1)
-        vol_len = st.number_input("عدد شموع متوسط الحجم", min_value=2, max_value=200, value=int(cfg["vol_len"]), step=1)
-        vol_mult = st.number_input("مضاعف الحجم", min_value=0.1, max_value=10.0, value=float(cfg["vol_mult"]), step=0.1, format="%.2f")
-        rr = st.number_input("مضاعف المخاطرة/العائد (RR)", min_value=0.5, max_value=10.0, value=float(cfg["rr"]), step=0.5, format="%.2f")
-        submitted = st.form_submit_button("💾 حفظ وتطبيق")
-    if submitted:
-        st.session_state["cfg"] = {
-            "tf": tf, "use_ema": use_ema, "ema_len": int(ema_len),
-            "lookback": int(lookback), "vol_len": int(vol_len),
-            "vol_mult": float(vol_mult), "rr": float(rr),
-        }
-        st.success("تم حفظ الإعدادات. انتقل إلى أي قسم لرؤية النتائج.")
-    if st.button("🔄 تحديث البيانات الآن"):
-        st.cache_data.clear()
-        st.success("تم مسح الذاكرة المؤقتة.")
-    st.stop()
-
-# ---------------- حساب الصفقات ----------------
-with st.spinner("جارٍ تحميل البيانات وتحليل العملات..."):
-    trades = compute_trades(cfg["tf"], tuple(sorted(cfg.items())))
-
-if trades.empty:
-    st.warning("لا توجد صفقات أو تعذر تحميل البيانات حالياً. جرّب تحديث البيانات من قسم الإعدادات.")
-    st.stop()
-
 week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
 month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 last_day = calendar.monthrange(now.year, now.month)[1]
+
+with st.spinner("جارٍ تحميل البيانات وتحليل العملات..."):
+    trades = compute_trades(cfg["tf"], tuple(sorted(cfg.items())))
+
+# ----------------------------------------------------------------------
+# الأعلى: الربح الصافي ثم مربع إظهار/إخفاء الإعدادات
+# ----------------------------------------------------------------------
+if trades.empty:
+    net_profit_banner(0.0, 0.0, 0.0, 0)
+else:
+    m_tr = trades[trades["وقت الدخول"] >= month_start]
+    w_tr = trades[trades["وقت الدخول"] >= week_start]
+    net_profit_banner(
+        float(m_tr["الربح/الخسارة $"].sum()),
+        float(w_tr["الربح/الخسارة $"].sum()),
+        float(m_tr[m_tr["الحالة"] == "مفتوحة"]["الربح/الخسارة $"].sum()),
+        int(len(m_tr)),
+    )
+
+show_settings = st.checkbox("⚙️ إظهار الإعدادات", value=False, key="show_settings")
+
+if show_settings:
+    with st.container(border=True):
+        st.subheader("⚙️ الإعدادات")
+        with st.form("settings_form"):
+            tf = st.selectbox("الإطار الزمني", TIMEFRAMES, index=TIMEFRAMES.index(cfg["tf"]))
+            use_ema = st.checkbox("تفعيل فلتر الاتجاه (EMA)", value=cfg["use_ema"])
+            ema_len = st.number_input("رقم المتوسط EMA", min_value=2, max_value=1000, value=int(cfg["ema_len"]), step=1)
+            lookback = st.number_input("عدد الشموع للقمة/القاع (PSH/PSL)", min_value=2, max_value=200, value=int(cfg["lookback"]), step=1)
+            vol_len = st.number_input("عدد شموع متوسط الحجم", min_value=2, max_value=200, value=int(cfg["vol_len"]), step=1)
+            vol_mult = st.number_input("مضاعف الحجم", min_value=0.1, max_value=10.0, value=float(cfg["vol_mult"]), step=0.1, format="%.2f")
+            rr = st.number_input("مضاعف المخاطرة/العائد (RR)", min_value=0.5, max_value=10.0, value=float(cfg["rr"]), step=0.5, format="%.2f")
+            submitted = st.form_submit_button("💾 حفظ وتطبيق")
+        if submitted:
+            st.session_state["cfg"] = {
+                "tf": tf, "use_ema": use_ema, "ema_len": int(ema_len),
+                "lookback": int(lookback), "vol_len": int(vol_len),
+                "vol_mult": float(vol_mult), "rr": float(rr),
+            }
+            st.rerun()
+        if st.button("🔄 تحديث البيانات الآن"):
+            st.cache_data.clear()
+            st.rerun()
+
+st.caption(f"Spot - شراء فقط - 22 عملة حلال - الفريم: {cfg['tf']} - رأس مال الصفقة ثابت")
+
+if trades.empty:
+    st.warning("لا توجد صفقات أو تعذر تحميل البيانات حالياً. جرّب تحديث البيانات من الإعدادات.")
+    st.stop()
+
+section = st.selectbox("القسم", SECTIONS, key="section_nav")
 
 # ---------------- التوصيات الحالية ----------------
 if section == "التوصيات الحالية":
@@ -375,13 +421,10 @@ elif section == "سجل 4 أسابيع للشهر الحالي":
         })
     log = pd.DataFrame(rows)
     st.dataframe(log, use_container_width=True, hide_index=True)
-    st.metric("إجمالي الشهر", f'{log["الربح/الخسارة $"].sum():+.2f} $')
     mt = trades[trades["وقت الدخول"] >= month_start]
     if not mt.empty:
         st.markdown("**ملخص الشهر**")
         show_stats(mt)
-    if cfg["tf"] != "1h" and (now - month_start).days > 28:
-        st.caption("ملاحظة: بيانات الفريمات الصغيرة محدودة المدة في Yahoo Finance.")
 
 # ---------------- تفاصيل الصفقات ----------------
 elif section == "تفاصيل الصفقات":
