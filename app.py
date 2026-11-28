@@ -71,21 +71,25 @@ def money(v):
 def fmt_price(x):
     return f"{x:.6g}"
 
+def fmt_ym(ym_str):
+    y, m = ym_str.split("-")
+    return f"{AR_MONTHS[int(m) - 1]} {y}"
+
 def _fetch_binance_usdt(symbol, interval):
-    try:
-        r = requests.get("https://binance.com", params={"symbol": symbol, "interval": interval, "limit": 1000}, timeout=8)
-        if r.status_code != 200:
-            return None
-        rows = r.json()
-        if not rows or not isinstance(rows, list):
-            return None
-        df = pd.DataFrame(rows, columns=["ot", "Open", "High", "Low", "Close", "Vol", "ct", "qv", "nt", "tb", "tq", "ig"])
-        df.index = pd.to_datetime(df["ot"], unit="ms", utc=True).dt.tz_localize(None)
-        for col in ["Open", "High", "Low", "Close"]:
-            df[col] = df[col].astype(float)
-        return df[["Open", "High", "Low", "Close"]].sort_index()
-    except Exception:
-        return None
+    for host in ("https://binance.vision", "https://binance.com"):
+        try:
+            r = requests.get(f"{host}/api/v3/klines", params={"symbol": symbol, "interval": interval, "limit": 1000}, timeout=5)
+            if r.status_code == 200:
+                rows = r.json()
+                if rows and isinstance(rows, list):
+                    df = pd.DataFrame(rows, columns=["ot", "Open", "High", "Low", "Close", "Vol", "ct", "qv", "nt", "tb", "tq", "ig"])
+                    df.index = pd.to_datetime(df["ot"], unit="ms", utc=True).dt.tz_localize(None)
+                    for col in ["Open", "High", "Low", "Close"]:
+                        df[col] = df[col].astype(float)
+                    return df[["Open", "High", "Low", "Close"]].sort_index()
+        except Exception:
+            continue
+    return None
 
 def _clean_yf(df):
     if df is None or len(df) == 0:
@@ -103,20 +107,30 @@ def _clean_yf(df):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_usdt(interval):
-    data, failed = {}, []
+    data, missing = {}, []
     for sym in ALL_SYMBOLS:
         df = _fetch_binance_usdt(sym, interval)
-        if df is None or len(df) < 150:
-            yf_sym = YF_FALLBACK.get(sym)
+        if df is not None and len(df) >= 150:
+            data[sym] = df
+        else:
+            missing.append(sym)
+    if missing:
+        yf_list = [YF_FALLBACK[s] for s in missing if s in YF_FALLBACK]
+        try:
+            raw = yf.download(yf_list, period="59d", interval=interval, group_by="ticker", auto_adjust=False, progress=False, threads=True)
+        except Exception:
+            raw = None
+        for sym in missing:
+            yfs = YF_FALLBACK.get(sym)
+            df = None
             try:
-                df = _clean_yf(yf.Ticker(yf_sym).history(period="59d", interval=interval, auto_adjust=False)) if yf_sym else None
+                if raw is not None and isinstance(raw.columns, pd.MultiIndex) and yfs in raw.columns.get_level_values(0):
+                    df = _clean_yf(raw[yfs].copy())
             except Exception:
                 df = None
-        if df is None or len(df) < 150:
-            failed.append(sym)
-        else:
-            data[sym] = df
-    return data, failed
+            if df is not None and len(df) >= 150:
+                data[sym] = df
+    return data
 
 def calc_ma(series, length, ma_type):
     s, n = pd.Series(series), int(length)
@@ -167,6 +181,8 @@ def backtest_ma_cross(sym, df, p):
                     "الإشارة": f"{p['fast_name']} × {p['slow_name']}",
                     "الدخول": open_trade["entry_time"],
                     "الخروج": ts[i],
+                    "الشهر": ts[i].strftime("%Y-%m"),
+                    "اليوم": int(ts[i].day),
                     "سعر الدخول": entry,
                     "سعر الخروج": exit_price,
                     "النتيجة": reason,
@@ -198,7 +214,7 @@ def backtest_ma_cross(sym, df, p):
 st.markdown("<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت USDT</h2>", unsafe_allow_html=True)
 
 with st.spinner("جاري تحديث بيانات USDT وحساب التقاطعات..."):
-    data, failed = fetch_all_usdt(cfg["tf"])
+    data = fetch_all_usdt(cfg["tf"])
 
 all_trades = []
 total_floating = 0.0
@@ -208,18 +224,3 @@ for sym, df in data.items():
     all_trades.extend(t_list)
     total_floating += flt
     if len(df) >= 2:
-        last_candle_str = df.index[-2].strftime("%d-%m-%Y %H:%M UTC")
-
-trades_df = pd.DataFrame(all_trades)
-now_utc = datetime.now(timezone.utc)
-ym_list = [pd.Period(now_utc.strftime("%Y-%m"), freq="M")]
-if not trades_df.empty:
-    trades_df["الخروج"] = pd.to_datetime(trades_df["الخروج"])
-    trades_df["الدخول"] = pd.to_datetime(trades_df["الدخول"])
-    ym_list = sorted(trades_df["الخروج"].dt.to_period("M").unique(), reverse=True)
-
-sel_ym = ym_list
-if len(ym_list) > 1:
-    sel_ym = st.selectbox("اختر الشهر", ym_list, format_func=lambda p: f"{AR_MONTHS[p.month - 1]} {p.year}", label_visibility="collapsed")
-
-m_df = pd.DataFrame(columns=["الزوج", "الإشارة", "الدخول", "الخروج", "سعر الدخول", "سعر الخروج", "النتيجة", "الربح $"])
