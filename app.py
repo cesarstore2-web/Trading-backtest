@@ -113,21 +113,35 @@ def _clean(df):
 def fetch_all(symbols, interval):
     data, failed = {}, []
     try:
-        raw = yf.download(list(symbols), period="59d", interval=interval,
-                          group_by="ticker", auto_adjust=False, progress=False, threads=True)
+        raw = yf.download(
+            list(symbols),
+            period="59d",
+            interval=interval,
+            group_by="ticker",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+        )
     except Exception:
         raw = None
     for s in symbols:
         df = None
         try:
-            if raw is not None and isinstance(raw.columns, pd.MultiIndex) \
-                    and s in raw.columns.get_level_values(0):
+            if (
+                raw is not None
+                and isinstance(raw.columns, pd.MultiIndex)
+                and s in raw.columns.get_level_values(0)
+            ):
                 df = _clean(raw[s].copy())
         except Exception:
             df = None
         if df is None or len(df) < 150:
             try:
-                df = _clean(yf.Ticker(s).history(period="59d", interval=interval, auto_adjust=False))
+                df = _clean(
+                    yf.Ticker(s).history(
+                        period="59d", interval=interval, auto_adjust=False
+                    )
+                )
             except Exception:
                 df = None
         if df is None or len(df) < 150:
@@ -143,18 +157,22 @@ def calc_ma(series, length, ma_type):
     n = int(length)
     if ma_type == "EMA":
         return s.ewm(span=n, adjust=False).mean().to_numpy(dtype=float)
-    elif ma_type == "WMA":
+    if ma_type == "WMA":
         weights = np.arange(1, n + 1, dtype=float)
-        return s.rolling(n).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True).to_numpy(dtype=float)
+        return (
+            s.rolling(n)
+            .apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+            .to_numpy(dtype=float)
+        )
     return s.rolling(n).mean().to_numpy(dtype=float)
 
 
 def atr_arr(h, l, c, n=14):
     pc = np.roll(c, 1)
-    pc = c
+    pc[0] = c[0]
     tr = np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])
     a = pd.Series(tr).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy(dtype=float, copy=True)
-    a[:n - 1] = np.nan
+    a[: n - 1] = np.nan
     return a
 
 
@@ -206,16 +224,18 @@ def backtest_ma_cross(sym, df, p):
                 gross = (exit_price - entry) * qty
                 fees = (entry * qty + exit_price * qty) * fee_rate
                 net = gross - fees
-                trades.append({
-                    "العملة": COINS.get(sym, sym),
-                    "الإشارة": f"{p['fast_name']} × {p['slow_name']}",
-                    "الدخول": open_trade["entry_time"],
-                    "الخروج": ts[i],
-                    "سعر الدخول": entry,
-                    "سعر الخروج": exit_price,
-                    "النتيجة": reason,
-                    "الربح $": round(net, 2),
-                })
+                trades.append(
+                    {
+                        "العملة": COINS.get(sym, sym),
+                        "الإشارة": f"{p['fast_name']} × {p['slow_name']}",
+                        "الدخول": open_trade["entry_time"],
+                        "الخروج": ts[i],
+                        "سعر الدخول": entry,
+                        "سعر الخروج": exit_price,
+                        "النتيجة": reason,
+                        "الربح $": round(net, 2),
+                    }
+                )
                 open_trade = None
             continue
 
@@ -255,13 +275,18 @@ def backtest_ma_cross(sym, df, p):
         curr_price = float(c[last_closed])
         entry = open_trade["entry"]
         qty = CAPITAL / entry
-        floating_pnl = (curr_price - entry) * qty - (entry * qty + curr_price * qty) * fee_rate
+        floating_pnl = (curr_price - entry) * qty - (
+            entry * qty + curr_price * qty
+        ) * fee_rate
 
     return trades, floating_pnl
 
 
 # ───────────────────────── تنفيذ الحسابات ─────────────────────────
-st.markdown("<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت العملات الحلال</h2>", unsafe_allow_html=True)
+st.markdown(
+    "<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت العملات الحلال</h2>",
+    unsafe_allow_html=True,
+)
 
 if not cfg["coins"]:
     st.warning("اختر عملة واحدة على الأقل من الإعدادات.")
@@ -275,14 +300,3 @@ total_floating = 0.0
 last_candle_str = ""
 
 for sym, df in data.items():
-    t_list, flt = backtest_ma_cross(sym, df, cfg)
-    all_trades.extend(t_list)
-    if flt is not None:
-        total_floating += flt
-    if len(df) >= 2:
-        last_candle_str = df.index[-2].strftime("%d-%m-%Y %H:%M UTC")
-
-trades_df = pd.DataFrame(all_trades)
-
-now_utc = datetime.now(timezone.utc)
-if not trades_df.empty:
