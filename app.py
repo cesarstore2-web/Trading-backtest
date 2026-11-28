@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="قناص السكالبينج الفوري - 15m", layout="centered")
+st.set_page_config(page_title="قناص السكالبينج الذكي - ATR & RSI", layout="centered")
 
 css = (
     "<style>"
@@ -32,19 +32,19 @@ COINS = [
 if 'ema_scalp' not in st.session_state:
     st.session_state.ema_scalp = 50
 if 'rsi_scalp' not in st.session_state:
-    st.session_state.rsi_scalp = 32
-if 'tp_pct' not in st.session_state:
-    st.session_state.tp_pct = 1.5
-if 'sl_pct' not in st.session_state:
-    st.session_state.sl_pct = 0.8
+    st.session_state.rsi_scalp = 35
+if 'atr_sl_mult' not in st.session_state:
+    st.session_state.atr_sl_mult = 1.5
+if 'rr_ratio' not in st.session_state:
+    st.session_state.rr_ratio = 2.2
 if 'trade_amount' not in st.session_state:
     st.session_state.trade_amount = 100.0
 
 TIMEFRAME_OPTIONS = {
-    "15 دقيقة (15m) - الأفضل لقنص 3-5 صفقات يومياً": ("15m", "21d"),
-    "5 دقائق (5m) - سريع جداً": ("5m", "7d"),
-    "30 دقيقة (30m)": ("30m", "35d"),
-    "1 ساعة (1h)": ("1h", "45d")
+    "15 دقيقة (15m) - الأفضل لقنص 3-5 صفقات يومياً": ("15m", "35d"),
+    "30 دقيقة (30m)": ("30m", "45d"),
+    "1 ساعة (1h)": ("1h", "60d"),
+    "5 دقائق (5m)": ("5m", "14d")
 }
 
 selected_tf_label = st.selectbox(
@@ -67,19 +67,23 @@ def calculate_rsi(series, period=7):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def run_scalping_scanner(timeframe, period_str, ema_len, rsi_level, tp_pct, sl_pct, trade_amount):
+def calculate_atr(df, period=14):
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift()).abs()
+    low_close = (df['Low'] - df['Close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
+
+def run_smart_scalper(timeframe, period_str, ema_len, rsi_level, atr_mult, rr_ratio, trade_amount):
     trades_history = []
     current_opportunities = []
 
     progress_bar = st.progress(0)
     status_text = st.empty()
 
-    tp_dec = tp_pct / 100.0
-    sl_dec = sl_pct / 100.0
-
     for idx_coin, symbol in enumerate(COINS):
         coin_name = symbol.replace("-USD", "")
-        status_text.caption(f"⚡ جاري قنص فرص السكالبينج في {coin_name} ({idx_coin + 1}/{len(COINS)})...")
+        status_text.caption(f"⚡ جاري تحليل الزخم والسيولة لـ {coin_name} ({idx_coin + 1}/{len(COINS)})...")
         progress_bar.progress((idx_coin + 1) / len(COINS))
 
         try:
@@ -87,42 +91,47 @@ def run_scalping_scanner(timeframe, period_str, ema_len, rsi_level, tp_pct, sl_p
             if df is None or df.empty or len(df) < ema_len + 20:
                 continue
 
-            # مؤشرات السكالبينج السريعة
+            # توحيد التوقيت وإزالة المنطقة الزمنية لتجنب أخطاء التصفية
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+
             df['EMA'] = df['Close'].ewm(span=ema_len, adjust=False).mean()
-            df['BB_Mid'] = df['Close'].rolling(window=20).mean()
-            df['BB_Std'] = df['Close'].rolling(window=20).std()
-            df['BB_Lower'] = df['BB_Mid'] - (2.0 * df['BB_Std'])
             df['RSI'] = calculate_rsi(df['Close'], period=7)
             df['Prev_RSI'] = df['RSI'].shift(1)
-            df['Prev_Low'] = df['Low'].shift(1)
-            df['Prev_BB_Lower'] = df['BB_Lower'].shift(1)
+            df['ATR'] = calculate_atr(df, period=14)
+            df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
             df['Is_Green'] = df['Close'] > df['Open']
 
-            # شروط القنص:
+            # شروط الدخول الذكية:
             # 1. السعر فوق EMA 50 (زخم صاعد)
-            # 2. السعر لمس أو كسر الحد السفلي للبولينجر في الشمعة الحالية أو السابقة
-            # 3. RSI(7) ارتد من منطقة التشبع البيعي (أقل من 32) بشمعة خضراء
-            touched_bb = (df['Low'] <= df['BB_Lower'] * 1.002) | (df['Prev_Low'] <= df['Prev_BB_Lower'] * 1.002)
+            # 2. RSI(7) ارتد صعوداً من مستوى التشبع
+            # 3. شمعة خضراء مدعومة بسيولة أعلى من متوسط 20 شمعة
             df['Buy_Signal'] = (
                 (df['Close'] > df['EMA']) &
-                touched_bb &
                 (df['Prev_RSI'] <= rsi_level) &
                 (df['RSI'] > rsi_level) &
-                df['Is_Green']
+                df['Is_Green'] &
+                (df['Volume'] >= df['Vol_MA'] * 0.9)
             )
 
             # فحص الفرص الحالية (آخر شمعتين)
             if df.tail(2)['Buy_Signal'].any():
                 last_price = float(df['Close'].iloc[-1])
+                last_atr = float(df['ATR'].iloc[-1])
                 last_rsi = float(df['RSI'].iloc[-1])
-                current_opportunities.append({
-                    "العملة": coin_name,
-                    "السعر الحالي": round(last_price, 4),
-                    f"هدف الربح (+{tp_pct}%)": round(last_price * (1 + tp_dec), 4),
-                    f"وقف الخسارة (-{sl_pct}%)": round(last_price * (1 - sl_dec), 4),
-                    "RSI (7)": round(last_rsi, 1),
-                    "الوقت": str(df.index[-1])[:16]
-                })
+                if not np.isnan(last_atr) and last_atr > 0:
+                    risk_dist = last_atr * atr_mult
+                    sl_p = last_price - risk_dist
+                    tp_p = last_price + (risk_dist * rr_ratio)
+                    tp_pct_est = ((tp_p - last_price) / last_price) * 100
+                    current_opportunities.append({
+                        "العملة": coin_name,
+                        "السعر الحالي": round(last_price, 4),
+                        "هدف الربح (ATR)": f"{round(tp_p, 4)} (+{round(tp_pct_est, 2)}%)",
+                        "وقف الخسارة (ATR)": round(sl_p, 4),
+                        "RSI (7)": round(last_rsi, 1),
+                        "الوقت": str(df.index[-1])[:16]
+                    })
 
             # محاكاة الصفقات التاريخية
             in_position = False
@@ -136,12 +145,14 @@ def run_scalping_scanner(timeframe, period_str, ema_len, rsi_level, tp_pct, sl_p
                 curr_high = float(row['High'])
                 curr_low = float(row['Low'])
                 curr_close = float(row['Close'])
+                curr_atr = float(row['ATR'])
 
-                if not in_position and row['Buy_Signal']:
+                if not in_position and row['Buy_Signal'] and not np.isnan(curr_atr) and curr_atr > 0:
                     in_position = True
                     buy_price = curr_close
-                    tp_price = buy_price * (1 + tp_dec)
-                    sl_price = buy_price * (1 - sl_dec)
+                    risk_dist = curr_atr * atr_mult
+                    sl_price = buy_price - risk_dist
+                    tp_price = buy_price + (risk_dist * rr_ratio)
                     buy_time = idx
 
                 elif in_position:
@@ -150,19 +161,19 @@ def run_scalping_scanner(timeframe, period_str, ema_len, rsi_level, tp_pct, sl_p
 
                     if curr_low <= sl_price:
                         sell_price = sl_price
-                        sell_reason = f"وقف خسارة (-{sl_pct}%)"
+                        sell_reason = "وقف خسارة (ATR)"
                     elif curr_high >= tp_price:
                         sell_price = tp_price
-                        sell_reason = f"هدف سكالبينج (+{tp_pct}%)"
+                        sell_reason = f"هدف ربح (1:{rr_ratio})"
 
                     if sell_reason:
                         profit_pct = (sell_price - buy_price) / buy_price
                         profit_usd = trade_amount * profit_pct
                         trades_history.append({
                             "العملة": coin_name,
-                            "تاريخ الشراء": str(buy_time)[:16],
+                            "تاريخ الشراء": buy_time,
                             "سعر الشراء": round(buy_price, 4),
-                            "تاريخ البيع": str(idx)[:16],
+                            "تاريخ البيع": idx,
                             "سعر البيع": round(sell_price, 4),
                             "سبب الإغلاق": sell_reason,
                             "الربح ($)": round(profit_usd, 2),
@@ -177,29 +188,32 @@ def run_scalping_scanner(timeframe, period_str, ema_len, rsi_level, tp_pct, sl_p
     status_text.empty()
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-trades_df, opps_df = run_scalping_scanner(
+trades_df, opps_df = run_smart_scalper(
     TIMEFRAME,
     DATA_PERIOD,
     st.session_state.ema_scalp,
     st.session_state.rsi_scalp,
-    st.session_state.tp_pct,
-    st.session_state.sl_pct,
+    st.session_state.atr_sl_mult,
+    st.session_state.rr_ratio,
     st.session_state.trade_amount
 )
 
 weekly_profit = 0.0
 weekly_trades = pd.DataFrame()
 current_month_trades = pd.DataFrame()
+now = pd.Timestamp.utcnow().tz_localize(None)
 
 if not trades_df.empty:
-    trades_df['تاريخ البيع_dt'] = pd.to_datetime(trades_df['تاريخ البيع'])
-    now = pd.Timestamp.now(tz=trades_df['تاريخ البيع_dt'].dt.tz)
+    trades_df['تاريخ البيع'] = pd.to_datetime(trades_df['تاريخ البيع'])
+    trades_df['تاريخ الشراء'] = pd.to_datetime(trades_df['تاريخ الشراء'])
     
+    # بداية الشهر الحالي (بدون فروقات توقيت)
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    current_month_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_month]
+    current_month_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_month].copy()
     
+    # بداية الأسبوع الحالي (الإثنين)
     start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
-    weekly_trades = trades_df[trades_df['تاريخ البيع_dt'] >= start_of_week]
+    weekly_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_week].copy()
     weekly_profit = weekly_trades['الربح ($)'].sum()
 
 box_class = "profit-box-green" if weekly_profit >= 0 else "profit-box-red"
@@ -214,17 +228,3 @@ if st.checkbox("🔥 إظهار ملخص الأداء للأسبوع الحال�
         win_rate = (len(weekly_trades[weekly_trades['الربح ($)'] > 0]) / len(weekly_trades)) * 100
         days_passed = max(1, now.weekday() + 1)
         avg_daily = len(weekly_trades) / days_passed
-        st.write(f"عدد الصفقات: **{len(weekly_trades)}** | المعدل اليومي: **{avg_daily:.1f} صفقة/يوم** | نسبة النجاح: **{win_rate:.1f}%**")
-        st.dataframe(weekly_trades.drop(columns=['تاريخ البيع_dt']), use_container_width=True)
-    else:
-        st.info("لا توجد صفقات مغلقة خلال الأسبوع الحالي.")
-
-if st.checkbox("📋 إظهار تفاصيل الصفقات"):
-    if not current_month_trades.empty:
-        st.dataframe(current_month_trades.drop(columns=['تاريخ البيع_dt']), use_container_width=True)
-    else:
-        st.info("لم يتم تسجيل صفقات مكتملة خلال الشهر الحالي.")
-
-if st.checkbox("📅 إظهار سجل 4 أسابيع (الشهر الحالي)"):
-    if not current_month_trades.empty:
-        total_month = current_month_trades['الربح ($)'].sum()
