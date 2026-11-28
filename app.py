@@ -1,136 +1,212 @@
-import calendar
-from datetime import datetime, timezone
-import numpy as np
-import pandas as pd
-import requests
 import streamlit as st
 import yfinance as yf
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
 
-st.set_page_config(page_title="تقاطع المتوسطات — سبوت العملات الحلال", page_icon="📈", layout="centered")
-CAPITAL = 100.0
+# إعدادات الصفحة والتصميم الداكن المطابق للصورة
+st.set_page_config(page_title="تقاطع المتوسطات — سبوت العملات الحلال", layout="centered")
 
-# ───────────────────────── العملات الحلال بأزواج USDT (في الخلفية، بدون TIA) ─────────────────────────
-COINS = {"BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT", "SOLUSDT": "SOL/USDT", "ADAUSDT": "ADA/USDT", "AVAXUSDT": "AVAX/USDT", "DOTUSDT": "DOT/USDT", "LINKUSDT": "LINK/USDT", "ATOMUSDT": "ATOM/USDT", "NEARUSDT": "NEAR/USDT", "ALGOUSDT": "ALGO/USDT", "XLMUSDT": "XLM/USDT", "VETUSDT": "VET/USDT", "HBARUSDT": "HBAR/USDT", "FILUSDT": "FIL/USDT", "ICPUSDT": "ICP/USDT", "APTUSDT": "APT/USDT", "ARBUSDT": "ARB/USDT", "OPUSDT": "OP/USDT", "RENDERUSDT": "RENDER/USDT", "GRTUSDT": "GRT/USDT", "SUIUSDT": "SUI/USDT"}
-YF_FALLBACK = {"BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD", "ADAUSDT": "ADA-USD", "AVAXUSDT": "AVAX-USD", "DOTUSDT": "DOT-USD", "LINKUSDT": "LINK-USD", "ATOMUSDT": "ATOM-USD", "NEARUSDT": "NEAR-USD", "ALGOUSDT": "ALGO-USD", "XLMUSDT": "XLM-USD", "VETUSDT": "VET-USD", "HBARUSDT": "HBAR-USD", "FILUSDT": "FIL-USD", "ICPUSDT": "ICP-USD", "APTUSDT": "APT21794-USD", "ARBUSDT": "ARB11841-USD", "OPUSDT": "OP-USD", "RENDERUSDT": "RENDER-USD", "GRTUSDT": "GRT6719-USD", "SUIUSDT": "SUI20947-USD"}
-ALL_SYMBOLS = tuple(COINS.keys())
-AR_MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
-TF_OPTIONS = ("5m", "15m", "30m", "1h")
-MA_TYPES = ("EMA", "SMA", "WMA")
-DEFAULTS = dict(tf="15m", fast_name="المتوسط السريع", fast_type="EMA", fast_len=9, slow_name="المتوسط البطيء", slow_type="EMA", slow_len=21, trend_name="متوسط الاتجاه", trend_type="SMA", trend_len=200, use_trend=True, min_vol=0.15, fee=0.10, sl_atr=2.0, rr=2.0, exit_cross=True, hold=96)
+st.markdown("""
+<style>
+    .stApp { background-color: #0e1117; color: #ffffff; direction: rtl; text-align: right; }
+    .main-card {
+        background-color: #2b1114;
+        border: 1px solid #7f1d1d;
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        margin-bottom: 15px;
+    }
+    .main-card.profit { background-color: #112b1a; border-color: #15803d; }
+    .week-card {
+        background-color: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 10px;
+        padding: 12px;
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    .week-card.loss { border-color: #7f1d1d; background-color: #211215; }
+    .week-card.profit { border-color: #15803d; background-color: #122117; }
+    .big-num { font-size: 36px; font-weight: bold; color: #ff4b4b; margin: 5px 0; }
+    .big-num.pos { color: #00cc66; }
+    .sub-text { font-size: 13px; color: #9ca3af; }
+</style>
+""", unsafe_allow_html=True)
 
-SAVED = st.session_state.setdefault("_saved", {})
-for _k, _v in DEFAULTS.items():
-    if ("w_" + _k) not in st.session_state: st.session_state["w_" + _k] = SAVED.get(_k, _v)
-cfg = {k: st.session_state["w_" + k] for k in DEFAULTS}
+# العنوان الرئيسي
+st.markdown("<h2 style='text-align: center;'>📈 تقاطع المتوسطات — سبوت العملات الحلال</h2>", unsafe_allow_html=True)
 
-st.markdown("<style>html, body, .stApp, [data-testid='stAppViewContainer'] {direction: rtl; text-align: right;} .block-container {padding-top: 1.2rem; max-width: 760px;} .big-box {border-radius: 18px; padding: 18px 10px; text-align: center; margin-bottom: 10px;} .big-title {font-size: 15px; opacity: .85; margin-bottom: 4px;} .big-num {font-size: 46px; font-weight: 800; line-height: 1.1; direction: ltr;} .big-sub {font-size: 13px; opacity: .85; margin-top: 6px;} .wk-grid {display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; margin-bottom: 12px;} .wk-card {flex: 1 1 30%; min-width: 30%; border-radius: 14px; padding: 12px 6px; text-align: center;} .wk-t {font-size: 12px; opacity: .85;} .wk-n {font-size: 20px; font-weight: 700; direction: ltr; margin-top: 3px;}</style>", unsafe_allow_html=True)
+# قائمة العملات (تم تصحيح رمز TIA ليتوافق مع Yahoo Finance)
+COINS = ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "TIA22861-USD"]
 
-GREEN, RED, GREY = "#16a34a", "#dc2626", "#6b7280"
-def tone(v, active=True): return GREY if not active else (GREEN if v > 0 else RED if v < 0 else GREY)
-def money(v): return f"{'+' if v > 0 else '-' if v < 0 else ''}${abs(v):,.2f}"
-def fmt_price(x): return f"{x:.6g}"
-def fmt_ym(ym_str):
-    y_s, m_s = str(ym_str).split("-")
-    return f"{AR_MONTHS.__getitem__(int(m_s) - 1)} {y_s}"
+# قيم افتراضية في الذاكرة قبل فتح الإعدادات
+if "ma1_type" not in st.session_state: st.session_state.ma1_type = "EMA"
+if "ma1_len" not in st.session_state: st.session_state.ma1_len = 9
+if "ma2_type" not in st.session_state: st.session_state.ma2_type = "EMA"
+if "ma2_len" not in st.session_state: st.session_state.ma2_len = 21
+if "timeframe" not in st.session_state: st.session_state.timeframe = "1h"
+if "atr_sl" not in st.session_state: st.session_state.atr_sl = 1.5
+if "rr_ratio" not in st.session_state: st.session_state.rr_ratio = 2.0
 
-def _fetch_binance_usdt(symbol, interval):
-    for host in ("https://binance.vision", "https://binance.com"):
+# دالة حساب المتوسطات
+def calc_ma(series, ma_type, length):
+    if ma_type == "SMA":
+        return series.rolling(window=length).mean()
+    elif ma_type == "EMA":
+        return series.ewm(span=length, adjust=False).mean()
+    elif ma_type == "WMA":
+        weights = np.arange(1, length + 1)
+        return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+# دالة الباك-تيست ومحاكاة الصفقات للشهر الحالي
+@st.cache_data(ttl=300)
+def run_strategy(ma1_t, ma1_l, ma2_t, ma2_l, tf, atr_mult, rr):
+    now = datetime.now(timezone.utc)
+    start_of_month = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    
+    trades = []
+    errors = []
+    capital_per_trade = 100.0  # حجم الصفقة الافتراضي بالدولار
+
+    for symbol in COINS:
         try:
-            r = requests.get(f"{host}/api/v3/klines", params={"symbol": symbol, "interval": interval, "limit": 1000}, timeout=5)
-            if r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 0:
-                df = pd.DataFrame(r.json(), columns=["ot", "Open", "High", "Low", "Close", "Vol", "ct", "qv", "nt", "tb", "tq", "ig"])
-                df.index = pd.to_datetime(df["ot"], unit="ms", utc=True).dt.tz_localize(None)
-                for col in ("Open", "High", "Low", "Close"): df[col] = df[col].astype(float)
-                return df.loc[:, ["Open", "High", "Low", "Close"]].sort_index()
-        except Exception: continue
-    return None
+            df = yf.download(symbol, period="60d", interval=tf, progress=False)
+            if df.empty or len(df) < max(ma1_l, ma2_l) + 15:
+                errors.append(symbol)
+                continue
+            
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
-def _clean_yf(df):
-    if df is None or len(df) == 0: return None
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(-1)
-    if any(c not in df.columns for c in ("Open", "High", "Low", "Close")): return None
-    df = df.loc[:, ["Open", "High", "Low", "Close"]].dropna()
-    idx = pd.DatetimeIndex(df.index)
-    df.index = (idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")).tz_localize(None)
-    return df.loc[~df.index.duplicated(keep="last")].sort_index()
+            df["MA1"] = calc_ma(df["Close"], ma1_t, ma1_l)
+            df["MA2"] = calc_ma(df["Close"], ma2_t, ma2_l)
+            
+            # حساب ATR
+            high_low = df["High"] - df["Low"]
+            high_close = np.abs(df["High"] - df["Close"].shift())
+            low_close = np.abs(df["Low"] - df["Close"].shift())
+            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            df["ATR"] = tr.rolling(14).mean()
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_all_usdt(interval):
-    data, missing, failed = {}, [], []
-    for sym in ALL_SYMBOLS:
-        df = _fetch_binance_usdt(sym, interval)
-        if df is not None and len(df) >= 150: data[sym] = df
-        else: missing.append(sym)
-    if missing:
-        try: raw = yf.download([YF_FALLBACK[s] for s in missing], period="59d", interval=interval, group_by="ticker", auto_adjust=False, progress=False, threads=True)
-        except Exception: raw = None
-        for sym in missing:
-            yfs = YF_FALLBACK.get(sym)
-            try: df = _clean_yf(raw[yfs].copy()) if (raw is not None and isinstance(raw.columns, pd.MultiIndex) and yfs in raw.columns.get_level_values(0)) else None
-            except Exception: df = None
-            if df is not None and len(df) >= 150: data[sym] = df
-            else: failed.append(COINS.get(sym, sym))
-    return data, failed
+            in_pos = False
+            entry_price = sl = tp = 0.0
 
-def calc_ma(series, length, ma_type):
-    s, n = pd.Series(series), int(length)
-    if ma_type == "EMA": return s.ewm(span=n, adjust=False).mean().to_numpy(dtype=float)
-    if ma_type == "WMA": return s.rolling(n).apply(lambda x: np.dot(x, np.arange(1, n + 1, dtype=float)) / np.arange(1, n + 1, dtype=float).sum(), raw=True).to_numpy(dtype=float)
-    return s.rolling(n).mean().to_numpy(dtype=float)
+            for i in range(1, len(df)):
+                row = df.iloc[i]
+                prev = df.iloc[i-1]
+                ts = df.index[i]
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize("UTC")
 
-def atr_arr(h, l, c, n=14):
-    pc = np.roll(c, 1); pc.__setitem__(0, c.__getitem__(0))
-    a = pd.Series(np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy(dtype=float, copy=True)
-    a.__setitem__(slice(0, n - 1), np.nan)
-    return a
+                if not in_pos:
+                    # شرط تقاطع المتوسط السريع فوق البطيء (شراء سبوت)
+                    if prev["MA1"] <= prev["MA2"] and row["MA1"] > row["MA2"] and ts >= start_of_month:
+                        entry_price = float(row["Close"])
+                        atr_val = float(row["ATR"])
+                        if np.isnan(atr_val) or atr_val == 0: continue
+                        sl = entry_price - (atr_val * atr_mult)
+                        tp = entry_price + ((entry_price - sl) * rr)
+                        in_pos = True
+                else:
+                    low_p = float(row["Low"])
+                    high_p = float(row["High"])
+                    if low_p <= sl:
+                        pnl = -capital_per_trade * ((entry_price - sl) / entry_price)
+                        trades.append({"time": ts, "pnl": pnl})
+                        in_pos = False
+                    elif high_p >= tp:
+                        pnl = capital_per_trade * ((tp - entry_price) / entry_price)
+                        trades.append({"time": ts, "pnl": pnl})
+                        in_pos = False
+        except Exception:
+            errors.append(symbol)
 
-def backtest_ma_cross(sym, df, p):
-    h, l, c, ts, n = df["High"].to_numpy(float), df["Low"].to_numpy(float), df["Close"].to_numpy(float), df.index, len(df)
-    fast, slow, trend, atr = calc_ma(c, p["fast_len"], p["fast_type"]), calc_ma(c, p["slow_len"], p["slow_type"]), calc_ma(c, p["trend_len"], p["trend_type"]), atr_arr(h, l, c, 14)
-    start_bar = max(int(p["slow_len"]), int(p["trend_len"]) if p["use_trend"] else 15) + 1
-    trades, open_trade, fee_rate, last_closed = [], None, p["fee"] / 100.0, n - 2
-    if last_closed <= start_bar: return trades, 0.0
-    for i in range(start_bar, last_closed + 1):
-        hi_i, lo_i, cl_i = float(h.item(i)), float(l.item(i)), float(c.item(i))
-        fa_i, fa_p = float(fast.item(i)), float(fast.item(i - 1))
-        sl_i, sl_p = float(slow.item(i)), float(slow.item(i - 1))
-        at_i, tr_i = float(atr.item(i)), float(trend.item(i))
-        if open_trade is not None:
-            sl, tp, entry, exit_price, reason = open_trade["sl"], open_trade["tp"], open_trade["entry"], None, None
-            if lo_i <= sl: exit_price, reason = sl, "وقف خسارة"
-            elif hi_i >= tp: exit_price, reason = tp, "هدف"
-            elif p["exit_cross"] and fa_i < sl_i and fa_p >= sl_p: exit_price, reason = cl_i, f"تقاطع عكسي ({p['fast_name']})"
-            elif (i - open_trade["entry_bar"]) >= int(p["hold"]): exit_price, reason = cl_i, "انتهاء المدة"
-            if exit_price is not None:
-                qty = CAPITAL / entry
-                net = (exit_price - entry) * qty - (entry * qty + exit_price * qty) * fee_rate
-                trades.append({"الزوج": COINS.get(sym, sym), "الإشارة": f"{p['fast_name']} × {p['slow_name']}", "الدخول": open_trade["entry_time"], "الخروج": ts.__getitem__(i), "الشهر": ts.__getitem__(i).strftime("%Y-%m"), "اليوم": int(ts.__getitem__(i).day), "سعر الدخول": entry, "سعر الخروج": exit_price, "النتيجة": reason, "الربح $": round(net, 2)})
-                open_trade = None
-            continue
-        if np.isnan(at_i) or np.isnan(fa_i) or np.isnan(sl_i) or not (fa_i > sl_i and fa_p <= sl_p): continue
-        if (at_i / cl_i * 100.0) < p["min_vol"] or (p["use_trend"] and (np.isnan(tr_i) or cl_i <= tr_i)): continue
-        sl = cl_i - p["sl_atr"] * at_i; risk = cl_i - sl
-        if risk <= 0: continue
-        open_trade = {"entry_bar": i, "entry_time": ts.__getitem__(i), "entry": cl_i, "sl": sl, "tp": cl_i + risk * p["rr"]}
-    floating_pnl = ((float(c.item(last_closed)) - open_trade["entry"]) * (CAPITAL / open_trade["entry"]) - (open_trade["entry"] * (CAPITAL / open_trade["entry"]) + float(c.item(last_closed)) * (CAPITAL / open_trade["entry"])) * fee_rate) if open_trade is not None else 0.0
-    return trades, floating_pnl
+    return pd.DataFrame(trades), errors
 
-st.markdown("<h2 style='text-align:center; margin-bottom:14px;'>📈 تقاطع المتوسطات — سبوت العملات الحلال</h2>", unsafe_allow_html=True)
-with st.spinner("جاري تحديث البيانات وحساب التقاطعات..."): data, failed = fetch_all_usdt(cfg["tf"])
+# تنفيذ الاستراتيجية بالقيم الحالية
+trades_df, failed_coins = run_strategy(
+    st.session_state.ma1_type, st.session_state.ma1_len,
+    st.session_state.ma2_type, st.session_state.ma2_len,
+    st.session_state.timeframe, st.session_state.atr_sl, st.session_state.rr_ratio
+)
 
-all_trades, total_floating, last_candle_str = [], 0.0, ""
-for sym, df in data.items():
-    t_list, flt = backtest_ma_cross(sym, df, cfg)
-    all_trades.extend(t_list)
-    total_floating += flt
-    if len(df) >= 2: last_candle_str = df.index.__getitem__(-2).strftime("%d-%m-%Y %H:%M UTC")
+# حساب الإحصائيات
+total_pnl = trades_df["pnl"].sum() if not trades_df.empty else 0.0
+closed_count = len(trades_df)
+win_rate = (len(trades_df[trades_df["pnl"] > 0]) / closed_count * 100) if closed_count > 0 else 0.0
 
-trades_df = pd.DataFrame(all_trades)
-now_utc = datetime.now(timezone.utc)
-sel_ym = now_utc.strftime("%Y-%m")
-today_day = int(now_utc.day)
+# 1. مربع الربح الصافي للشهر الحالي
+card_cls = "profit" if total_pnl > 0 else ""
+num_cls = "pos" if total_pnl > 0 else ""
+sign = "+" if total_pnl > 0 else ("-" if total_pnl < 0 else "")
 
-m_df = trades_df.loc[trades_df["الشهر"] == sel_ym].copy() if not trades_df.empty else pd.DataFrame()
-month_pnl = float(m_df["الربح $"].sum()) if not m_df.empty else 0.0
-wins = int((m_df["الربح $"] > 0).sum()) if not m_df.empty else 0
-total_t = len(m_df)
+st.markdown(f"""
+<div class="main-card {card_cls}">
+    <div class="sub-text">صافي ربح شهر نوفمبر 2026 (UTC)</div>
+    <div class="big-num {num_cls}">{sign}${abs(total_pnl):.2f}</div>
+    <div class="sub-text">{closed_count} صفقة مغلقة • نسبة النجاح {win_rate:.0f}% • عائم على المفتوحة: $0.00</div>
+</div>
+""", unsafe_allow_html=True)
+
+# 2. زر الإعدادات بين مربع الشهر الحالي ومربعات الأسابيع
+show_settings = st.checkbox("⚙️ إظهار الإعدادات")
+
+if show_settings:
+    with st.container(border=True):
+        st.markdown("#### 🛠️ إعدادات استراتيجية تقاطع المتوسطين")
+        
+        # نافذة المتوسط الأول (السريع)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.session_state.ma1_type = st.selectbox("نوع المتوسط الأول", ["EMA", "SMA", "WMA"], index=["EMA", "SMA", "WMA"].index(st.session_state.ma1_type))
+        with c2:
+            st.session_state.ma1_len = st.number_input("رقم المتوسط الأول", min_value=2, value=st.session_state.ma1_len, step=1)
+
+        # نافذة المتوسط الثاني (البطيء)
+        c3, c4 = st.columns(2)
+        with c3:
+            st.session_state.ma2_type = st.selectbox("نوع المتوسط الثاني", ["EMA", "SMA", "WMA"], index=["EMA", "SMA", "WMA"].index(st.session_state.ma2_type))
+        with c4:
+            st.session_state.ma2_len = st.number_input("رقم المتوسط الثاني", min_value=2, value=st.session_state.ma2_len, step=1)
+
+        # نافذة الفريمات، ATR SL، و R:R
+        c5, c6, c7 = st.columns(3)
+        with c5:
+            st.session_state.timeframe = st.selectbox("الفريم (Timeframe)", ["15m", "30m", "1h", "4h", "1d"], index=["15m", "30m", "1h", "4h", "1d"].index(st.session_state.timeframe))
+        with c6:
+            st.session_state.atr_sl = st.number_input("ATR SL (معامل الوقف)", min_value=0.1, value=st.session_state.atr_sl, step=0.1)
+        with c7:
+            st.session_state.rr_ratio = st.number_input("R : R (العائد للمخاطرة)", min_value=0.5, value=st.session_state.rr_ratio, step=0.1)
+
+# 3. مربعات الربح الصافي للأسابيع
+def get_week_pnl(start_day, end_day):
+    if trades_df.empty: return 0.0
+    mask = (trades_df["time"].dt.day >= start_day) & (trades_df["time"].dt.day <= end_day)
+    return trades_df.loc[mask, "pnl"].sum()
+
+w1 = get_week_pnl(1, 7)
+w2 = get_week_pnl(8, 14)
+w3 = get_week_pnl(15, 21)
+w4 = get_week_pnl(22, 28)
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown(f'<div class="week-card {"loss" if w1<0 else ("profit" if w1>0 else "")}"><div class="sub-text">الأسبوع 1 (1–7)</div><b>${w1:.2f}</b></div>', unsafe_allow_html=True)
+with col2:
+    st.markdown(f'<div class="week-card {"loss" if w2<0 else ("profit" if w2>0 else "")}"><div class="sub-text">الأسبوع 2 (8–14)</div><b>${w2:.2f}</b></div>', unsafe_allow_html=True)
+with col3:
+    st.markdown(f'<div class="week-card {"loss" if w3<0 else ("profit" if w3>0 else "")}"><div class="sub-text">الأسبوع 3 (15–21)</div><b>${w3:.2f}</b></div>', unsafe_allow_html=True)
+
+col4, col5 = st.columns(2)
+with col4:
+    st.markdown(f'<div class="week-card {"loss" if w4<0 else ("profit" if w4>0 else "")}"><div class="sub-text">الأسبوع 4 (22–28)</div><b>${w4:.2f}</b></div>', unsafe_allow_html=True)
+with col5:
+    st.markdown('<div class="week-card"><div class="sub-text">الأسبوع 5 (29–30)</div><b>—</b></div>', unsafe_allow_html=True)
+
+# تنبيهات البيانات
+if failed_coins:
+    st.warning(f"تعذّر جلب: {', '.join(failed_coins)} (تحقق من رمز Yahoo في COINS).")
+
+st.caption(f"آخر تحديث: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC • بيانات yfinance • تتجدد كل 5 دقائق")
