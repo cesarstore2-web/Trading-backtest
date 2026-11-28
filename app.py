@@ -3,19 +3,18 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="قناص السكالبينج الذكي - ATR & RSI", layout="centered")
+st.set_page_config(page_title="قناص الاختراق والسيولة - 15m", layout="centered")
 
 css = (
     "<style>"
     ".main { direction: rtl; text-align: right; }"
-    "div[data-testid='stCheckbox'] { direction: rtl; text-align: right; }"
     "div[data-testid='stSelectbox'], div[data-testid='stNumberInput'] { direction: rtl; text-align: right; }"
-    ".profit-box-green { background-color: #0d3b1e; border: 2px solid #28a745; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px; }"
-    ".profit-box-red { background-color: #3b0d0d; border: 2px solid #dc3545; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px; }"
+    ".profit-box-green { background-color: #0d3b1e; border: 2px solid #28a745; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 15px; }"
+    ".profit-box-red { background-color: #3b0d0d; border: 2px solid #dc3545; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 15px; }"
     ".profit-title { color: #e0e0e0; font-size: 18px; margin-bottom: 5px; }"
     ".profit-amount-green { color: #2ecc71; font-size: 36px; font-weight: bold; direction: ltr; }"
     ".profit-amount-red { color: #ff6b6b; font-size: 36px; font-weight: bold; direction: ltr; }"
-    ".info-bar { color: #aaaaaa; font-size: 13px; text-align: center; margin: 15px 0; padding: 8px; background-color: #1e1e1e; border-radius: 8px; }"
+    ".info-bar { color: #aaaaaa; font-size: 13px; text-align: center; margin: 10px 0 20px 0; padding: 8px; background-color: #1e1e1e; border-radius: 8px; }"
     ".alert-box { background-color: #162436; border: 1px solid #2b4c7e; border-radius: 10px; padding: 15px; text-align: center; color: #90caf9; }"
     "</style>"
 )
@@ -29,26 +28,24 @@ COINS = [
     "TIA-USD", "SUI-USD"
 ]
 
-if 'ema_scalp' not in st.session_state:
-    st.session_state.ema_scalp = 50
-if 'rsi_scalp' not in st.session_state:
-    st.session_state.rsi_scalp = 35
-if 'atr_sl_mult' not in st.session_state:
-    st.session_state.atr_sl_mult = 1.5
+if 'swing_len' not in st.session_state:
+    st.session_state.swing_len = 12
+if 'vol_mult' not in st.session_state:
+    st.session_state.vol_mult = 1.4
 if 'rr_ratio' not in st.session_state:
-    st.session_state.rr_ratio = 2.2
+    st.session_state.rr_ratio = 2.0
 if 'trade_amount' not in st.session_state:
     st.session_state.trade_amount = 100.0
 
 TIMEFRAME_OPTIONS = {
-    "15 دقيقة (15m) - الأفضل لقنص 3-5 صفقات يومياً": ("15m", "35d"),
+    "15 دقيقة (15m) - الموصى به (3-5 صفقات/يوم)": ("15m", "35d"),
     "30 دقيقة (30m)": ("30m", "45d"),
     "1 ساعة (1h)": ("1h", "60d"),
     "5 دقائق (5m)": ("5m", "14d")
 }
 
 selected_tf_label = st.selectbox(
-    "⏱️ اختر الإطار الزمني للسكالبينج:",
+    "⏱️ الإطار الزمني للتداول:",
     options=list(TIMEFRAME_OPTIONS.keys()),
     index=0
 )
@@ -58,113 +55,96 @@ TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 def fetch_coin_data(symbol, period_str, timeframe):
     return yf.Ticker(symbol).history(period=period_str, interval=timeframe)
 
-def calculate_rsi(series, period=7):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -1 * delta.clip(upper=0)
-    avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def calculate_atr(df, period=14):
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
-
-def run_smart_scalper(timeframe, period_str, ema_len, rsi_level, atr_mult, rr_ratio, trade_amount):
+@st.cache_data(ttl=180, show_spinner=False)
+def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, trade_amount):
     trades_history = []
     current_opportunities = []
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for idx_coin, symbol in enumerate(COINS):
+    for symbol in COINS:
         coin_name = symbol.replace("-USD", "")
-        status_text.caption(f"⚡ جاري تحليل الزخم والسيولة لـ {coin_name} ({idx_coin + 1}/{len(COINS)})...")
-        progress_bar.progress((idx_coin + 1) / len(COINS))
-
         try:
             df = fetch_coin_data(symbol, period_str, timeframe)
-            if df is None or df.empty or len(df) < ema_len + 20:
+            if df is None or df.empty or len(df) < 220:
                 continue
 
-            # توحيد التوقيت وإزالة المنطقة الزمنية لتجنب أخطاء التصفية
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
 
-            df['EMA'] = df['Close'].ewm(span=ema_len, adjust=False).mean()
-            df['RSI'] = calculate_rsi(df['Close'], period=7)
-            df['Prev_RSI'] = df['RSI'].shift(1)
-            df['ATR'] = calculate_atr(df, period=14)
-            df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
+            df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+            df['PSH'] = df['High'].shift(1).rolling(window=swing_len).max()
+            df['PSL'] = df['Low'].shift(1).rolling(window=swing_len).min()
+            df['Vol_MA'] = df['Volume'].shift(1).rolling(window=20).mean()
             df['Is_Green'] = df['Close'] > df['Open']
 
-            # شروط الدخول الذكية:
-            # 1. السعر فوق EMA 50 (زخم صاعد)
-            # 2. RSI(7) ارتد صعوداً من مستوى التشبع
-            # 3. شمعة خضراء مدعومة بسيولة أعلى من متوسط 20 شمعة
+            # شروط الاختراق المؤسسي:
+            # 1. السعر فوق EMA 200
+            # 2. إغلاق شمعة خضراء فوق أعلى قمة سابقة (PSH)
+            # 3. حجم التداول أعلى من المتوسط بـ 1.4 مرة
             df['Buy_Signal'] = (
-                (df['Close'] > df['EMA']) &
-                (df['Prev_RSI'] <= rsi_level) &
-                (df['RSI'] > rsi_level) &
+                (df['Close'] > df['EMA200']) &
+                (df['Close'] > df['PSH']) &
                 df['Is_Green'] &
-                (df['Volume'] >= df['Vol_MA'] * 0.9)
+                (df['Volume'] >= df['Vol_MA'] * vol_mult)
             )
 
             # فحص الفرص الحالية (آخر شمعتين)
             if df.tail(2)['Buy_Signal'].any():
                 last_price = float(df['Close'].iloc[-1])
-                last_atr = float(df['ATR'].iloc[-1])
-                last_rsi = float(df['RSI'].iloc[-1])
-                if not np.isnan(last_atr) and last_atr > 0:
-                    risk_dist = last_atr * atr_mult
-                    sl_p = last_price - risk_dist
-                    tp_p = last_price + (risk_dist * rr_ratio)
-                    tp_pct_est = ((tp_p - last_price) / last_price) * 100
+                sl_p = float(df['PSL'].iloc[-1])
+                risk = last_price - sl_p
+                if risk > 0 and (risk / last_price) >= 0.004:
+                    tp_p = last_price + (risk * rr_ratio)
+                    tp_pct = ((tp_p - last_price) / last_price) * 100
                     current_opportunities.append({
                         "العملة": coin_name,
-                        "السعر الحالي": round(last_price, 4),
-                        "هدف الربح (ATR)": f"{round(tp_p, 4)} (+{round(tp_pct_est, 2)}%)",
-                        "وقف الخسارة (ATR)": round(sl_p, 4),
-                        "RSI (7)": round(last_rsi, 1),
+                        "سعر الدخول": round(last_price, 4),
+                        f"الهدف (1:{rr_ratio})": f"{round(tp_p, 4)} (+{round(tp_pct, 2)}%)",
+                        "وقف الخسارة (PSL)": round(sl_p, 4),
                         "الوقت": str(df.index[-1])[:16]
                     })
 
-            # محاكاة الصفقات التاريخية
+            # محاكاة الصفقات مع تأمين الصفقة (Breakeven) عند وصول السعر لـ 1:1
             in_position = False
             buy_price = 0.0
-            tp_price = 0.0
             sl_price = 0.0
+            tp_price = 0.0
+            breakeven_price = 0.0
+            is_secured = False
             buy_time = None
 
-            sub_df = df.iloc[ema_len:]
+            sub_df = df.iloc[205:]
             for idx, row in sub_df.iterrows():
                 curr_high = float(row['High'])
                 curr_low = float(row['Low'])
                 curr_close = float(row['Close'])
-                curr_atr = float(row['ATR'])
 
-                if not in_position and row['Buy_Signal'] and not np.isnan(curr_atr) and curr_atr > 0:
-                    in_position = True
-                    buy_price = curr_close
-                    risk_dist = curr_atr * atr_mult
-                    sl_price = buy_price - risk_dist
-                    tp_price = buy_price + (risk_dist * rr_ratio)
-                    buy_time = idx
+                if not in_position and row['Buy_Signal']:
+                    psl_val = float(row['PSL'])
+                    risk = curr_close - psl_val
+                    if risk > 0 and 0.004 <= (risk / curr_close) <= 0.05:
+                        in_position = True
+                        buy_price = curr_close
+                        sl_price = psl_val
+                        tp_price = buy_price + (risk * rr_ratio)
+                        breakeven_price = buy_price + risk
+                        is_secured = False
+                        buy_time = idx
 
                 elif in_position:
+                    # تأمين الصفقة على نقطة الدخول عند تحقيق 1:1
+                    if not is_secured and curr_high >= breakeven_price:
+                        sl_price = buy_price * 1.001
+                        is_secured = True
+
                     sell_reason = None
                     sell_price = 0.0
 
                     if curr_low <= sl_price:
                         sell_price = sl_price
-                        sell_reason = "وقف خسارة (ATR)"
+                        sell_reason = "تأمين بدون خسارة (BE)" if is_secured else "وقف خسارة (PSL)"
                     elif curr_high >= tp_price:
                         sell_price = tp_price
-                        sell_reason = f"هدف ربح (1:{rr_ratio})"
+                        sell_reason = f"هدف كامل (1:{rr_ratio})"
 
                     if sell_reason:
                         profit_pct = (sell_price - buy_price) / buy_price
@@ -184,19 +164,17 @@ def run_smart_scalper(timeframe, period_str, ema_len, rsi_level, atr_mult, rr_ra
         except Exception:
             continue
 
-    progress_bar.empty()
-    status_text.empty()
     return pd.DataFrame(trades_history), pd.DataFrame(current_opportunities)
 
-trades_df, opps_df = run_smart_scalper(
-    TIMEFRAME,
-    DATA_PERIOD,
-    st.session_state.ema_scalp,
-    st.session_state.rsi_scalp,
-    st.session_state.atr_sl_mult,
-    st.session_state.rr_ratio,
-    st.session_state.trade_amount
-)
+with st.spinner("⚡ جاري فحص اختراقات السيولة للعملات الـ 22..."):
+    trades_df, opps_df = run_breakout_scanner(
+        TIMEFRAME,
+        DATA_PERIOD,
+        st.session_state.swing_len,
+        st.session_state.vol_mult,
+        st.session_state.rr_ratio,
+        st.session_state.trade_amount
+    )
 
 weekly_profit = 0.0
 weekly_trades = pd.DataFrame()
@@ -207,11 +185,9 @@ if not trades_df.empty:
     trades_df['تاريخ البيع'] = pd.to_datetime(trades_df['تاريخ البيع'])
     trades_df['تاريخ الشراء'] = pd.to_datetime(trades_df['تاريخ الشراء'])
     
-    # بداية الشهر الحالي (بدون فروقات توقيت)
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     current_month_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_month].copy()
     
-    # بداية الأسبوع الحالي (الإثنين)
     start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     weekly_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_week].copy()
     weekly_profit = weekly_trades['الربح ($)'].sum()
@@ -223,8 +199,29 @@ sign = "+" if weekly_profit > 0 else ""
 profit_html = f'<div class="{box_class}"><div class="profit-title">الربح الصافي للأسبوع الحالي 💰</div><div class="{amount_class}">{sign}{weekly_profit:.2f}$</div></div>'
 st.markdown(profit_html, unsafe_allow_html=True)
 
-if st.checkbox("🔥 إظهار ملخص الأداء للأسبوع الحالي"):
+info_html = f'<div class="info-bar">العملات: {len(COINS)} | الاستراتيجية: اختراق القمة + السيولة (EMA 200) | الهدف: 1:{st.session_state.rr_ratio} | الفريم: {TIMEFRAME}</div>'
+st.markdown(info_html, unsafe_allow_html=True)
+
+# تبويبات فورية تعمل بلمسة واحدة دون إعادة تحميل الصفحة
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🎯 الفرص الحالية",
+    "🔥 أداء الأسبوع",
+    "📅 سجل 4 أسابيع",
+    "📋 كل الصفقات",
+    "⚙️ الإعدادات"
+])
+
+with tab1:
+    if not opps_df.empty:
+        st.success(f"تم قنص {len(opps_df)} فرصة اختراق مدعومة بالسيولة!")
+        st.dataframe(opps_df, use_container_width=True)
+    else:
+        st.markdown('<div class="alert-box">لا توجد إشارة اختراق في هذه اللحظة.. الماسح يراقب الـ 22 عملة تلقائياً.</div>', unsafe_allow_html=True)
+
+with tab2:
     if not weekly_trades.empty:
-        win_rate = (len(weekly_trades[weekly_trades['الربح ($)'] > 0]) / len(weekly_trades)) * 100
+        win_trades = len(weekly_trades[weekly_trades['الربح ($)'] >= 0])
+        win_rate = (win_trades / len(weekly_trades)) * 100
         days_passed = max(1, now.weekday() + 1)
         avg_daily = len(weekly_trades) / days_passed
+        st.write(f"عدد الصفقات: **{len(weekly_trades)}** | المعدل اليومي: **{avg_daily:.1f} صفقة/يوم** | صفقات ناجحة/مؤمنة: **{win_rate:.1f}%**")
