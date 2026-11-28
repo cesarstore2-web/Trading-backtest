@@ -48,13 +48,9 @@ TIMEFRAME_OPTIONS = {
     "1 ساعة (1h)": ("1h", "60d")
 }
 
-col_top1, col_top2 = st.columns([2, 1])
+col_top1, col_top2 = st.columns(2)
 with col_top1:
-    selected_tf_label = st.selectbox(
-        "⏱️ الإطار الزمني:",
-        options=list(TIMEFRAME_OPTIONS.keys()),
-        index=0
-    )
+    selected_tf_label = st.selectbox("⏱️ الإطار الزمني:", options=list(TIMEFRAME_OPTIONS.keys()), index=0)
 with col_top2:
     st.write("")
     st.write("")
@@ -66,7 +62,6 @@ TIMEFRAME, DATA_PERIOD = TIMEFRAME_OPTIONS[selected_tf_label]
 def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, trade_amount, use_trend, ema_period):
     trades_history = []
     current_opportunities = []
-
     try:
         all_data = yf.download(COINS, period=period_str, interval=timeframe, group_by='ticker', progress=False, threads=True)
     except Exception:
@@ -81,7 +76,6 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
             min_bars = (ema_period + 5) if use_trend else (swing_len + 25)
             if len(df) < min_bars:
                 continue
-
             if df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
 
@@ -92,15 +86,8 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
             df['Is_Green'] = df['Close'] > df['Open']
 
             trend_cond = (df['Close'] > df['EMA']) if use_trend else True
+            df['Buy_Signal'] = trend_cond & (df['Close'] > df['PSH']) & df['Is_Green'] & (df['Volume'] >= df['Vol_MA'] * vol_mult)
 
-            df['Buy_Signal'] = (
-                trend_cond &
-                (df['Close'] > df['PSH']) &
-                df['Is_Green'] &
-                (df['Volume'] >= df['Vol_MA'] * vol_mult)
-            )
-
-            # فحص الفرص الحالية (آخر 3 شموع)
             if df.tail(3)['Buy_Signal'].any():
                 last_price = float(df['Close'].iloc[-1])
                 sl_p = float(df['PSL'].iloc[-1])
@@ -116,7 +103,6 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
                         "الوقت": str(df.index[-1])[:16]
                     })
 
-            # محاكاة الصفقات
             in_position = False
             buy_price = 0.0
             sl_price = 0.0
@@ -144,22 +130,18 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
                         breakeven_price = buy_price + risk
                         is_secured = False
                         buy_time = idx
-
                 elif in_position:
                     if not is_secured and curr_high >= breakeven_price:
                         sl_price = buy_price * 1.001
                         is_secured = True
-
                     sell_reason = None
                     sell_price = 0.0
-
                     if curr_low <= sl_price:
                         sell_price = sl_price
                         sell_reason = "تأمين بدون خسارة (BE)" if is_secured else "وقف خسارة (PSL)"
                     elif curr_high >= tp_price:
                         sell_price = tp_price
                         sell_reason = f"هدف كامل (1:{rr_ratio})"
-
                     if sell_reason:
                         profit_pct = (sell_price - buy_price) / buy_price
                         profit_usd = trade_amount * profit_pct
@@ -174,7 +156,6 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
                             "النسبة (%)": round(profit_pct * 100, 2)
                         })
                         in_position = False
-
         except Exception:
             continue
 
@@ -182,14 +163,8 @@ def run_breakout_scanner(timeframe, period_str, swing_len, vol_mult, rr_ratio, t
 
 with st.spinner("⚡ جاري تحديث البيانات والسجلات..."):
     trades_df, opps_df = run_breakout_scanner(
-        TIMEFRAME,
-        DATA_PERIOD,
-        st.session_state.swing_len,
-        st.session_state.vol_mult,
-        st.session_state.rr_ratio,
-        st.session_state.trade_amount,
-        st.session_state.use_trend,
-        st.session_state.ema_period
+        TIMEFRAME, DATA_PERIOD, st.session_state.swing_len, st.session_state.vol_mult,
+        st.session_state.rr_ratio, st.session_state.trade_amount, st.session_state.use_trend, st.session_state.ema_period
     )
 
 weekly_profit = 0.0
@@ -200,10 +175,8 @@ now = pd.Timestamp.utcnow().tz_localize(None)
 if not trades_df.empty:
     trades_df['تاريخ البيع'] = pd.to_datetime(trades_df['تاريخ البيع'])
     trades_df['تاريخ الشراء'] = pd.to_datetime(trades_df['تاريخ الشراء'])
-    
     start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     current_month_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_month].copy()
-    
     start_of_week = (now - pd.Timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     weekly_trades = trades_df[trades_df['تاريخ البيع'] >= start_of_week].copy()
     weekly_profit = weekly_trades['الربح ($)'].sum()
@@ -236,3 +209,8 @@ st.divider()
 if section == "🎯 التوصيات والفرص الحالية":
     st.subheader("🎯 التوصيات المستقبلية (الفرص الحالية)")
     if not opps_df.empty:
+        st.success(f"تم قنص {len(opps_df)} فرصة مطابقة للشروط!")
+        st.dataframe(opps_df, use_container_width=True)
+    else:
+        st.markdown('<div class="alert-box">لا توجد إشارة اختراق في آخر 3 شموع.. الماسح يراقب الـ 22 عملة تلقائياً.</div>', unsafe_allow_html=True)
+
