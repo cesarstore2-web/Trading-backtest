@@ -140,7 +140,8 @@ def atr_arr(h, l, c, n=14):
     pc = np.roll(c, 1)
     pc[0] = c[0]
     tr = np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])
-    a = pd.Series(tr).ewm(alpha=1.0 / n, adjust=False).mean().values
+    # copy=True: مصفوفات pandas الحديثة قد تكون للقراءة فقط
+    a = pd.Series(tr).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy(dtype=float, copy=True)
     a[:n - 1] = np.nan
     return a
 
@@ -299,7 +300,7 @@ def run_symbol(sym, interval, params_t, month_iso):
     if len(df) < 120:
         return [], None, None
     times = df.index
-    o, h, l, c = (df[k].values.astype(float) for k in ("Open", "High", "Low", "Close"))
+    o, h, l, c = (np.array(df[k].to_numpy(), dtype=float) for k in ("Open", "High", "Low", "Close"))
     n = len(c)
     idx = np.arange(n, dtype=float)
     atr = atr_arr(h, l, c)
@@ -373,8 +374,7 @@ params = dict(
     hold=int(cfg["hold"]), tp_frac=float(cfg["tp_frac"]), min_gain=float(cfg["min_gain"]),
     sl_atr=float(cfg["sl_atr"]), min_rr=float(cfg["min_rr"]), step=int(cfg["step"]),
 )
-params_t = tuple(sorted((k, -1 if v is None else v) for k, v in params.items()))
-params_t = tuple((k, (None if (k == "zone" and v == -1) else v)) for k, v in params_t)
+params_t = tuple(sorted(params.items(), key=lambda kv: kv[0]))
 
 with st.spinner("جاري جلب بيانات yfinance وتشغيل الاستراتيجية…"):
     data, failed = fetch_all(ALL_SYMBOLS, cfg["tf"])
@@ -400,6 +400,9 @@ tdf = pd.DataFrame(all_trades)
 if tdf.empty:
     tdf = pd.DataFrame(columns=["sym", "entry_t", "exit_t", "entry", "tp", "sl", "exit",
                                 "reason", "net", "status", "corr", "zone"])
+else:
+    tdf["entry_t"] = pd.to_datetime(tdf["entry_t"])
+    tdf["exit_t"] = pd.to_datetime(tdf["exit_t"])
 closed = tdf[tdf["status"] == "closed"]
 opened = tdf[tdf["status"] == "open"]
 month_net = float(closed["net"].sum()) if len(closed) else 0.0
